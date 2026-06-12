@@ -598,7 +598,15 @@ Modules are directories containing a `module.orch` entry file. They let you spli
 
 There are two module patterns depending on whether your module runs in the same process or a separate one.
 
-### 6.6 PROM: The Personal Module Registry
+### 6.1 Importing a Module
+
+```orchestrate
+use module alias: "./path/to/directory"
+```
+
+After this, functions and serverlets inside the module are accessible via `alias.member_name(...)`.
+
+### 6.2 PROM: The Personal Module Registry
 
 PROM (Personal Registry for Orchestrator Modules) is a machine-local mapping that lets you reference modules by a short name instead of a long, absolute, or relative path. 
 
@@ -635,15 +643,7 @@ orchestrator main() {
 
 If the name is not found in the registry, the compiler will return an error instructing you to run `orchestrate prom add <name> <path>`.
 
-### 6.1 Importing a Module
-
-```orchestrate
-use module alias: "./path/to/directory"
-```
-
-After this, functions and serverlets inside the module are accessible via `alias.member_name(...)`.
-
-### 6.2 Merging Sub-files (`load`)
+### 6.3 Merging Sub-files (`load`)
 
 Inside `module.orch`, use `load` to merge another `.orch` file's declarations into the module's scope:
 
@@ -655,7 +655,46 @@ load "validators.orch"
 
 All functions and tasks in the loaded files become part of the module namespace and can be called by serverlets and other functions in the same module.
 
-### 6.3 Pattern A — Combined Process (Plain Functions)
+### 6.4 Calling Foreign Rust Functions (`load_foreign`)
+
+Orchestrate allows you to natively call Rust functions by directly loading `.rs` files into a module's namespace using the `load_foreign` directive.
+
+```orchestrate
+// module.orch
+load_foreign "rust" "./math_helpers.rs"
+```
+
+When you use `load_foreign "rust" "<path>"`, the compiler reads the Rust file at `<path>` and injects its contents verbatim into the generated Rust module for your Orchestrate code. Any `pub fn` you define in the Rust file is immediately callable from Orchestrate!
+
+```rust
+// math_helpers.rs
+pub fn circle_area(radius: f64) -> f64 {
+    radius * radius * std::f64::consts::PI
+}
+```
+
+```orchestrate
+// main.orch
+use module math: "./math_module"
+
+let worker = automatic {
+    let area = math.circle_area(5.0)  // Direct native Rust call!
+    print("Area: " + to_string(area))
+    stop_orch()
+}
+
+orchestrator main(procs: process[worker]) { }
+```
+
+**Type Conversions for Rust Foreign Functions:**
+- Orchestrate `int` maps to Rust `i64`
+- Orchestrate `float` maps to Rust `f64`
+- Orchestrate `string` maps to Rust `String`
+- Orchestrate `bool` maps to Rust `bool`
+
+*(Note: Foreign Rust functions must be synchronous and cannot currently contain `.await` calls).*
+
+### 6.5 Pattern A — Combined Process (Plain Functions)
 
 Use this when your module is written in Orchestrate and you want zero-overhead function calls. The module compiles directly into the parent binary.
 
@@ -700,7 +739,7 @@ orchestrator main(procs: process[]) { }
 
 `math.circle_area(...)` and `math.square(...)` compile to direct native function calls — no async overhead.
 
-### 6.4 Pattern B — Separate Process (Serverlet)
+### 6.6 Pattern B — Separate Process (Serverlet)
 
 Use this when your module wraps an external service (a database, a Python backend, a WebSocket API). A **Serverlet** is a stateful in-process actor that manages the connection.
 
@@ -787,11 +826,11 @@ serverlet DatabaseConnector {
 }
 ```
 
-### 6.5 Choosing the Right Pattern
+### 6.7 Choosing the Right Pattern
 
 | Situation | Use |
 | :--- | :--- |
-| Utility functions, math, parsing, string formatting | **Combined Process** (plain `fn`) |
+| Utility functions, math, parsing, string formatting | **Combined Process** (plain `fn` / `load_foreign`) |
 | Sharing logic across multiple serverlet handlers | **Combined Process** via `load` |
 | Wrapping a database driver or network connection | **Serverlet** |
 | Bridging a Python, Go, or Node.js service | **Serverlet** |
@@ -843,7 +882,7 @@ The lexer produces tokens of kind `TokenKind`. Keywords are:
 ```
 let  fn  task  process  orchestrator  automatic  trigger
 on  start  parallel  if  else  while  return
-use  module  load  serverlet  true  false
+use  module  load  load_foreign  serverlet  true  false
 ```
 
 Operators: `+  -  *  /  ==  !=  <  >  <=  >=  =  ->  |>`
