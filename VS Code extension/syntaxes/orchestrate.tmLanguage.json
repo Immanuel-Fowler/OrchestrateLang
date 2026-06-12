@@ -1,0 +1,186 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Orchestrate",
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#booleans"
+    },
+    {
+      "include": "#types"
+    },
+    {
+      "include": "#functionsBuiltin"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#operators"
+    },
+    {
+      "include": "#functionCalls"
+    },
+    {
+      "include": "#moduleAccess"
+    },
+    {
+      "include": "#declarations"
+    },
+    {
+      "include": "#parameters"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.orch",
+          "match": "//.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.orch",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.orch",
+              "match": "\\\\(n|t|\\\\|\")"
+            }
+          ]
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.orch",
+          "match": "\\b\\d+(\\.\\d+)?\\b"
+        }
+      ]
+    },
+    "booleans": {
+      "patterns": [
+        {
+          "name": "constant.language.orch",
+          "match": "\\b(true|false)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "storage.type.orch",
+          "match": "\\b(int|float|string|bool|void|process)\\b"
+        }
+      ]
+    },
+    "functionsBuiltin": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.orch",
+          "match": "\\b(print|to_string|sleep|stop_orch|length|append|remove)\\b(?=\\s*\\()"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.orch",
+          "match": "\\b(if|else|while|return)\\b"
+        },
+        {
+          "name": "keyword.declaration.orch",
+          "match": "\\b(let|fn|task|process|orchestrator|automatic|serverlet)\\b"
+        },
+        {
+          "name": "keyword.concurrency.orch",
+          "match": "\\b(trigger|on|start|parallel)\\b"
+        },
+        {
+          "name": "keyword.module.orch",
+          "match": "\\b(use|module|load|load_foreign)\\b"
+        },
+        {
+          "name": "keyword.lifecycle.orch",
+          "match": "\\b(on_start|on_stop)\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.arrow.orch",
+          "match": "->"
+        },
+        {
+          "name": "keyword.operator.pipeline.orch",
+          "match": "\\|>"
+        },
+        {
+          "name": "keyword.operator.orch",
+          "match": "(==|!=|<=|>=|<|>|&&|\\|\\||\\+|-|\\*|/|=)"
+        }
+      ]
+    },
+    "moduleAccess": {
+      "patterns": [
+        {
+          "name": "variable.other.module.orch",
+          "match": "\\b([_a-zA-Z][_a-zA-Z0-9]*)\\.(?=[_a-zA-Z][_a-zA-Z0-9]*\\s*\\()"
+        }
+      ]
+    },
+    "functionCalls": {
+      "patterns": [
+        {
+          "name": "entity.name.function.orch",
+          "match": "\\b([_a-zA-Z][_a-zA-Z0-9]*)\\s*(?=\\()"
+        }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "match": "\\b(serverlet|orchestrator|fn|task|process)\\s+([_a-zA-Z][_a-zA-Z0-9]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.orch"
+            },
+            "2": {
+              "name": "entity.name.type.orch"
+            }
+          }
+        }
+      ]
+    },
+    "parameters": {
+      "patterns": [
+        {
+          "match": "([_a-zA-Z][_a-zA-Z0-9]*)\\s*:\\s*(int|float|string|bool|void|process)",
+          "captures": {
+            "1": {
+              "name": "variable.parameter.orch"
+            },
+            "2": {
+              "name": "storage.type.orch"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "scopeName": "source.orch"
+}

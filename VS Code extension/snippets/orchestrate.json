@@ -1,0 +1,130 @@
+{
+  "Automatic block": {
+    "prefix": "auto",
+    "body": [
+      "let ${1:name} = automatic {",
+      "\t$0",
+      "\tstop_orch()",
+      "}"
+    ],
+    "description": "Automatic process block"
+  },
+  "Orchestrator declaration": {
+    "prefix": "orch",
+    "body": [
+      "orchestrator main(procs: process[]) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Orchestrator declaration"
+  },
+  "Function declaration": {
+    "prefix": "fn",
+    "body": [
+      "fn ${1:name}(${2:params}) -> ${3:void} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Function declaration"
+  },
+  "Task declaration": {
+    "prefix": "task",
+    "body": [
+      "task ${1:name}(${2:params}) -> ${3:void} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Task declaration"
+  },
+  "Triggered block": {
+    "prefix": "trig",
+    "body": [
+      "let ${1:name} = on ${2:event}(${3:params}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Triggered block"
+  },
+  "Serverlet declaration": {
+    "prefix": "srv",
+    "body": [
+      "serverlet ${1:Name} {",
+      "\tlet ${2:state} = ${3:value}",
+      "",
+      "\ton ${4:handler}(${5:params}) -> ${6:void} {",
+      "\t\t$0",
+      "\t}",
+      "}"
+    ],
+    "description": "Serverlet declaration"
+  },
+  "Parallel block": {
+    "prefix": "par",
+    "body": [
+      "parallel {",
+      "\tlet ${1:a} = ${2:task_a()}",
+      "\tlet ${3:b} = ${4:task_b()}",
+      "}"
+    ],
+    "description": "Parallel block"
+  },
+  "Use module": {
+    "prefix": "usemod",
+    "body": [
+      "use module ${1:alias}: \"${2:./path}\""
+    ],
+    "description": "Use module"
+  },
+  "If/else": {
+    "prefix": "ifelse",
+    "body": [
+      "if ${1:condition} {",
+      "\t$0",
+      "} else {",
+      "\t",
+      "}"
+    ],
+    "description": "If/else"
+  },
+  "While loop": {
+    "prefix": "while",
+    "body": [
+      "while ${1:condition} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "While loop"
+  },
+  "on_start hook": {
+    "prefix": "onstart",
+    "body": [
+      "on_start {",
+      "\t$0",
+      "}"
+    ],
+    "description": "on_start hook"
+  },
+  "on_stop hook": {
+    "prefix": "onstop",
+    "body": [
+      "on_stop {",
+      "\t$0",
+      "}"
+    ],
+    "description": "on_stop hook"
+  },
+  "Trigger event": {
+    "prefix": "trigger",
+    "body": [
+      "trigger ${1:event_name}(${2:args})"
+    ],
+    "description": "Trigger event"
+  },
+  "Load foreign": {
+    "prefix": "lf",
+    "body": [
+      "load_foreign \"${1:rust}\" \"./${2:file}\""
+    ],
+    "description": "load_foreign"
+  }
+}
