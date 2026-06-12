@@ -143,6 +143,11 @@ impl TypeChecker {
                 }
             }
             Stmt::Parallel(stmts) => {
+                // NOTE: Intentionally no push_env/pop_env here.
+                // Variables bound inside a parallel block (let x = task()) are
+                // available after the block — they escape into the enclosing scope.
+                // This matches the generated Rust: `let (a, b) = tokio::join!(...)` where
+                // `a` and `b` are in scope after the join completes.
                 for s in stmts {
                     self.check_stmt(s)?;
                 }
@@ -359,8 +364,8 @@ impl TypeChecker {
                     }
                 }
 
-                if !self.exempt_functions.contains(function) {
-                    eprintln!("[orchestrate] warning: unknown function '{}::{}' — if this is a foreign function, this warning can be ignored", module_local_name, function);
+                if !self.exempt_functions.contains(function.as_str()) {
+                    eprintln!("[orchestrate] warning: unknown function call '.{}()' — if this is a foreign function or serverlet method, this warning can be ignored", function);
                 }
                 
                 Ok(Type::Void)

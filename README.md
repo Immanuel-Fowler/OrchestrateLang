@@ -100,8 +100,9 @@ The Orchestrate **compiler is itself written in Rust** and lives entirely in the
 | **Lexer** | `src/lexer.rs` | Tokenizes raw `.orch` source text into a flat `Vec<Token>` stream |
 | **Parser** | `src/parser.rs` | Recursive-descent Pratt parser that builds a typed AST |
 | **AST** | `src/ast.rs` | Enum-based Abstract Syntax Tree node definitions |
+| **Typechecker** | `src/typechecker.rs` | Single-pass type inference and checking. Runs before codegen — catches type mismatches in `let` statements, binary operations, and function calls. Module and serverlet signatures are registered first so cross-module return types are correctly inferred. |
 | **Code Generator** | `src/codegen.rs` | Traverses the AST and emits valid Rust source code as a `String` |
-| **Driver** | `src/main.rs` | CLI entry point; coordinates module resolution, `load` merging, and invokes `cargo` |
+| **Driver** | `src/main.rs` | CLI entry point; coordinates module resolution, `load` merging, C/C++ FFI compilation via `cc-rs`, and invokes `cargo` |
 
 ### Runtime
 
@@ -190,6 +191,21 @@ Orchestrate is **statically typed**. All variables and parameters carry a type a
 | `to_string(val)` | Converts any value to a string |
 | `sleep(ms)` | Asynchronously sleeps for N milliseconds |
 | `stop_orch()` | Immediately exits the program (`std::process::exit(0)`) |
+| `length(arr)` | Returns the number of elements in an array |
+| `append(arr, val)` | Appends a value to the end of an array in place |
+| `remove(arr, index)` | Removes the element at the given index from an array in place |
+
+### Debugging Tip: `ORCH_SHOW_GENERATED`
+
+When the compiler reports a Rust-level error you can't immediately decipher, set `ORCH_SHOW_GENERATED=1` to dump the full cargo output and the generated `.orch_cache/src/main.rs`:
+
+```bash
+# PowerShell
+$env:ORCH_SHOW_GENERATED=1; orchestrate run main.orch
+
+# bash / zsh
+ORCH_SHOW_GENERATED=1 orchestrate run main.orch
+```
 
 ---
 
@@ -437,6 +453,22 @@ fn hypotenuse(a: int, b: int) -> int { return square(a) + square(b) }
 use module utils: "./utils"
 let result = utils.hypotenuse(3, 4)   // direct native function call
 ```
+
+### Foreign Functions (`load_foreign`)
+
+Module files can also load functions from Rust, C, or C++ source files directly into the module's namespace:
+
+```orchestrate
+// math/module.orch
+load_foreign "rust" "./geometry.rs"    // auto-scanned, no sidecar needed
+load_foreign "c"    "./fastmath.c"     // requires fastmath.orch_ffi sidecar
+load_foreign "cpp"  "./stats.cpp"      // requires stats.orch_ffi sidecar
+```
+
+- **Rust:** `pub fn`s are injected verbatim; signatures are auto-scanned for the typechecker.
+- **C/C++:** a `.orch_ffi` sidecar file declares function signatures; the compiler generates `extern "C"` bindings and compiles the source via `cc-rs`.
+
+See [`LANGUAGE_REFERENCE.md §6.4`](LANGUAGE_REFERENCE.md) for the full sidecar format and type mappings.
 
 ### Separate Process (Serverlet)
 

@@ -2,6 +2,8 @@
 
 This document outlines planned features for the Orchestrate language and ecosystem, what problem each one solves, and a rough sketch of how it would work.
 
+> **Key:** Features marked **[SHIPPED]** are fully implemented and documented in `LANGUAGE_REFERENCE.md`.
+
 ---
 
 ## 1. Polyglot Modules (Two Forms)
@@ -28,37 +30,24 @@ serverlet PyScorer via "python" {
 - **C/C++**: via FFI bindings (e.g. `bindgen`-style). Higher complexity — calling conventions, memory ownership across the boundary, build complexity.
 - **Rust**: likely the easiest — could potentially just be another `Combined Process` module pattern, since it's already native.
 
-### 1b. Loaded Foreign Modules (direct function-call style, stateless)
+### 1b. Loaded Foreign Modules (direct function-call style, stateless) — **[SHIPPED for Rust, C, C++]**
 
 A second, simpler module type: a `module.orch` that directly loads a Rust, C/C++, or Python source/library, where the **only interactable code from Orchestrate's side is the functions exposed by that loaded module** — no serverlet, no actor, no message passing. This is the "Combined Process" pattern (see Module System, Pattern A) extended to non-Orchestrate languages.
 
-Proposed syntax direction:
+**Implemented syntax:**
 
 ```orchestrate
 // math/module.orch
 load_foreign "rust" "./geometry.rs"
-load_foreign "python" "./scoring.py"
-load_foreign "c" "./fastmath.c"
+load_foreign "c"    "./fastmath.c"      // requires geometry.orch_ffi sidecar
+load_foreign "cpp"  "./stats.cpp"       // requires stats.orch_ffi sidecar
 ```
 
-```orchestrate
-// main.orch
-use module math: "./math"
+- **Rust**: fully implemented. The `.rs` file's `pub fn`s are injected verbatim into the generated module; type signatures are auto-scanned and registered into the typechecker.
+- **C/C++**: fully implemented via `cc-rs` for compilation and `.orch_ffi` sidecar files that declare the function signatures Orchestrate exposes to callers. Functions compile to `unsafe extern "C"` wrappers with safe Rust signatures.
+- **Python**: not yet implemented — trickiest for a direct-call model since Python isn't natively callable from Rust without an embedded interpreter.
 
-let worker = automatic {
-    let area = math.circle_area(5.0)   // calls directly into geometry.rs
-    let score = math.score(input)      // calls directly into scoring.py
-    stop_orch()
-}
-```
-
-- **Rust**: most straightforward — the loaded `.rs` file's `pub fn`s become directly callable. Likely compiles in directly as a sibling module, similar to how Orchestrate-native `load`-ed files work today.
-- **C/C++**: via FFI bindings generated at compile time (e.g. `bindgen` for headers). Functions become `unsafe extern "C"` calls wrapped in a safe Rust signature matching the Orchestrate function signature declared (or inferred).
-- **Python**: trickiest for a *direct call* model since Python isn't natively callable from Rust without an embedded interpreter (PyO3) — likely means embedding a Python runtime in the generated binary for this pattern, which is heavier than the subprocess approach used for polyglot serverlets.
-
-**Key design challenge for both 1a and 1b:** Failure semantics. What happens when the Python process crashes, the C library segfaults, or serialization doesn't round-trip cleanly? Getting *this* right is the actual product — the happy path is the easy part.
-
-**Priority/sequencing note:** Python via subprocess+JSON (1a) is the recommended starting point — lowest risk, highest immediate demand, and validates the "serverlet body implemented by something other than native Orchestrate code" pattern that sandboxing (below) also needs. Loaded foreign modules (1b) for Rust specifically is also a relatively low-risk early candidate, since it avoids FFI/embedding complexity entirely — it's "just" another Rust module being linked in.
+See `LANGUAGE_REFERENCE.md` §6.4 and §6.5 for full documentation.
 
 ---
 
@@ -90,22 +79,19 @@ serverlet UntrustedPlugin sandbox(memory_limit: "64mb", timeout: "5s") {
 
 ---
 
-## 3. PROM — Personal Registry for Orchestrator Modules
+## 3. PROM — Personal Registry for Orchestrator Modules — **[SHIPPED]**
 
 **Problem it solves:** `use module alias: "./path/to/dir"` is relative-path-based, making it awkward to share modules across projects or reference "a module that lives somewhere on this machine."
 
-**How it would work:**
-
-- A local registry file (e.g. `~/.orchestrate/registry.toml`) mapping `name -> path`.
-- CLI subcommands:
-  - `orchestrate prom add <name> <path>`
-  - `orchestrate prom list`
-  - `orchestrate prom remove <name>`
-- Compiler change: when `use module alias: "name"` doesn't look like a path (no `./` or `/`), check PROM's registry before erroring.
+**Implemented:** PROM is fully operational. Use:
+```bash
+orchestrate prom add <name> <path>
+orchestrate prom list
+orchestrate prom remove <name>
+```
+The compiler resolves bare (non-path) module names against the local registry automatically. See `LANGUAGE_REFERENCE.md` §6.2 for full documentation.
 
 **Design question to resolve:** Is PROM purely personal/local config (as the name implies), or does it need a per-project mode for reproducibility (so someone cloning the repo doesn't get a confusing "module not found")? If purely personal, document clearly that PROM entries are machine-local and not part of the shared project.
-
-**Scope/risk:** Low. Self-contained — doesn't touch the compiler core, just module resolution in `main.rs`. Good first ecosystem feature: low-stakes, immediately useful, and validates the "name → location" mapping that OPM will also need.
 
 ---
 
@@ -143,11 +129,12 @@ Together: *"Orchestrate lets you compose modules from anywhere — local, downlo
 
 Given the combined scope of these four features, recommend picking **one end-to-end story** and finishing it well before layering on the next, rather than having several features half-built simultaneously:
 
-1. **PROM** first — smallest, self-contained, validates registry plumbing.
-2. **Loaded foreign Rust module** (1b, Rust only) — validates the "non-Orchestrate module" pattern with the lowest possible risk (no FFI, no embedded interpreter).
-3. **Basic polyglot serverlet** (1a, Python via subprocess+JSON) — validates the actor-style "non-native serverlet body" pattern.
-4. **OPM (git-based, no hosted index)** — builds on PROM's name→location mapping.
-5. **Sandboxed serverlets (wasmtime)** — largest single feature; benefits from #3's pattern and gives OPM a security story.
+1. ~~**PROM** first — smallest, self-contained, validates registry plumbing.~~ **[SHIPPED]**
+2. ~~**Loaded foreign Rust module** (1b, Rust only) — validates the "non-Orchestrate module" pattern with the lowest possible risk (no FFI, no embedded interpreter).~~ **[SHIPPED]**
+3. ~~**Loaded foreign C/C++ module** (1b, C and C++) — via `.orch_ffi` sidecar and `cc-rs`.~~ **[SHIPPED]**
+4. **Basic polyglot serverlet** (1a, Python via subprocess+JSON) — validates the actor-style "non-native serverlet body" pattern.
+5. **OPM (git-based, no hosted index)** — builds on PROM's name→location mapping.
+6. **Sandboxed serverlets (wasmtime)** — largest single feature; benefits from #4's pattern and gives OPM a security story.
 
 A smaller set of fully-working, well-documented features is a stronger result (and more likely to see real use) than a sprawling set of partially-built ones.
 

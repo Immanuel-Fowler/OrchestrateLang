@@ -163,14 +163,16 @@ fn extract_and_register_rust_functions(code: &str, alias: &str, tc: &mut typeche
                     let mut valid = true;
                     if !args_str.is_empty() {
                         for arg in args_str.split(',') {
-                            let parts: Vec<&str> = arg.split(':').collect();
+                            // Use splitn(2, ':') so types containing ':' (e.g. &str, paths)
+                            // don't get split at the wrong point.
+                            let parts: Vec<&str> = arg.splitn(2, ':').collect();
                             if parts.len() == 2 {
                                 let rust_ty = parts[1].trim();
                                 let orch_ty = match rust_ty {
                                     "i64" => ast::Type::Int,
                                     "f64" => ast::Type::Float,
                                     "bool" => ast::Type::Bool,
-                                    "String" | "&str" => ast::Type::Str,
+                                    "String" | "&str" | "&String" => ast::Type::Str,
                                     _ => { valid = false; break; }
                                 };
                                 orch_args.push(orch_ty);
@@ -183,12 +185,14 @@ fn extract_and_register_rust_functions(code: &str, alias: &str, tc: &mut typeche
 
                     let ret_str = if let Some(arrow_idx) = line.find("->") {
                         let ret_part = line[arrow_idx+2..].trim();
+                        // Strip the opening brace of the function body, if present.
                         let ret_part = if let Some(brace_idx) = ret_part.find('{') {
                             ret_part[..brace_idx].trim()
                         } else {
                             ret_part
                         };
-                        ret_part
+                        // Final trim ensures no stray whitespace (e.g. "-> f64 {" → "f64")
+                        ret_part.trim()
                     } else {
                         "()"
                     };
@@ -197,8 +201,8 @@ fn extract_and_register_rust_functions(code: &str, alias: &str, tc: &mut typeche
                         "i64" => ast::Type::Int,
                         "f64" => ast::Type::Float,
                         "bool" => ast::Type::Bool,
-                        "String" => ast::Type::Str,
-                        "()" => ast::Type::Void,
+                        "String" | "&str" => ast::Type::Str,
+                        "()" | "" => ast::Type::Void,
                         _ => { valid = false; ast::Type::Void }
                     };
 

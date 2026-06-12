@@ -248,12 +248,29 @@ trigger update_orchestrator([])
 
 ### 2.9 Built-in Functions
 
+#### General
+
 | Function | Signature | Description |
 | :--- | :--- | :--- |
 | `print` | `print(val)` | Prints any value to stdout |
 | `to_string` | `to_string(val) -> string` | Converts any value to its string representation |
 | `sleep` | `sleep(ms: int)` | Asynchronously pauses for the given number of milliseconds |
 | `stop_orch` | `stop_orch()` | Immediately exits the program |
+
+#### Array Functions
+
+| Function | Signature | Description |
+| :--- | :--- | :--- |
+| `length` | `length(arr) -> int` | Returns the number of elements in an array |
+| `append` | `append(arr, val)` | Appends `val` to the end of `arr` in place |
+| `remove` | `remove(arr, index: int)` | Removes the element at `index` from `arr` in place |
+
+```orchestrate
+let items = [1, 2, 3]
+append(items, 4)
+print(to_string(length(items)))   // prints 4
+remove(items, 0)                  // removes the first element
+```
 
 ---
 
@@ -567,6 +584,20 @@ orchestrate build <file.orch> -o <output-name>
 | `build <file>` | Compiles to a standalone release binary named after the `.orch` file |
 | `build <file> -o <name>` | Compiles to a release binary with a custom name |
 
+### Debugging Generated Code
+
+When a program fails to compile due to a Rust-level error, the compiler prints a translated, user-friendly error message. For more detail, set the `ORCH_SHOW_GENERATED` environment variable to `1` to dump the full cargo stderr and the generated Rust source:
+
+```bash
+# PowerShell
+$env:ORCH_SHOW_GENERATED=1; orchestrate run main.orch
+
+# bash / zsh
+ORCH_SHOW_GENERATED=1 orchestrate run main.orch
+```
+
+This will print the contents of `.orch_cache/src/main.rs` alongside any Rust compiler errors — useful for diagnosing type mismatches in foreign function bindings or unexpected codegen output.
+
 ### Typical Project Layout
 
 ```
@@ -657,14 +688,16 @@ All functions and tasks in the loaded files become part of the module namespace 
 
 ### 6.4 Calling Foreign Rust Functions (`load_foreign`)
 
-Orchestrate allows you to natively call Rust functions by directly loading `.rs` files into a module's namespace using the `load_foreign` directive.
+Orchestrate allows you to natively call functions written in Rust, C, or C++ by loading their source files directly into a module's namespace.
+
+#### Foreign Rust (`load_foreign "rust"`)
 
 ```orchestrate
 // module.orch
 load_foreign "rust" "./math_helpers.rs"
 ```
 
-When you use `load_foreign "rust" "<path>"`, the compiler reads the Rust file at `<path>` and injects its contents verbatim into the generated Rust module for your Orchestrate code. Any `pub fn` you define in the Rust file is immediately callable from Orchestrate!
+The compiler reads the `.rs` file and injects its contents verbatim into the generated Rust module. Any `pub fn` you define is immediately callable from Orchestrate. The compiler also auto-scans the file for `pub fn` signatures and registers them in the typechecker so return types are correctly inferred.
 
 ```rust
 // math_helpers.rs
@@ -678,7 +711,7 @@ pub fn circle_area(radius: f64) -> f64 {
 use module math: "./math_module"
 
 let worker = automatic {
-    let area = math.circle_area(5.0)  // Direct native Rust call!
+    let area = math.circle_area(5.0)  // direct native Rust call
     print("Area: " + to_string(area))
     stop_orch()
 }
@@ -686,13 +719,60 @@ let worker = automatic {
 orchestrator main(procs: process[worker]) { }
 ```
 
-**Type Conversions for Rust Foreign Functions:**
-- Orchestrate `int` maps to Rust `i64`
-- Orchestrate `float` maps to Rust `f64`
-- Orchestrate `string` maps to Rust `String`
-- Orchestrate `bool` maps to Rust `bool`
+> **Note:** Foreign Rust functions must be synchronous and cannot contain `.await` calls.
 
-*(Note: Foreign Rust functions must be synchronous and cannot currently contain `.await` calls).*
+#### Foreign C (`load_foreign "c"`) and C++ (`load_foreign "cpp"`)
+
+C and C++ source files require a companion **`.orch_ffi` sidecar file** that declares the function signatures Orchestrate will expose. The sidecar lives next to the source file with the same base name:
+
+```
+math/
+├── module.orch
+├── geometry.c
+└── geometry.orch_ffi    ← required alongside the .c file
+```
+
+```orchestrate
+// math/module.orch
+load_foreign "c" "./geometry.c"
+```
+
+Each line in the `.orch_ffi` file declares one function using Orchestrate types:
+
+```
+circle_area(radius: float) -> float
+rectangle_area(w: int, h: int) -> int
+hypotenuse(a: int, b: int) -> int
+```
+
+The compiler reads the sidecar, generates `extern "C"` declarations and safe Rust wrapper functions, and compiles the C/C++ source using `cc-rs` via a generated `build.rs`. The resulting functions are callable from Orchestrate exactly like any other module function:
+
+```orchestrate
+let worker = automatic {
+    let area = math.circle_area(5.0)
+    let rect = math.rectangle_area(4, 6)
+    print("Area: " + to_string(area))
+    stop_orch()
+}
+```
+
+**`.orch_ffi` supported types:**
+
+| Orchestrate type | C/C++ type | Rust FFI type |
+| :--- | :--- | :--- |
+| `int` | `long long` / `int64_t` | `i64` |
+| `float` | `double` | `f64` |
+
+**Type conversions for all foreign functions:**
+
+| Orchestrate | Rust |
+| :--- | :--- |
+| `int` | `i64` |
+| `float` | `f64` |
+| `string` | `String` / `&str` |
+| `bool` | `bool` |
+
+
 
 ### 6.5 Pattern A — Combined Process (Plain Functions)
 
@@ -872,8 +952,9 @@ graph LR
 | **Lexer** | `src/lexer.rs` | Tokenizes raw `.orch` text. Reads character-by-character and emits a flat `Vec<Token>`. Handles string escapes, float literals, `|>`, `->`, `==`, `!=` digraphs, and inline `//` comments. |
 | **Parser** | `src/parser.rs` | Recursive-descent Pratt parser. Converts the token stream into a typed AST of `Stmt` and `Expr` nodes. Operator precedence (from lowest `Assign` to highest `Call`) is managed by the `Precedence` enum. |
 | **AST** | `src/ast.rs` | Pure data — enum-based node definitions. No logic, no codegen. The two root types are `Stmt` (statements: declarations, control flow) and `Expr` (expressions: literals, calls, blocks, process blocks). |
+| **Typechecker** | `src/typechecker.rs` | Single-pass type inference and checking over the AST. Runs after all modules are parsed, so module function and serverlet handler signatures are registered before the main file is checked. Catches type mismatches in `let` statements, binary operations, and function calls. Issues warnings for unknown function calls (e.g. unresolved foreign functions). |
 | **Codegen** | `src/codegen.rs` | Single-pass AST traversal. Outputs a Rust source `String`. Performs three pre-passes before emitting code: `scan_tasks` (discovers async callables), `scan_modules` (records imported namespaces), `scan_events` (discovers all event names and their payload types to generate registries). |
-| **Driver** | `src/main.rs` | CLI entry point. Resolves `use module` imports recursively, handles `load` file merging, coordinates per-module codegen, writes all `.rs` files into `.orch_cache/src/`, and invokes `cargo`. |
+| **Driver** | `src/main.rs` | CLI entry point. Resolves `use module` imports recursively, handles `load` file merging, coordinates per-module codegen, writes all `.rs` files into `.orch_cache/src/`, and invokes `cargo`. Also handles `load_foreign "c"`/`"cpp"` compilation via `cc-rs` and auto-generated `build.rs` files. |
 
 ### 7.3 The Token Types
 
@@ -905,6 +986,7 @@ Punctuation: `(  )  {  }  [  ]  :  ,  ;  .`
 | `While` | `while cond { ... }` |
 | `UseModule` | `use module alias: "path"` |
 | `Load` | `load "file.orch"` |
+| `LoadForeign` | `load_foreign "rust|c|cpp" "./file"` |
 | `Serverlet` | `serverlet Name { let state = v; on handler(...) { ... } }` |
 | `Return` | `return expr` |
 | `OnStart` | `on_start { ... }` — runs at program startup, before workers launch |
