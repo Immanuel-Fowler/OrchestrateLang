@@ -1,0 +1,16 @@
+load "helper.orch"
+
+serverlet CounterService {
+    let count = 0
+    
+    on increment(step: int) -> int {
+        count = count + step
+        let msg = "Counter incremented by " + to_string(step)
+        print_msg(msg)
+        return count
+    }
+    
+    on get_count() -> int {
+        return count
+    }
+}

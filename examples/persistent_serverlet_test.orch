@@ -1,0 +1,28 @@
+use module counter: "./counter_module"
+
+// This example proves serverlet state persists across loop iterations.
+//
+// The worker calls service.increment(1) on every loop tick.
+// If the serverlet were reset each iteration, the count would always be 1.
+// With the fix, count accumulates: 1, 2, 3, 4, 5 — then stop.
+
+let tick_count = 0
+
+let worker = automatic {
+    // `service` is hoisted before the loop — one actor, never reset
+    let service = start counter.CounterService()
+
+    // These run every iteration:
+    let count = service.increment(1)
+    print("Tick — count is now: " + to_string(count))
+
+    if count >= 5 {
+        print("Reached 5 — serverlet state persisted across all iterations!")
+        stop_orch()
+    }
+
+    sleep(50)
+}
+
+orchestrator main(procs: process[worker]) {
+}

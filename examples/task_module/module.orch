@@ -1,0 +1,30 @@
+load "helpers.orch"
+
+// TaskRegistry — a stateful actor that tracks submitted tasks.
+// Spawned via: start tasks.TaskRegistry()
+// Returns a TaskRegistryClient handle for async method calls.
+serverlet TaskRegistry {
+    let task_count = 0
+    let high_priority_count = 0
+
+    // Submit a task and get back its assigned ID.
+    on submit(title: string, priority: int) -> int {
+        task_count = task_count + 1
+        if priority >= 3 {
+            high_priority_count = high_priority_count + 1
+        }
+        let entry = format_task(task_count, title, priority)
+        print("  [TaskRegistry] Accepted: " + entry)
+        return task_count
+    }
+
+    // Query how many tasks have been submitted in total.
+    on total() -> int {
+        return task_count
+    }
+
+    // Query how many of those were high priority.
+    on high_priority_total() -> int {
+        return high_priority_count
+    }
+}

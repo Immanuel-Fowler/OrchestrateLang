@@ -1,0 +1,27 @@
+fn double(n: int) -> int {
+    return n * 2
+}
+
+fn add_one(n: int) -> int {
+    return n + 1
+}
+
+fn square(n: int) -> int {
+    return n * n
+}
+
+let p = automatic {
+    // Pipeline operator passes the left value as the first argument
+    let result = 5 
+        |> double() 
+        |> add_one() 
+        |> square()
+
+    print("Result of (5 * 2 + 1)^2 = " + to_string(result))
+    
+    stop_orch()
+}
+
+orchestrator main(p: process) {
+    start p
+}

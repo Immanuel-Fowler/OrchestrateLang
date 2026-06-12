@@ -1,0 +1,27 @@
+orchestrator main() {
+    on_start {
+        let arr = [1, 2, 3];
+        print("Initial length:");
+        print(length(arr));
+        
+        print("Appending 4");
+        append(arr, 4);
+        print("New length:");
+        print(length(arr));
+
+        print("Removing index 0");
+        remove(arr, 0);
+        print("New length:");
+        print(length(arr));
+
+        print("Finished on_start setup!");
+    }
+
+    on_stop {
+        print("Gracefully stopping the application and cleaning up resources!");
+    }
+
+    let arr2 = [10];
+    // intentional type error if uncommented:
+    // let x: int = "string";
+}

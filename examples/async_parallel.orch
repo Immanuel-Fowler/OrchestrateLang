@@ -1,0 +1,34 @@
+process fetch_user(id: int) -> string {
+    print("Starting fetch_user(" + to_string(id) + ")...")
+    sleep(1000)
+    print("Completed fetch_user(" + to_string(id) + ")")
+    return "User_" + to_string(id)
+}
+
+process fetch_posts(id: int) -> string {
+    print("Starting fetch_posts(" + to_string(id) + ")...")
+    sleep(1500)
+    print("Completed fetch_posts(" + to_string(id) + ")")
+    return "Posts_for_" + to_string(id)
+}
+
+let p = automatic {
+    print("Running parallel tasks...")
+    
+    // This runs fetch_user and fetch_posts concurrently.
+    // The parallel block will block until both tasks are completed.
+    parallel {
+        let user = fetch_user(42)
+        let posts = fetch_posts(42)
+    }
+
+    print("All tasks finished!")
+    print("User: " + user)
+    print("Posts: " + posts)
+    
+    stop_orch()
+}
+
+orchestrator main(p: process) {
+    start p
+}

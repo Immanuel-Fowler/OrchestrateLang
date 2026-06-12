@@ -1,0 +1,17 @@
+// Pure helper functions — compiled directly into the binary.
+// Called via tasks.format_task(...) and tasks.priority_label(...) with zero overhead.
+
+fn format_task(id: int, title: string, priority: int) -> string {
+    let label = priority_label(priority)
+    return "[" + label + " #" + to_string(id) + "] " + title
+}
+
+fn priority_label(priority: int) -> string {
+    if priority >= 3 {
+        return "HIGH"
+    }
+    if priority >= 2 {
+        return "MED"
+    }
+    return "LOW"
+}

@@ -1,0 +1,19 @@
+let p = automatic {
+    let name = "Orchestrate"
+    let greeting = "Hello, " + name + "!"
+    print(greeting)
+
+    let x = 10
+    let y = 20
+    let sum = x + y
+    print("10 + 20 = " + to_string(sum))
+    
+    stop_orch()
+} 
+
+// Trigger the orchestrator to run process p!
+trigger update_orchestrator([p])
+
+orchestrator main(procs: process[]) {
+    // orchestrator keep-alive loop
+}

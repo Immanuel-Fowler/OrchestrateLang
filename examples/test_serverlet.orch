@@ -1,0 +1,39 @@
+use module counter: "./counter_module"
+
+// Automatic process: runs in a persistent loop, auto-started by the orchestrator
+let p1 = automatic {
+    print("Starting Counter Service...")
+    
+    // Start the serverlet from the counter module
+    let service = start counter.CounterService()
+    
+    // Interact with it!
+    let val1 = service.increment(5)
+    print("Result 1: " + to_string(val1))
+    
+    let val2 = service.increment(10)
+    print("Result 2: " + to_string(val2))
+    
+    let final_val = service.get_count()
+    print("Final Count: " + to_string(final_val))
+    
+    // Fire a trigger event — wakes up any listeners
+    trigger handle_alert("Overheat detected!")
+    
+    // After one run, remove p1 from the orchestrator loop (stop future iterations)
+    // trigger update_orchestrator([])
+    
+    sleep(500)
+    stop_orch()
+}
+
+// Triggered process: auto-registered on boot, no manual start needed
+let p2 = on handle_alert(msg: string) {
+    print("ALERT PROCESS BLOCK: " + msg)
+}
+
+// Orchestrator
+orchestrator main(procs: process[p1]) {
+    // p2 (triggered) is auto-registered on boot — no 'start' needed
+    // p1 (automatic) is already running via procs[]
+}

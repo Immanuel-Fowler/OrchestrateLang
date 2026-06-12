@@ -1,0 +1,23 @@
+// This example demonstrates how to initialize the orchestrator with multiple 
+// process blocks running concurrently using the new bracketed type signature.
+
+let p1 = automatic {
+    print("Process 1 running: Tick A")
+    sleep(100)
+    print("Process 1 running: Tick B")
+    sleep(100)
+}
+
+let p2 = automatic {
+    print("Process 2 running: Step 1")
+    sleep(150)
+    print("Process 2 running: Step 2")
+    sleep(150)
+    
+    // Once both processes have run their course, shut down the orchestrator
+    stop_orch()
+}
+
+// Pass both process blocks in the bracketed initialization array!
+orchestrator main(procs: process[p1, p2]) {
+}
