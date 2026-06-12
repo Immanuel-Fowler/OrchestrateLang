@@ -17,8 +17,9 @@ fn print_usage() {
     println!("  orchestrate build <file.orch> -o <out> Specify the output binary name");
 }
 
-fn prepare_cache_dir() -> Result<PathBuf, String> {
-    let cache_dir = PathBuf::from(".orch_cache");
+fn prepare_cache_dir(input_path: &Path) -> Result<PathBuf, String> {
+    let parent = input_path.parent().unwrap_or(Path::new("."));
+    let cache_dir = parent.join(".orch_cache");
     fs::create_dir_all(cache_dir.join("src")).map_err(|e| format!("Failed to create cache directory: {}", e))?;
 
     let cargo_toml_content = r#"[package]
@@ -155,7 +156,7 @@ fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Result<S
 
 fn run_build(input_file: &str, output_binary: Option<&str>) -> Result<(), String> {
     println!("[Orchestrate] Parsing and compiling '{}'...", input_file);
-    let cache_dir = prepare_cache_dir()?;
+    let cache_dir = prepare_cache_dir(Path::new(input_file))?;
     let rust_code = compile_main_file_and_modules(input_file, &cache_dir)?;
     
     fs::write(cache_dir.join("src/main.rs"), rust_code)
@@ -201,7 +202,7 @@ fn run_build(input_file: &str, output_binary: Option<&str>) -> Result<(), String
 
 fn run_run(input_file: &str) -> Result<(), String> {
     println!("[Orchestrate] Parsing and compiling '{}'...", input_file);
-    let cache_dir = prepare_cache_dir()?;
+    let cache_dir = prepare_cache_dir(Path::new(input_file))?;
     let rust_code = compile_main_file_and_modules(input_file, &cache_dir)?;
 
     fs::write(cache_dir.join("src/main.rs"), rust_code)

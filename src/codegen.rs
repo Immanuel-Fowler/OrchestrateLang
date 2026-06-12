@@ -165,6 +165,109 @@ impl Codegen {
         }
     }
 
+    fn get_free_vars_expr(&self, expr: &Expr, local_env: &mut HashSet<String>, free_vars: &mut HashSet<String>) {
+        match expr {
+            Expr::Identifier(name) => {
+                if !local_env.contains(name) && !self.functions_and_tasks_contain(name) {
+                    free_vars.insert(name.clone());
+                }
+            }
+            Expr::Binary { lhs, rhs, .. } => {
+                self.get_free_vars_expr(lhs, local_env, free_vars);
+                self.get_free_vars_expr(rhs, local_env, free_vars);
+            }
+            Expr::Call { args, .. } => {
+                for a in args {
+                    self.get_free_vars_expr(a, local_env, free_vars);
+                }
+            }
+            Expr::Pipeline { value, function } => {
+                self.get_free_vars_expr(value, local_env, free_vars);
+                self.get_free_vars_expr(function, local_env, free_vars);
+            }
+            Expr::Block(stmts) => {
+                let mut inner_env = local_env.clone();
+                for s in stmts {
+                    self.get_free_vars_stmt(s, &mut inner_env, free_vars);
+                }
+            }
+            Expr::If { cond, then_branch, else_branch } => {
+                self.get_free_vars_expr(cond, local_env, free_vars);
+                self.get_free_vars_expr(then_branch, local_env, free_vars);
+                if let Some(eb) = else_branch {
+                    self.get_free_vars_expr(eb, local_env, free_vars);
+                }
+            }
+            Expr::ModuleCall { args, .. } => {
+                for a in args {
+                    self.get_free_vars_expr(a, local_env, free_vars);
+                }
+            }
+            Expr::StartServerlet { args, .. } => {
+                for a in args {
+                    self.get_free_vars_expr(a, local_env, free_vars);
+                }
+            }
+            Expr::StartProcess { target } => {
+                self.get_free_vars_expr(target, local_env, free_vars);
+            }
+            Expr::AutomaticBlock { body } => {
+                self.get_free_vars_expr(body, local_env, free_vars);
+            }
+            Expr::TriggeredBlock { params, body, .. } => {
+                let mut inner_env = local_env.clone();
+                for p in params {
+                    inner_env.insert(p.name.clone());
+                }
+                self.get_free_vars_expr(body, &mut inner_env, free_vars);
+            }
+            Expr::ArrayLiteral(elements) => {
+                for e in elements {
+                    self.get_free_vars_expr(e, local_env, free_vars);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn get_free_vars_stmt(&self, stmt: &Stmt, local_env: &mut HashSet<String>, free_vars: &mut HashSet<String>) {
+        match stmt {
+            Stmt::Let { name, value, .. } => {
+                self.get_free_vars_expr(value, local_env, free_vars);
+                local_env.insert(name.clone());
+            }
+            Stmt::Expr(expr) => self.get_free_vars_expr(expr, local_env, free_vars),
+            Stmt::Return(opt_expr) => {
+                if let Some(expr) = opt_expr {
+                    self.get_free_vars_expr(expr, local_env, free_vars);
+                }
+            }
+            Stmt::Trigger { args, .. } => {
+                for a in args {
+                    self.get_free_vars_expr(a, local_env, free_vars);
+                }
+            }
+            Stmt::While { cond, body } => {
+                self.get_free_vars_expr(cond, local_env, free_vars);
+                self.get_free_vars_expr(body, local_env, free_vars);
+            }
+            Stmt::Parallel(stmts) => {
+                let mut inner_env = local_env.clone();
+                for s in stmts {
+                    self.get_free_vars_stmt(s, &mut inner_env, free_vars);
+                }
+            }
+            Stmt::OnStart(expr) | Stmt::OnStop(expr) => {
+                self.get_free_vars_expr(expr, local_env, free_vars);
+            }
+            _ => {}
+        }
+    }
+
+    fn functions_and_tasks_contain(&self, name: &str) -> bool {
+        self.tasks.contains(name) || name == "print" || name == "to_string" || name == "length" || name == "append" || name == "remove" || name == "sleep" || name == "stop_orch"
+    }
+
     pub fn generate(&mut self, stmts: &[Stmt], is_main: bool) -> String {
         self.is_main = is_main;
         self.scan_tasks(stmts);
@@ -200,16 +303,18 @@ impl Codegen {
                     format!("({})", compiled_tys)
                 };
 
+                let arc_type_str = format!("std::sync::Arc<{}>", type_str);
+
                 let var_name = format!("REGISTRY_{}", event_name.to_uppercase());
                 let func_name = format!("get_registry_{}", event_name);
                 
                 code.push_str(&format!(
                     "static {}: std::sync::OnceLock<std::sync::Mutex<Vec<tokio::sync::mpsc::Sender<{}>>>> = std::sync::OnceLock::new();\n",
-                    var_name, type_str
+                    var_name, arc_type_str
                 ));
                 code.push_str(&format!(
                     "fn {}() -> &'static std::sync::Mutex<Vec<tokio::sync::mpsc::Sender<{}>>> {{\n    {}.get_or_init(|| std::sync::Mutex::new(Vec::new()))\n}}\n\n",
-                    func_name, type_str, var_name
+                    func_name, arc_type_str, var_name
                 ));
             }
         }
@@ -533,11 +638,12 @@ type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send 
         locked.handles = handles;
     }}
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<ProcessRef>>(100);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<std::sync::Arc<Vec<ProcessRef>>>(100);
     get_registry_update_orchestrator().lock().unwrap().push(tx);
     let state_clone = state.clone();
     tokio::spawn(async move {{
-        while let Some(new_procs) = rx.recv().await {{
+        while let Some(msg) = rx.recv().await {{
+            let new_procs = (*msg).clone();
             let state_clone = state_clone.clone();
             tokio::spawn(async move {{
                 let mut locked = state_clone.lock().unwrap();
@@ -666,8 +772,8 @@ type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send 
                 };
                 
                 format!(
-                    "let payload_eval = {};\nif let Ok(handlers) = {}().lock() {{\n    for tx in handlers.iter() {{\n        let _ = tx.try_send(payload_eval.clone());\n    }}\n}}",
-                    payload, func_name
+                    "let payload_eval = std::sync::Arc::new({});\nif let Ok(handlers) = {}().lock() {{\n    for tx in handlers.iter() {{\n        if tx.try_send(std::sync::Arc::clone(&payload_eval)).is_err() {{\n            eprintln!(\"[orchestrate] warning: dropped event '{}' — subscriber channel full\");\n        }}\n    }}\n}}",
+                    payload, func_name, event_name
                 )
             }
             Stmt::Parallel(stmts) => {
@@ -1020,6 +1126,14 @@ type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send 
                 format!("{}({})", start_fn, args_str)
             }
             Expr::AutomaticBlock { body } => {
+                let mut free_vars = HashSet::new();
+                self.get_free_vars_expr(expr, &mut HashSet::new(), &mut free_vars);
+                
+                let mut capture_code = String::new();
+                for var in free_vars {
+                    capture_code.push_str(&format!("let {} = {}.clone();\n    ", var, var));
+                }
+
                 // Split the body into two phases:
                 //   Setup  — `let x = start Service()` statements, hoisted before the loop.
                 //             Serverlets are created once per process-block lifetime.
@@ -1054,7 +1168,8 @@ type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send 
                         // No serverlet starts — original single-phase loop
                         let loop_inner = loop_code.join("\n            ");
                         format!(
-                            "std::sync::Arc::new(move || {{\n    tokio::spawn(async move {{\n        loop {{\n            {}\n        }}\n    }})\n}}) as ProcessRef",
+                            "{{\n    {}std::sync::Arc::new(move || {{\n        tokio::spawn(async move {{\n            loop {{\n                {}\n            }}\n        }})\n    }}) as ProcessRef\n}}",
+                            capture_code,
                             loop_inner
                         )
                     } else {
@@ -1062,7 +1177,8 @@ type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send 
                         let setup_inner = setup_code.join("\n        ");
                         let loop_inner = loop_code.join("\n            ");
                         format!(
-                            "std::sync::Arc::new(move || {{\n    tokio::spawn(async move {{\n        // Serverlet setup — runs once per process-block lifetime\n        {}\n        loop {{\n            {}\n        }}\n    }})\n}}) as ProcessRef",
+                            "{{\n    {}std::sync::Arc::new(move || {{\n        tokio::spawn(async move {{\n            // Serverlet setup — runs once per process-block lifetime\n            {}\n            loop {{\n                {}\n            }}\n        }})\n    }}) as ProcessRef\n}}",
+                            capture_code,
                             setup_inner,
                             loop_inner
                         )
@@ -1071,12 +1187,21 @@ type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send 
                     // Non-block body (edge case) — original behavior
                     let body_str = self.compile_expr(body);
                     format!(
-                        "std::sync::Arc::new(move || {{\n    tokio::spawn(async move {{\n        loop {{\n            {}\n        }}\n    }})\n}}) as ProcessRef",
+                        "{{\n    {}std::sync::Arc::new(move || {{\n        tokio::spawn(async move {{\n            loop {{\n                {}\n            }}\n        }})\n    }}) as ProcessRef\n}}",
+                        capture_code,
                         body_str.replace("\n", "\n        ")
                     )
                 }
             }
             Expr::TriggeredBlock { event_name, params, body } => {
+                let mut free_vars = HashSet::new();
+                self.get_free_vars_expr(expr, &mut HashSet::new(), &mut free_vars);
+                
+                let mut capture_code = String::new();
+                for var in free_vars {
+                    capture_code.push_str(&format!("let {} = {}.clone();\n    ", var, var));
+                }
+
                 let func_name = format!("get_registry_{}", event_name);
                 let types_str = if params.is_empty() {
                     "()".to_string()
@@ -1090,6 +1215,7 @@ type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send 
                         .join(", ");
                     format!("({})", compiled_tys)
                 };
+                let arc_type_str = format!("std::sync::Arc<{}>", types_str);
 
                 let bindings = if params.is_empty() {
                     "_".to_string()
@@ -1107,8 +1233,8 @@ type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send 
                 let body_str = self.compile_expr(body);
 
                 format!(
-                    "std::sync::Arc::new(move || {{\n    let (tx, mut rx) = tokio::sync::mpsc::channel::<{}>(100);\n    {}().lock().unwrap().push(tx);\n    tokio::spawn(async move {{\n        while let Some(msg) = rx.recv().await {{\n            let {} = msg;\n            tokio::spawn(async move {{\n                {}\n            }});\n        }}\n    }});\n}})",
-                    types_str, func_name, bindings, body_str
+                    "{{\n    {}std::sync::Arc::new(move || {{\n        let (tx, mut rx) = tokio::sync::mpsc::channel::<{}>(100);\n        {}().lock().unwrap().push(tx);\n        tokio::spawn(async move {{\n            while let Some(msg) = rx.recv().await {{\n                let {} = (*msg).clone();\n                tokio::spawn(async move {{\n                    {}\n                }});\n            }}\n        }});\n    }})\n}}",
+                    capture_code, arc_type_str, func_name, bindings, body_str
                 )
             }
             Expr::StartProcess { target } => {

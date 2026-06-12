@@ -1122,7 +1122,7 @@ if let Ok(handlers) = get_registry_service_error().lock() {
 }
 ```
 
-`try_send` is non-blocking — it returns immediately. If a subscriber's channel buffer is full (capacity 100), the message is dropped. For most coordination workloads this is never a concern.
+`try_send` is non-blocking — it returns immediately. If a subscriber's channel buffer is full (capacity 100), the message is dropped. A warning (`[orchestrate] warning: dropped event '<event_name>' — subscriber channel full`) is printed to standard error when this happens. For most coordination workloads this is never a concern.
 
 ### 10.4 The Built-in `update_orchestrator` Event
 

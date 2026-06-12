@@ -1,0 +1,8 @@
+let top_level_var = 100
+
+let worker = automatic {
+    print("Top level var is: " + to_string(top_level_var))
+    stop_orch()
+}
+
+orchestrator main(procs: process[worker]) { }

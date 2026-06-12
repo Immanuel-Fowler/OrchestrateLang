@@ -1,0 +1,4 @@
+orchestrator main() {
+    let result = 10 + true
+    print("Should not compile: " + to_string(result))
+}

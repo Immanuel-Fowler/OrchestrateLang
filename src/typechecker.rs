@@ -154,9 +154,7 @@ impl TypeChecker {
                 if let Some(ty) = self.lookup_var(name) {
                     Ok(ty)
                 } else {
-                    // For now, if not found, we might assume it's a module or function name
-                    // But in a strict typechecker, we should return an error.
-                    Ok(Type::Void) // Placeholder to avoid breaking valid code
+                    Err(format!("undefined variable '{}'", name))
                 }
             }
             Expr::Binary { op, lhs, rhs } => {
@@ -181,8 +179,7 @@ impl TypeChecker {
                     } else if *op == BinaryOp::Add && (lhs_ty == Type::Str || rhs_ty == Type::Str) {
                         Ok(Type::Str) // String concatenation
                     } else {
-                        // Allow fallback for mixed types for now
-                        Ok(lhs_ty)
+                        Err(format!("Mismatched types in binary operation: {:?} and {:?}", lhs_ty, rhs_ty))
                     }
                 }
             }
