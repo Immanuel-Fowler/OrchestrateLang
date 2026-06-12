@@ -145,15 +145,34 @@ fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Result<S
                 }
             }
             
-            modules_data.push((local_name.clone(), module_stmts));
+            modules_data.push((local_name.clone(), module_stmts, module_path));
             modules_registered.push(local_name.clone());
         }
     }
 
-    for (local_name, module_stmts) in modules_data {
+    for (local_name, module_stmts, module_path) in modules_data {
         let mut generator = codegen::Codegen::new(all_tasks.clone());
-        let module_rust_code = generator.generate(&module_stmts, false);
+        let mut module_rust_code = generator.generate(&module_stmts, false);
         
+        let mut foreign_code = String::new();
+        for stmt in &module_stmts {
+            if let ast::Stmt::LoadForeign { language, path } = stmt {
+                if language != "rust" {
+                    return Err("load_foreign: only 'rust' is supported currently".to_string());
+                }
+                let foreign_path = module_path.join(path);
+                let code = fs::read_to_string(&foreign_path)
+                    .map_err(|e| format!("Failed to read foreign file {:?}: {}", foreign_path, e))?;
+                foreign_code.push_str(&code);
+                foreign_code.push_str("\n");
+            }
+        }
+        
+        if !foreign_code.is_empty() {
+            foreign_code.push_str(&module_rust_code);
+            module_rust_code = foreign_code;
+        }
+
         let module_out_file = cache_dir.join("src").join(format!("{}.rs", local_name));
         fs::write(&module_out_file, module_rust_code)
             .map_err(|e| format!("Failed to write module Rust code: {}", e))?;

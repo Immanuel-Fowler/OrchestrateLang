@@ -144,6 +144,10 @@ pub enum Stmt {
     Load {
         path: String,
     },
+    LoadForeign {
+        language: String,
+        path: String,
+    },
     Serverlet {
         name: String,
         state: Vec<Stmt>,

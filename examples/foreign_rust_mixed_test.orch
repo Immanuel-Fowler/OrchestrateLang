@@ -1,0 +1,10 @@
+use module shapes: "./foreign_rust_mixed"
+
+let worker = automatic {
+    let area = shapes.triangle_area(10.0, 8.0)
+    let label = shapes.describe_area(area)
+    print("Triangle area: " + to_string(area) + " (" + label + ")")
+    stop_orch()
+}
+
+orchestrator main(procs: process[worker]) { }

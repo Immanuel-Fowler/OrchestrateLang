@@ -76,6 +76,8 @@ impl Parser {
             self.parse_use_statement()?
         } else if self.match_token(TokenKind::Load) {
             self.parse_load_statement()?
+        } else if self.match_token(TokenKind::LoadForeign) {
+            self.parse_load_foreign_statement()?
         } else if self.match_token(TokenKind::Serverlet) {
             self.parse_serverlet_statement()?
         } else if self.match_token(TokenKind::Let) {
@@ -137,6 +139,22 @@ impl Parser {
             _ => return Err(format!("Expected string literal path after 'load' at line {}, col {}", tok.line, tok.col)),
         };
         Ok(Stmt::Load { path })
+    }
+
+    fn parse_load_foreign_statement(&mut self) -> Result<Stmt, String> {
+        let tok_lang = self.advance().clone();
+        let language = match &tok_lang.kind {
+            TokenKind::Str(s) => s.clone(),
+            _ => return Err(format!("Expected string literal for language after 'load_foreign' at line {}, col {}", tok_lang.line, tok_lang.col)),
+        };
+
+        let tok_path = self.advance().clone();
+        let path = match &tok_path.kind {
+            TokenKind::Str(s) => s.clone(),
+            _ => return Err(format!("Expected string literal for path after 'load_foreign' at line {}, col {}", tok_path.line, tok_path.col)),
+        };
+
+        Ok(Stmt::LoadForeign { language, path })
     }
 
     fn parse_serverlet_statement(&mut self) -> Result<Stmt, String> {

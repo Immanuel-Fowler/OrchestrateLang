@@ -106,11 +106,9 @@ impl TypeChecker {
                 }
             }
             Stmt::Parallel(stmts) => {
-                self.push_env();
                 for s in stmts {
                     self.check_stmt(s)?;
                 }
-                self.pop_env();
             }
             Stmt::While { cond, body } => {
                 let cond_ty = self.infer_expr(cond)?;
@@ -119,7 +117,7 @@ impl TypeChecker {
                 }
                 self.infer_expr(body)?;
             }
-            Stmt::UseModule { .. } | Stmt::Load { .. } => {}
+            Stmt::UseModule { .. } | Stmt::Load { .. } | Stmt::LoadForeign { .. } => {}
             Stmt::Serverlet { state, handlers, .. } => {
                 self.push_env();
                 for s in state {

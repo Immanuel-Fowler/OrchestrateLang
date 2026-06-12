@@ -393,6 +393,7 @@ type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send 
                 match stmt {
                     Stmt::UseModule { .. } |
                     Stmt::Load { .. } |
+                    Stmt::LoadForeign { .. } |
                     Stmt::FnDecl { .. } |
                     Stmt::TaskDecl { .. } |
                     Stmt::ProcessDecl { .. } |
@@ -823,7 +824,7 @@ type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send 
             Stmt::UseModule { local_name, .. } => {
                 format!("mod {};", local_name)
             }
-            Stmt::Load { .. } => "".to_string(),
+            Stmt::Load { .. } | Stmt::LoadForeign { .. } => "".to_string(),
             Stmt::Serverlet { name, state, handlers } => {
                 let mut enum_variants = Vec::new();
                 for h in handlers {

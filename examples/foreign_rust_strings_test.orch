@@ -1,0 +1,16 @@
+use module strings: "./foreign_rust_strings"
+
+let worker = automatic {
+    let reversed = strings.reverse_string("Orchestrate")
+    print("Reversed: " + reversed)
+
+    let vowels = strings.count_vowels("Orchestrate")
+    print("Vowel count: " + to_string(vowels))
+
+    let upper = strings.to_uppercase("hello world")
+    print("Uppercase: " + upper)
+
+    stop_orch()
+}
+
+orchestrator main(procs: process[worker]) { }

@@ -1,0 +1,6 @@
+fn describe_area(area: float) -> string {
+    if area > 100.0 {
+        return "large"
+    }
+    return "small"
+}
