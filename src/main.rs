@@ -8,6 +8,7 @@ mod lexer;
 mod parser;
 mod codegen;
 mod typechecker;
+mod prom;
 
 fn print_usage() {
     println!("Orchestrate Language Compiler");
@@ -15,6 +16,9 @@ fn print_usage() {
     println!("  orchestrate run <file.orch>            Compile and run the program immediately");
     println!("  orchestrate build <file.orch>          Compile the program to a standalone binary");
     println!("  orchestrate build <file.orch> -o <out> Specify the output binary name");
+    println!("  orchestrate prom add <name> <path>     Register a module path under a short name");
+    println!("  orchestrate prom remove <name>         Remove a registered module");
+    println!("  orchestrate prom list                  List all registered modules");
 }
 
 fn prepare_cache_dir(input_path: &Path) -> Result<PathBuf, String> {
@@ -119,7 +123,14 @@ fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Result<S
     let mut modules_data = Vec::new();
     for stmt in &ast {
         if let ast::Stmt::UseModule { local_name, module_name } = stmt {
-            let module_path = parent_dir.join(module_name);
+            let module_path = if let Some(resolved) = prom::resolve_module(module_name)? {
+                resolved
+            } else if module_name.contains('/') || module_name.contains('\\') || module_name.starts_with('.') {
+                parent_dir.join(module_name)
+            } else {
+                return Err(format!("Module '{}' is not a path and is not registered in PROM. Run 'orchestrate prom add <name> <path>' to register it, or use a './'-prefixed path.", module_name));
+            };
+            
             let module_stmts = compile_module(&module_path)?;
             
             for m_stmt in &module_stmts {
@@ -244,29 +255,74 @@ fn run_run(input_file: &str) -> Result<(), String> {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() < 3 {
+    if args.len() < 2 {
         print_usage();
         std::process::exit(1);
     }
 
-    let command = &args[1];
-    let file = &args[2];
-
-    match command.as_str() {
+    match args[1].as_str() {
         "run" => {
-            if let Err(e) = run_run(file) {
+            if args.len() < 3 {
+                print_usage();
+                std::process::exit(1);
+            }
+            if let Err(e) = run_run(&args[2]) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
         }
         "build" => {
+            if args.len() < 3 {
+                print_usage();
+                std::process::exit(1);
+            }
+            let input = &args[2];
             let mut out = None;
             if args.len() >= 5 && args[3] == "-o" {
                 out = Some(args[4].as_str());
             }
-            if let Err(e) = run_build(file, out) {
+            if let Err(e) = run_build(input, out) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
+            }
+        }
+        "prom" => {
+            if args.len() < 3 {
+                print_usage();
+                std::process::exit(1);
+            }
+            match args[2].as_str() {
+                "add" => {
+                    if args.len() < 5 {
+                        eprintln!("Usage: orchestrate prom add <name> <path>");
+                        std::process::exit(1);
+                    }
+                    if let Err(e) = prom::prom_add(&args[3], &args[4]) {
+                        eprintln!("{}", e);
+                        std::process::exit(1);
+                    }
+                }
+                "remove" => {
+                    if args.len() < 4 {
+                        eprintln!("Usage: orchestrate prom remove <name>");
+                        std::process::exit(1);
+                    }
+                    if let Err(e) = prom::prom_remove(&args[3]) {
+                        eprintln!("{}", e);
+                        std::process::exit(1);
+                    }
+                }
+                "list" => {
+                    if let Err(e) = prom::prom_list() {
+                        eprintln!("{}", e);
+                        std::process::exit(1);
+                    }
+                }
+                _ => {
+                    eprintln!("Unknown prom subcommand: {}", args[2]);
+                    print_usage();
+                    std::process::exit(1);
+                }
             }
         }
         _ => {

@@ -598,6 +598,43 @@ Modules are directories containing a `module.orch` entry file. They let you spli
 
 There are two module patterns depending on whether your module runs in the same process or a separate one.
 
+### 6.6 PROM: The Personal Module Registry
+
+PROM (Personal Registry for Orchestrator Modules) is a machine-local mapping that lets you reference modules by a short name instead of a long, absolute, or relative path. 
+
+**Important:** PROM is personal, machine-local configuration. It is *not* checked into version control. If you share your project, other developers will need to register the modules on their machines or you should use relative paths (e.g. `./modules/db`).
+
+#### Registering a Module
+
+Use the `prom` subcommand to manage your local registry:
+
+```bash
+# Add a module to your registry (must point to a directory containing a module.orch file)
+orchestrate prom add mydb /path/to/shared/modules/database
+
+# List registered modules
+orchestrate prom list
+
+# Remove a module
+orchestrate prom remove mydb
+```
+
+#### Importing a Registered Module
+
+Once registered, you can import it by its short name (without any path separators like `./` or `../`):
+
+```orchestrate
+// This uses PROM because it does not start with ./, ../, or an absolute path
+use module db: "mydb"
+
+orchestrator main() {
+    let service = start db.DatabaseService()
+    stop_orch()
+}
+```
+
+If the name is not found in the registry, the compiler will return an error instructing you to run `orchestrate prom add <name> <path>`.
+
 ### 6.1 Importing a Module
 
 ```orchestrate

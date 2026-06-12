@@ -1,0 +1,22 @@
+// PROM Demonstration
+// To run this example, you must first register the counter module in your PROM registry:
+//   orchestrate prom add counter ./examples/counter_module
+// Then you can run this file:
+//   orchestrate run examples/prom_demo.orch
+
+use module counter: "counter"
+
+orchestrator main() {
+    let total = 0
+    let service = start counter.CounterService()
+
+    print("Initial count: " + to_string(total))
+
+    service.increment(5)
+    sleep(100)
+    
+    total = service.get_count()
+    print("Final count: " + to_string(total))
+
+    stop_orch()
+}

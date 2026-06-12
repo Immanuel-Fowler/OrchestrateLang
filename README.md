@@ -406,6 +406,13 @@ Modules are **directories** containing a `module.orch` entry file. They are impo
 use module alias: "./path/to/dir"
 ```
 
+Or by using **PROM** (the Personal Registry for Orchestrator Modules), which allows you to import registered modules by a short name:
+
+```orchestrate
+use module alias: "short_name"
+```
+*(See `LANGUAGE_REFERENCE.md` for full details on registering modules with `orchestrate prom add`)*
+
 ### Combined Process (No Serverlet)
 
 Module functions are compiled into a sibling `.rs` file and linked directly into the binary. Zero call overhead.
