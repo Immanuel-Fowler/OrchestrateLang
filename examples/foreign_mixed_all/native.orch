@@ -1,0 +1,6 @@
+fn describe(val: float) -> string {
+    if val > 50.0 {
+        return "high"
+    }
+    return "low"
+}

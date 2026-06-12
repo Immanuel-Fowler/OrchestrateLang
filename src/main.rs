@@ -25,19 +25,6 @@ fn prepare_cache_dir(input_path: &Path) -> Result<PathBuf, String> {
     let parent = input_path.parent().unwrap_or(Path::new("."));
     let cache_dir = parent.join(".orch_cache");
     fs::create_dir_all(cache_dir.join("src")).map_err(|e| format!("Failed to create cache directory: {}", e))?;
-
-    let cargo_toml_content = r#"[package]
-name = "orch_generated"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-tokio = { version = "1.35", features = ["full"] }
-"#;
-
-    fs::write(cache_dir.join("Cargo.toml"), cargo_toml_content)
-        .map_err(|e| format!("Failed to write Cargo.toml: {}", e))?;
-
     Ok(cache_dir)
 }
 
@@ -87,6 +74,81 @@ fn resolve_load_recursive(path_str: &str, dir_path: &Path) -> Result<Vec<ast::St
         }
     }
     Ok(merged)
+}
+
+enum ForeignSource {
+    C(PathBuf),
+    Cpp(PathBuf),
+}
+
+fn orch_type_to_rust_ffi(orch_type: &str) -> Result<&str, String> {
+    match orch_type {
+        "int" => Ok("i64"),
+        "float" => Ok("f64"),
+        "bool" => Ok("bool"),
+        "void" => Ok("()"),
+        _ => Err(format!("Unsupported FFI type: {}", orch_type)),
+    }
+}
+
+fn parse_ffi_and_generate_bindings(ffi_content: &str, language: &str) -> Result<String, String> {
+    let mut extern_c = String::from("extern \"C\" {\n");
+    let mut wrappers = String::new();
+    
+    for (line_num, line) in ffi_content.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("//") {
+            continue;
+        }
+        
+        let open_paren = line.find('(').ok_or_else(|| format!("FFI parse error on line {}: missing '('", line_num + 1))?;
+        let close_paren = line.rfind(')').ok_or_else(|| format!("FFI parse error on line {}: missing ')'", line_num + 1))?;
+        
+        let name = line[..open_paren].trim();
+        let args_str = line[open_paren+1..close_paren].trim();
+        let ret_str = if let Some(arrow_idx) = line.find("->") {
+            line[arrow_idx+2..].trim()
+        } else {
+            "void"
+        };
+        
+        if ret_str == "string" {
+            return Err(format!("load_foreign '{}': string type is not supported in C/C++ FFI signatures", language));
+        }
+        
+        let rust_ret = orch_type_to_rust_ffi(ret_str)?;
+        let mut rust_args = Vec::new();
+        let mut call_args = Vec::new();
+        
+        if !args_str.is_empty() {
+            for arg in args_str.split(',') {
+                let parts: Vec<&str> = arg.split(':').collect();
+                if parts.len() != 2 {
+                    return Err(format!("FFI parse error on line {}: invalid argument '{}'", line_num + 1, arg));
+                }
+                let arg_name = parts[0].trim();
+                let arg_type = parts[1].trim();
+                if arg_type == "string" {
+                    return Err(format!("load_foreign '{}': string type is not supported in C/C++ FFI signatures", language));
+                }
+                let rust_type = orch_type_to_rust_ffi(arg_type)?;
+                rust_args.push(format!("{}: {}", arg_name, rust_type));
+                call_args.push(arg_name.to_string());
+            }
+        }
+        
+        let args_decl = rust_args.join(", ");
+        let call_decl = call_args.join(", ");
+        let ret_decl = if rust_ret == "()" { String::new() } else { format!(" -> {}", rust_ret) };
+        
+        extern_c.push_str(&format!("    #[link_name = \"{}\"]\n    fn __ffi_{}({}){};\n", name, name, args_decl, ret_decl));
+        
+        wrappers.push_str(&format!("pub fn {}({}){} {{\n    unsafe {{ __ffi_{}({}) }}\n}}\n", name, args_decl, ret_decl, name, call_decl));
+    }
+    
+    extern_c.push_str("}\n\n");
+    
+    Ok(format!("{}{}", extern_c, wrappers))
 }
 
 fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Result<String, String> {
@@ -150,6 +212,8 @@ fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Result<S
         }
     }
 
+    let mut all_foreign_sources = Vec::new();
+
     for (local_name, module_stmts, module_path) in modules_data {
         let mut generator = codegen::Codegen::new(all_tasks.clone());
         let mut module_rust_code = generator.generate(&module_stmts, false);
@@ -157,14 +221,43 @@ fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Result<S
         let mut foreign_code = String::new();
         for stmt in &module_stmts {
             if let ast::Stmt::LoadForeign { language, path } = stmt {
-                if language != "rust" {
-                    return Err("load_foreign: only 'rust' is supported currently".to_string());
-                }
                 let foreign_path = module_path.join(path);
-                let code = fs::read_to_string(&foreign_path)
-                    .map_err(|e| format!("Failed to read foreign file {:?}: {}", foreign_path, e))?;
-                foreign_code.push_str(&code);
-                foreign_code.push_str("\n");
+                if language == "rust" {
+                    let code = fs::read_to_string(&foreign_path)
+                        .map_err(|e| format!("Failed to read foreign file {:?}: {}", foreign_path, e))?;
+                    foreign_code.push_str(&code);
+                    foreign_code.push_str("\n");
+                } else if language == "c" || language == "cpp" {
+                    let abs_path = fs::canonicalize(&foreign_path)
+                        .unwrap_or_else(|_| foreign_path.clone());
+                    
+                    let mut abs_path_str = abs_path.to_string_lossy().to_string();
+                    if abs_path_str.starts_with(r"\\?\") {
+                        abs_path_str = abs_path_str[4..].to_string();
+                    }
+                        
+                    if language == "c" {
+                        all_foreign_sources.push(ForeignSource::C(PathBuf::from(abs_path_str)));
+                    } else {
+                        all_foreign_sources.push(ForeignSource::Cpp(PathBuf::from(abs_path_str)));
+                    }
+                    
+                    let mut ffi_path = foreign_path.clone();
+                    ffi_path.set_extension("orch_ffi");
+                    
+                    if !ffi_path.exists() {
+                        return Err(format!("load_foreign '{}': no sidecar file found at {:?} — create this file to declare the function signatures", language, ffi_path));
+                    }
+                    
+                    let ffi_content = fs::read_to_string(&ffi_path)
+                        .map_err(|e| format!("Failed to read FFI file {:?}: {}", ffi_path, e))?;
+                    
+                    let ffi_bindings = parse_ffi_and_generate_bindings(&ffi_content, language)?;
+                    foreign_code.push_str(&ffi_bindings);
+                    foreign_code.push_str("\n");
+                } else {
+                    return Err(format!("load_foreign: language '{}' is not supported currently", language));
+                }
             }
         }
         
@@ -180,6 +273,57 @@ fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Result<S
 
     let mut generator = codegen::Codegen::new(all_tasks);
     let main_rust = generator.generate(&ast, true);
+
+    let mut cargo_toml_content = r#"[package]
+name = "orch_generated"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.35", features = ["full"] }
+"#.to_string();
+
+    if !all_foreign_sources.is_empty() {
+        cargo_toml_content.push_str("\n[build-dependencies]\ncc = \"1.0\"\n");
+        
+        let mut build_rs = String::from("fn main() {\n");
+        let mut has_c = false;
+        let mut has_cpp = false;
+        
+        let mut c_files = Vec::new();
+        let mut cpp_files = Vec::new();
+        
+        for source in all_foreign_sources {
+            match source {
+                ForeignSource::C(p) => { c_files.push(p); has_c = true; },
+                ForeignSource::Cpp(p) => { cpp_files.push(p); has_cpp = true; },
+            }
+        }
+        
+        if has_c {
+            build_rs.push_str("    cc::Build::new()\n");
+            for p in c_files {
+                let p_str = p.to_string_lossy().replace("\\", "\\\\");
+                build_rs.push_str(&format!("        .file(\"{}\")\n", p_str));
+            }
+            build_rs.push_str("        .compile(\"foreign_c\");\n\n");
+        }
+        
+        if has_cpp {
+            build_rs.push_str("    cc::Build::new()\n        .cpp(true)\n");
+            for p in cpp_files {
+                let p_str = p.to_string_lossy().replace("\\", "\\\\");
+                build_rs.push_str(&format!("        .file(\"{}\")\n", p_str));
+            }
+            build_rs.push_str("        .compile(\"foreign_cpp\");\n\n");
+        }
+        build_rs.push_str("}\n");
+        fs::write(cache_dir.join("build.rs"), build_rs)
+            .map_err(|e| format!("Failed to write build.rs: {}", e))?;
+    }
+    
+    fs::write(cache_dir.join("Cargo.toml"), cargo_toml_content)
+        .map_err(|e| format!("Failed to write Cargo.toml: {}", e))?;
 
     Ok(main_rust)
 }

@@ -1,0 +1,1 @@
+load_foreign "c" "./geometry.c"

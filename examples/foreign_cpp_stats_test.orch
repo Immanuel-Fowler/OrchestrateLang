@@ -1,0 +1,16 @@
+use module stats: "./foreign_cpp_stats"
+
+let worker = automatic {
+    let avg = stats.average(10.0, 20.0, 30.0)
+    print("Average(10,20,30): " + to_string(avg))
+
+    let dev = stats.std_dev_two(4.0, 8.0)
+    print("Std dev(4,8): " + to_string(dev))
+
+    let biggest = stats.max_of_three(7, 3, 12)
+    print("Max(7,3,12): " + to_string(biggest))
+
+    stop_orch()
+}
+
+orchestrator main(procs: process[worker]) { }

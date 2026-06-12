@@ -1,0 +1,16 @@
+use module mixed: "./foreign_mixed_all"
+
+let worker = automatic {
+    let sq = mixed.square(7.0)
+    print("Square(7): " + to_string(sq))
+
+    let fact = mixed.factorial(6)
+    print("Factorial(6): " + to_string(fact))
+
+    let label = mixed.describe(sq)
+    print("Description: " + label)
+
+    stop_orch()
+}
+
+orchestrator main(procs: process[worker]) { }
