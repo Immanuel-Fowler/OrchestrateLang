@@ -1,0 +1,22 @@
+process get_a() -> int {
+    sleep(100)
+    return 10
+}
+
+process get_b() -> int {
+    sleep(100)
+    return 20
+}
+
+let worker = automatic {
+    parallel {
+        let a = get_a()
+        let b = get_b()
+    }
+    // a and b must be in scope here — if typechecker is wrong, this errors
+    let sum = a + b
+    print("Sum: " + to_string(sum))
+    stop_orch()
+}
+
+orchestrator main(procs: process[worker]) { }

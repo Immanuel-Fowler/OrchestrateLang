@@ -252,9 +252,8 @@ impl Codegen {
                 self.get_free_vars_expr(body, local_env, free_vars);
             }
             Stmt::Parallel(stmts) => {
-                let mut inner_env = local_env.clone();
                 for s in stmts {
-                    self.get_free_vars_stmt(s, &mut inner_env, free_vars);
+                    self.get_free_vars_stmt(s, local_env, free_vars);
                 }
             }
             Stmt::OnStart(expr) | Stmt::OnStop(expr) => {

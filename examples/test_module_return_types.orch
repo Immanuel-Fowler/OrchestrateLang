@@ -1,0 +1,10 @@
+use module counter: "./counter_module"
+
+orchestrator main() {
+    let service = start counter.CounterService()
+    let count = service.increment(5)
+    // count should be typed as int — this addition should typecheck
+    let doubled = count + count
+    print("Doubled: " + to_string(doubled))
+    stop_orch()
+}

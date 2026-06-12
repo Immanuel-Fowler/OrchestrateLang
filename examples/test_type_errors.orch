@@ -1,0 +1,5 @@
+// This should produce a type error before reaching cargo
+orchestrator main() {
+    let x: int = "this is a string"
+    print(x)
+}

@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use crate::ast::{BinaryOp, Expr, Literal, Stmt, Type};
 
 pub struct TypeChecker {
     env: Vec<HashMap<String, Type>>,
     functions: HashMap<String, (Vec<Type>, Type)>,
+    exempt_functions: HashSet<String>,
 }
 
 impl TypeChecker {
@@ -11,6 +12,7 @@ impl TypeChecker {
         let mut tc = TypeChecker {
             env: vec![HashMap::new()],
             functions: HashMap::new(),
+            exempt_functions: HashSet::new(),
         };
 
         // Built-ins
@@ -19,6 +21,11 @@ impl TypeChecker {
         
         // Note: For array functions (length, append, remove), we will handle them as special cases 
         // in `infer_expr` because they are polymorphic over the inner array type.
+        
+        let builtins = vec!["print", "to_string", "sleep", "stop_orch", "length", "append", "remove"];
+        for b in builtins {
+            tc.exempt_functions.insert(b.to_string());
+        }
 
         tc
     }
@@ -43,6 +50,36 @@ impl TypeChecker {
             self.check_stmt(stmt)?;
         }
         Ok(())
+    }
+
+    pub fn register_module_functions(&mut self, alias: &str, stmts: &[Stmt]) {
+        for stmt in stmts {
+            match stmt {
+                Stmt::FnDecl { name, params, return_type, .. } |
+                Stmt::TaskDecl { name, params, return_type, .. } |
+                Stmt::ProcessDecl { name, params, return_type, .. } |
+                Stmt::OrchestratorDecl { name, params, return_type, .. } => {
+                    let param_types: Vec<Type> = params.iter().map(|p| p.ty.clone()).collect();
+                    let full_name = format!("{}::{}", alias, name);
+                    self.functions.insert(full_name, (param_types, return_type.clone()));
+                }
+                Stmt::Serverlet { name: serverlet_name, handlers, .. } => {
+                    for h in handlers {
+                        let param_types: Vec<Type> = h.params.iter().map(|p| p.ty.clone()).collect();
+                        let alias_name = format!("{}::{}", alias, h.name);
+                        let direct_name = format!("{}::{}", serverlet_name, h.name);
+                        self.functions.insert(alias_name, (param_types.clone(), h.return_type.clone()));
+                        self.functions.insert(direct_name, (param_types, h.return_type.clone()));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub fn register_foreign_function(&mut self, alias: &str, name: &str, params: Vec<Type>, ret_ty: Type) {
+        let full_name = format!("{}::{}", alias, name);
+        self.functions.insert(full_name, (params, ret_ty));
     }
 
     fn push_env(&mut self) {
@@ -221,6 +258,9 @@ impl TypeChecker {
                     }
                     Ok(ret_ty.clone())
                 } else {
+                    if !self.exempt_functions.contains(callee) {
+                        eprintln!("[orchestrate] warning: unknown function '{}' — if this is a foreign function, this warning can be ignored", callee);
+                    }
                     Ok(Type::Void) // Unknown function
                 }
             }
@@ -293,10 +333,36 @@ impl TypeChecker {
                 }
                 Ok(then_ty)
             }
-            Expr::ModuleCall { args, .. } => {
+            Expr::ModuleCall { module_local_name, function, args } => {
+                let mut arg_types = Vec::new();
                 for arg in args {
-                    self.infer_expr(arg)?;
+                    arg_types.push(self.infer_expr(arg)?);
                 }
+                
+                let alias_key = format!("{}::{}", module_local_name, function);
+                if let Some((expected_args, ret_ty)) = self.functions.get(&alias_key) {
+                    if expected_args.len() != args.len() {
+                        return Err(format!("Module function {} expected {} arguments, got {}", alias_key, expected_args.len(), args.len()));
+                    }
+                    return Ok(ret_ty.clone());
+                }
+                
+                // Fallback: check if ANY registered function ends with `::function`
+                // This handles cases where `module_local_name` is a variable holding a serverlet client
+                // e.g. `service.increment(5)` where `increment` is registered as `counter::increment`.
+                for (key, (expected_args, ret_ty)) in self.functions.iter() {
+                    if key.ends_with(&format!("::{}", function)) {
+                        if expected_args.len() != args.len() {
+                            return Err(format!("Module function {} expected {} arguments, got {}", key, expected_args.len(), args.len()));
+                        }
+                        return Ok(ret_ty.clone());
+                    }
+                }
+
+                if !self.exempt_functions.contains(function) {
+                    eprintln!("[orchestrate] warning: unknown function '{}::{}' — if this is a foreign function, this warning can be ignored", module_local_name, function);
+                }
+                
                 Ok(Type::Void)
             }
             Expr::StartServerlet { args, .. } => {

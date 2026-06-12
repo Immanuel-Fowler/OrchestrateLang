@@ -151,6 +151,66 @@ fn parse_ffi_and_generate_bindings(ffi_content: &str, language: &str) -> Result<
     Ok(format!("{}{}", extern_c, wrappers))
 }
 
+fn extract_and_register_rust_functions(code: &str, alias: &str, tc: &mut typechecker::TypeChecker) {
+    for line in code.lines() {
+        let line = line.trim();
+        if line.starts_with("pub fn ") {
+            if let Some(open_paren) = line.find('(') {
+                if let Some(close_paren) = line.rfind(')') {
+                    let name = line[7..open_paren].trim();
+                    let args_str = line[open_paren+1..close_paren].trim();
+                    let mut orch_args = Vec::new();
+                    let mut valid = true;
+                    if !args_str.is_empty() {
+                        for arg in args_str.split(',') {
+                            let parts: Vec<&str> = arg.split(':').collect();
+                            if parts.len() == 2 {
+                                let rust_ty = parts[1].trim();
+                                let orch_ty = match rust_ty {
+                                    "i64" => ast::Type::Int,
+                                    "f64" => ast::Type::Float,
+                                    "bool" => ast::Type::Bool,
+                                    "String" | "&str" => ast::Type::Str,
+                                    _ => { valid = false; break; }
+                                };
+                                orch_args.push(orch_ty);
+                            } else {
+                                valid = false; break;
+                            }
+                        }
+                    }
+                    if !valid { continue; }
+
+                    let ret_str = if let Some(arrow_idx) = line.find("->") {
+                        let ret_part = line[arrow_idx+2..].trim();
+                        let ret_part = if let Some(brace_idx) = ret_part.find('{') {
+                            ret_part[..brace_idx].trim()
+                        } else {
+                            ret_part
+                        };
+                        ret_part
+                    } else {
+                        "()"
+                    };
+
+                    let orch_ret = match ret_str {
+                        "i64" => ast::Type::Int,
+                        "f64" => ast::Type::Float,
+                        "bool" => ast::Type::Bool,
+                        "String" => ast::Type::Str,
+                        "()" => ast::Type::Void,
+                        _ => { valid = false; ast::Type::Void }
+                    };
+
+                    if valid {
+                        tc.register_foreign_function(alias, name, orch_args, orch_ret);
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Result<String, String> {
     let input_path = Path::new(input_file);
     let source = fs::read_to_string(input_path)
@@ -162,9 +222,7 @@ fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Result<S
     let mut parser = parser::Parser::new(tokens);
     let ast = parser.parse()?;
 
-    // Type checking phase
     let mut type_checker = typechecker::TypeChecker::new();
-    type_checker.type_check(&ast).map_err(|e| format!("Type Error: {}", e))?;
 
     let parent_dir = input_path.parent().unwrap_or(Path::new("."));
     let mut modules_registered = Vec::new();
@@ -213,6 +271,24 @@ fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Result<S
     }
 
     let mut all_foreign_sources = Vec::new();
+
+    for (local_name, module_stmts, module_path) in &modules_data {
+        type_checker.register_module_functions(local_name, module_stmts);
+        
+        for stmt in module_stmts {
+            if let ast::Stmt::LoadForeign { language, path } = stmt {
+                if language == "rust" {
+                    let foreign_path = module_path.join(path);
+                    if let Ok(code) = fs::read_to_string(&foreign_path) {
+                        extract_and_register_rust_functions(&code, local_name, &mut type_checker);
+                    }
+                }
+            }
+        }
+    }
+
+    // Type checking phase (after modules are parsed and registered)
+    type_checker.type_check(&ast).map_err(|e| format!("Type Error: {}", e))?;
 
     for (local_name, module_stmts, module_path) in modules_data {
         let mut generator = codegen::Codegen::new(all_tasks.clone());
@@ -320,12 +396,47 @@ tokio = { version = "1.35", features = ["full"] }
         build_rs.push_str("}\n");
         fs::write(cache_dir.join("build.rs"), build_rs)
             .map_err(|e| format!("Failed to write build.rs: {}", e))?;
+    } else {
+        let _ = fs::remove_file(cache_dir.join("build.rs"));
     }
     
     fs::write(cache_dir.join("Cargo.toml"), cargo_toml_content)
         .map_err(|e| format!("Failed to write Cargo.toml: {}", e))?;
 
     Ok(main_rust)
+}
+
+fn print_friendly_errors(stderr: &str, cache_dir: &Path) {
+    let mut matched = false;
+    if stderr.contains("error[E0425]: cannot find value") {
+        eprintln!("[orchestrate] error: undefined variable — check your variable names");
+        matched = true;
+    } else if stderr.contains("error[E0308]: mismatched types") {
+        eprintln!("[orchestrate] error: type mismatch — check that your function return types and variable assignments match");
+        matched = true;
+    } else if stderr.contains("error[E0061]: this function takes") {
+        eprintln!("[orchestrate] error: wrong number of arguments to a function call");
+        matched = true;
+    } else if stderr.contains("error: linking with") {
+        eprintln!("[orchestrate] error: linker failed — if using load_foreign 'c' or 'cpp', check that your C/C++ source compiles correctly");
+        matched = true;
+    } else if stderr.contains("error[E0412]: cannot find type") {
+        eprintln!("[orchestrate] error: unknown type — this may be a compiler bug, please report it");
+        matched = true;
+    }
+
+    if !matched {
+        eprintln!("[orchestrate] Rust compilation error (this may indicate a bug in the Orchestrate compiler or a type mismatch in a foreign function):\n{}", stderr);
+    }
+
+    eprintln!("[orchestrate] tip: run with ORCH_SHOW_GENERATED=1 to see the generated Rust code");
+
+    if env::var("ORCH_SHOW_GENERATED").unwrap_or_else(|_| "0".to_string()) == "1" {
+        let main_rs_path = cache_dir.join("src/main.rs");
+        if let Ok(code) = fs::read_to_string(&main_rs_path) {
+            eprintln!("\n--- Generated Rust Code ({:?}) ---\n{}\n--- End Generated Code ---", main_rs_path, code);
+        }
+    }
 }
 
 fn run_build(input_file: &str, output_binary: Option<&str>) -> Result<(), String> {
@@ -338,15 +449,17 @@ fn run_build(input_file: &str, output_binary: Option<&str>) -> Result<(), String
 
     println!("[Orchestrate] Building release binary with Cargo...");
 
-    let status = Command::new("cargo")
+    let output = Command::new("cargo")
         .arg("build")
         .arg("--release")
         .arg("-q")
         .current_dir(&cache_dir)
-        .status()
+        .output()
         .map_err(|e| format!("Failed to execute cargo build: {}", e))?;
 
-    if !status.success() {
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        print_friendly_errors(&stderr, &cache_dir);
         return Err("Cargo compilation failed".to_string());
     }
 
@@ -384,14 +497,16 @@ fn run_run(input_file: &str) -> Result<(), String> {
 
     println!("[Orchestrate] Building Rust binary (this may take a few seconds on first run)...");
 
-    let status = Command::new("cargo")
+    let output = Command::new("cargo")
         .arg("build")
         .arg("-q")
         .current_dir(&cache_dir)
-        .status()
+        .output()
         .map_err(|e| format!("Failed to compile generated Rust file via cargo build: {}", e))?;
 
-    if !status.success() {
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        print_friendly_errors(&stderr, &cache_dir);
         return Err("Cargo compilation failed".to_string());
     }
 
