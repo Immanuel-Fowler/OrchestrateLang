@@ -1,0 +1,17 @@
+// Case 2: Outer scope var shared_config, correctly captured
+task fetch_a(config: int) -> int { return config + 10 }
+task fetch_b() -> int { return 20 }
+
+let shared_config = 100
+
+let worker = automatic {
+    parallel {
+        let a = fetch_a(shared_config)
+        let b = fetch_b()
+    }
+    let sum = a + b
+    print("Case 2 result: " + to_string(sum))
+    stop_orch()
+}
+
+orchestrator main(procs: process[worker]) { }

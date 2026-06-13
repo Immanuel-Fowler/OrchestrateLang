@@ -1,0 +1,16 @@
+// Case 3: Entire block is just parallel. No inner usage.
+task fetch_a(config: int) -> int { return config + 10 }
+task fetch_b() -> int { return 20 }
+task do_stop() -> int { print("Case 3 executed"); stop_orch(); return 0; }
+
+let shared_config = 100
+
+let worker = automatic {
+    parallel {
+        let a = fetch_a(shared_config)
+        let b = fetch_b()
+        let c = do_stop()
+    }
+}
+
+orchestrator main(procs: process[worker]) { }

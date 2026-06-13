@@ -756,14 +756,20 @@ let worker = automatic {
 }
 ```
 
-**`.orch_ffi` supported types:**
+**`.orch_ffi` supported types (for C and C++):**
 
 | Orchestrate type | C/C++ type | Rust FFI type |
 | :--- | :--- | :--- |
 | `int` | `long long` / `int64_t` | `i64` |
 | `float` | `double` | `f64` |
+| `bool` | `bool` | `bool` |
+| `void` | `void` | `()` |
 
-**Type conversions for all foreign functions:**
+> **Why no `string`?** C/C++ FFI signatures (`.orch_ffi`) do not support `string` as a parameter or return type because managing string ownership and lifetimes across the C/Rust boundary is unsafe without additional marshaling. If you attempt to use `string`, the compiler will produce the error: `load_foreign '<language>': string type is not supported in C/C++ FFI signatures`.
+
+**Type conversions for `load_foreign "rust"`:**
+
+*Note: The `string` row applies only to Rust foreign functions. C/C++ FFI signatures do not support `string` (see the C/C++ table above).*
 
 | Orchestrate | Rust |
 | :--- | :--- |

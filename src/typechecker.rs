@@ -77,6 +77,11 @@ impl TypeChecker {
         }
     }
 
+    #[allow(dead_code)]
+    pub fn has_function(&self, name: &str) -> bool {
+        self.functions.contains_key(name)
+    }
+
     pub fn register_foreign_function(&mut self, alias: &str, name: &str, params: Vec<Type>, ret_ty: Type) {
         let full_name = format!("{}::{}", alias, name);
         self.functions.insert(full_name, (params, ret_ty));

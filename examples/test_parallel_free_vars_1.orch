@@ -1,0 +1,15 @@
+// Case 1: No outer scope vars, parallel bindings escape to inner block scope
+task fetch_a() -> int { return 10 }
+task fetch_b() -> int { return 20 }
+
+let worker = automatic {
+    parallel {
+        let a = fetch_a()
+        let b = fetch_b()
+    }
+    let sum = a + b
+    print("Case 1 result: " + to_string(sum))
+    stop_orch()
+}
+
+orchestrator main(procs: process[worker]) { }

@@ -1,6 +1,8 @@
 /target
 .orch_cache/
 examples/.orch_cache/
+tests/error_cases/.orch_cache/
 *.exe
 *.pdb
 Cargo.lock
+notes.txt

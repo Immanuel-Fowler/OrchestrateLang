@@ -58,6 +58,7 @@ orchestrate run examples/async_parallel.orch          # Parallel task execution
 orchestrate run examples/test_serverlet.orch          # Serverlet actor model
 orchestrate run examples/persistent_serverlet_test.orch  # Stateful actor across iterations
 orchestrate run examples/task_demo.orch               # Full demo with modules and events
+orchestrate run examples/test_parallel_capture_combo.orch # Parallel execution with outer variable capture
 ```
 
 ---

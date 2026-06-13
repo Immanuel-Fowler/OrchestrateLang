@@ -1,0 +1,18 @@
+let multiplier = 3
+
+process scale(n: int) -> int {
+    sleep(50)
+    return n * 2
+}
+
+let worker = automatic {
+    let base = multiplier * 10
+    parallel {
+        let a = scale(base)
+        let b = scale(base + 1)
+    }
+    print("Result: " + to_string(a + b + multiplier))
+    stop_orch()
+}
+
+orchestrator main(procs: process[worker]) { }
