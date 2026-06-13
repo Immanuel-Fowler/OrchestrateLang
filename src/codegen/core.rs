@@ -1,4 +1,4 @@
-use crate::ast::{ExprNode, StmtNode, BinaryOp, Expr, Literal, Stmt, Type};
+use crate::ast::{ExprNode, StmtNode, Expr, Stmt, Type};
 use std::collections::HashSet;
 
 pub fn pascal_case(s: &str) -> String {
@@ -396,7 +396,8 @@ type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send 
                     StmtNode::FnDecl { .. } |
                     StmtNode::TaskDecl { .. } |
                     StmtNode::ProcessDecl { .. } |
-                    StmtNode::Serverlet { .. } => {
+                    StmtNode::Serverlet { .. } |
+                    StmtNode::StructDef { .. } => {
                         global_stmts.push(stmt.clone());
                     }
                     StmtNode::OrchestratorDecl { name, .. } => {
@@ -476,6 +477,7 @@ pub fn compile_type(&self, ty: &Type) -> String {
             Type::Void => "()".to_string(),
             Type::Process => "ProcessRef".to_string(),
             Type::Array(inner, _init_vals) => format!("Vec<{}>", self.compile_type(inner)),
+            Type::Named(name) => name.clone(),
         }
     }
 }

@@ -1,5 +1,4 @@
-use crate::ast::{ExprNode, StmtNode, BinaryOp, Expr, Literal, Stmt, Type};
-use std::collections::HashSet;
+use crate::ast::{ExprNode, StmtNode, Stmt, Type};
 use super::core::{Codegen, pascal_case};
 
 impl Codegen {
@@ -493,8 +492,15 @@ impl Codegen {
 
                 format!("{}\n\n{}\n\n{}", msg_enum, client_struct, start_fn)
             }
+            StmtNode::StructDef { name, fields } => {
+                let fields_str = fields.iter()
+                    .map(|(fname, fty)| format!("    pub {}: {},", fname, self.compile_type(fty)))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!("#[derive(Clone, Debug)]\npub struct {} {{\n{}\n}}", name, fields_str)
+            }
         }
     }
 
-    
+
 }

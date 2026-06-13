@@ -1,6 +1,11 @@
 use crate::ast::{BinaryOp, Expr, ExprNode, Literal, Param, Stmt, StmtNode, Type, Handler, Span, Spanned};
 use crate::lexer::{Token, TokenKind};
 
+pub struct ParseResult {
+    pub stmts: Vec<Stmt>,
+    pub errors: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub enum Precedence {
     Lowest = 0,
@@ -16,11 +21,12 @@ pub enum Precedence {
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    pub errors: Vec<String>,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Parser { tokens, pos: 0 }
+        Parser { tokens, pos: 0, errors: Vec::new() }
     }
 
     fn peek(&self) -> &Token {
@@ -66,9 +72,34 @@ impl Parser {
     pub fn parse(&mut self) -> Result<Vec<Stmt>, String> {
         let mut statements = Vec::new();
         while !self.is_at_end() {
-            statements.push(self.parse_statement()?);
+            match self.parse_statement() {
+                Ok(stmt) => statements.push(stmt),
+                Err(e) => {
+                    self.errors.push(e);
+                    self.skip_to_next_statement_boundary();
+                }
+            }
         }
-        Ok(statements)
+        if self.errors.is_empty() {
+            Ok(statements)
+        } else {
+            Err(self.errors.join("\n"))
+        }
+    }
+
+    fn skip_to_next_statement_boundary(&mut self) {
+        while !self.is_at_end() {
+            match &self.peek().kind {
+                TokenKind::Semicolon => { self.advance(); return; }
+                TokenKind::Let | TokenKind::Fn | TokenKind::Task | TokenKind::Process |
+                TokenKind::Orchestrator | TokenKind::Parallel | TokenKind::While |
+                TokenKind::Return | TokenKind::Trigger | TokenKind::Serverlet |
+                TokenKind::Load | TokenKind::LoadForeign | TokenKind::Use |
+                TokenKind::Struct | TokenKind::OnStart | TokenKind::OnStop => return,
+                TokenKind::EOF => return,
+                _ => { self.advance(); }
+            }
+        }
     }
 
     fn parse_statement(&mut self) -> Result<Stmt, String> {
@@ -104,6 +135,8 @@ impl Parser {
             self.parse_on_start_statement()?
         } else if self.match_token(TokenKind::OnStop) {
             self.parse_on_stop_statement()?
+        } else if self.match_token(TokenKind::Struct) {
+            self.parse_struct_decl()?
         } else {
             self.parse_expr_statement()?
         };
@@ -380,6 +413,29 @@ impl Parser {
         Ok(StmtNode::OnStop(body))
     }
 
+    fn parse_struct_decl(&mut self) -> Result<StmtNode, String> {
+        let tok = self.advance().clone();
+        let name = match &tok.kind {
+            TokenKind::Identifier(s) => s.clone(),
+            _ => return Err(format!("Expected struct name at line {}, col {}", tok.line, tok.col)),
+        };
+        self.consume(TokenKind::LBrace, "Expected '{' after struct name")?;
+        let mut fields = Vec::new();
+        while self.peek().kind != TokenKind::RBrace && self.peek().kind != TokenKind::EOF {
+            let ftok = self.advance().clone();
+            let fname = match &ftok.kind {
+                TokenKind::Identifier(s) => s.clone(),
+                _ => return Err(format!("Expected field name at line {}, col {}", ftok.line, ftok.col)),
+            };
+            self.consume(TokenKind::Colon, "Expected ':' after field name")?;
+            let fty = self.parse_type()?;
+            fields.push((fname, fty));
+            let _ = self.match_token(TokenKind::Comma);
+        }
+        self.consume(TokenKind::RBrace, "Expected '}' to end struct definition")?;
+        Ok(StmtNode::StructDef { name, fields })
+    }
+
     fn parse_params(&mut self) -> Result<Vec<Param>, String> {
         let mut params = Vec::new();
         if self.peek().kind == TokenKind::RParen {
@@ -443,7 +499,7 @@ impl Parser {
                 "string" => Ok(Type::Str),
                 "bool" => Ok(Type::Bool),
                 "void" => Ok(Type::Void),
-                _ => Err(format!("Unknown type '{}' at line {}, col {}", s, tok.line, tok.col)),
+                _ => Ok(Type::Named(s.clone())),
             },
             _ => Err(format!("Expected type name, found {:?} at line {}, col {}", tok.kind, tok.line, tok.col)),
         }
@@ -503,6 +559,18 @@ impl Parser {
         Ok(Spanned { node, span })
     }
 
+    fn is_struct_literal_start(&self) -> bool {
+        // Current token is '{'. Peek ahead: identifier followed by ':' means struct literal.
+        if self.pos + 1 < self.tokens.len() {
+            if let TokenKind::Identifier(_) = &self.tokens[self.pos + 1].kind {
+                if self.pos + 2 < self.tokens.len() {
+                    return self.tokens[self.pos + 2].kind == TokenKind::Colon;
+                }
+            }
+        }
+        false
+    }
+
     fn parse_prefix_node(&mut self) -> Result<ExprNode, String> {
         let tok = self.peek().clone();
         match &tok.kind {
@@ -527,8 +595,29 @@ impl Parser {
                 Ok(ExprNode::Literal(Literal::Bool(false)))
             }
             TokenKind::Identifier(name) => {
+                let name = name.clone();
                 self.advance();
-                Ok(ExprNode::Identifier(name.clone()))
+                // Check for struct literal: Name { field: val, ... }
+                // Disambiguate from a plain block by peeking: { identifier : ...
+                if self.peek().kind == TokenKind::LBrace && self.is_struct_literal_start() {
+                    self.advance(); // consume '{'
+                    let mut fields = Vec::new();
+                    while self.peek().kind != TokenKind::RBrace && self.peek().kind != TokenKind::EOF {
+                        let ftok = self.advance().clone();
+                        let fname = match &ftok.kind {
+                            TokenKind::Identifier(s) => s.clone(),
+                            _ => return Err(format!("Expected field name at line {}, col {}", ftok.line, ftok.col)),
+                        };
+                        self.consume(TokenKind::Colon, "Expected ':' after field name in struct literal")?;
+                        let val = self.parse_expression(Precedence::Lowest)?;
+                        fields.push((fname, Box::new(val)));
+                        let _ = self.match_token(TokenKind::Comma);
+                    }
+                    self.consume(TokenKind::RBrace, "Expected '}' to end struct literal")?;
+                    Ok(ExprNode::StructLiteral { name, fields })
+                } else {
+                    Ok(ExprNode::Identifier(name))
+                }
             }
             TokenKind::LParen => {
                 self.advance(); // consume '('
@@ -649,22 +738,30 @@ impl Parser {
             TokenKind::Dot => {
                 self.advance(); // consume '.'
                 let tok_fn = self.advance().clone();
-                let function = match &tok_fn.kind {
+                let field_or_fn = match &tok_fn.kind {
                     TokenKind::Identifier(name) => name.clone(),
-                    _ => return Err(format!("Expected function name after '.' at line {}, col {}", tok_fn.line, tok_fn.col)),
+                    _ => return Err(format!("Expected identifier after '.' at line {}, col {}", tok_fn.line, tok_fn.col)),
                 };
 
-                self.consume(TokenKind::LParen, "Expected '(' after module function name")?;
-                let args = self.parse_call_args()?;
-
-                if let ExprNode::Identifier(module_local_name) = &lhs.node {
-                    Ok(ExprNode::ModuleCall {
-                        module_local_name: module_local_name.to_string(),
-                        function,
-                        args,
-                    })
+                if self.peek().kind == TokenKind::LParen {
+                    // Module call: identifier.method(args)
+                    self.advance(); // consume '('
+                    let args = self.parse_call_args()?;
+                    if let ExprNode::Identifier(module_local_name) = &lhs.node {
+                        Ok(ExprNode::ModuleCall {
+                            module_local_name: module_local_name.to_string(),
+                            function: field_or_fn,
+                            args,
+                        })
+                    } else {
+                        Err(format!("Expected identifier before '.', found {:?} at line {}, col {}", lhs, tok.line, tok.col))
+                    }
                 } else {
-                    Err(format!("Expected identifier before '.', found {:?} at line {}, col {}", lhs, tok.line, tok.col))
+                    // Field access: expr.field
+                    Ok(ExprNode::FieldAccess {
+                        object: Box::new(lhs),
+                        field: field_or_fn,
+                    })
                 }
             }
             _ => {

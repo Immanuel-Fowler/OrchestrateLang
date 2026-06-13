@@ -5,6 +5,7 @@ pub struct TypeChecker {
     env: Vec<HashMap<String, Type>>,
     functions: HashMap<String, (Vec<Type>, Type)>,
     exempt_functions: HashSet<String>,
+    pub struct_defs: HashMap<String, Vec<(String, Type)>>,
 }
 
 impl TypeChecker {
@@ -13,6 +14,7 @@ impl TypeChecker {
             env: vec![HashMap::new()],
             functions: HashMap::new(),
             exempt_functions: HashSet::new(),
+            struct_defs: HashMap::new(),
         };
 
         // Built-ins
@@ -31,7 +33,7 @@ impl TypeChecker {
     }
 
     pub fn type_check(&mut self, stmts: &[Stmt]) -> Result<(), String> {
-        // First pass: register all functions and tasks to allow forward references
+        // First pass: register all top-level declarations for forward references
         for stmt in stmts {
             match &stmt.node {
                 StmtNode::FnDecl { name, params, return_type, .. } |
@@ -41,15 +43,25 @@ impl TypeChecker {
                     let param_types: Vec<Type> = params.iter().map(|p| p.ty.clone()).collect();
                     self.functions.insert(name.clone(), (param_types, return_type.clone()));
                 }
+                StmtNode::StructDef { name, fields } => {
+                    self.struct_defs.insert(name.clone(), fields.clone());
+                }
                 _ => {}
             }
         }
 
-        // Second pass: type check the bodies
+        // Second pass: type check bodies, collecting all errors
+        let mut errors: Vec<String> = Vec::new();
         for stmt in stmts {
-            self.check_stmt(stmt)?;
+            if let Err(e) = self.check_stmt(stmt) {
+                errors.push(e);
+            }
         }
-        Ok(())
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("\n"))
+        }
     }
 
     pub fn register_module_functions(&mut self, alias: &str, stmts: &[Stmt]) {
@@ -164,7 +176,7 @@ impl TypeChecker {
                 }
                 self.infer_expr(body)?;
             }
-            StmtNode::UseModule { .. } | StmtNode::Load { .. } | StmtNode::LoadForeign { .. } => {}
+            StmtNode::UseModule { .. } | StmtNode::Load { .. } | StmtNode::LoadForeign { .. } | StmtNode::StructDef { .. } => {}
             StmtNode::Serverlet { state, handlers, .. } => {
                 self.push_env();
                 for s in state {
@@ -412,6 +424,36 @@ impl TypeChecker {
                     inner_ty = Type::Int; // Default fallback for empty arrays
                 }
                 Ok(Type::Array(Box::new(inner_ty), vec![]))
+            }
+            ExprNode::StructLiteral { name, fields } => {
+                let def = self.struct_defs.get(name).cloned()
+                    .ok_or_else(|| format!("line {}, col {}: unknown struct type '{}'", expr.span.line, expr.span.col, name))?;
+                for (fname, fexpr) in fields {
+                    let actual_ty = self.infer_expr(fexpr)?;
+                    if let Some((_, expected_ty)) = def.iter().find(|(n, _)| n == fname) {
+                        if *expected_ty != actual_ty && *expected_ty != Type::Void && actual_ty != Type::Void {
+                            return Err(format!("line {}, col {}: field '{}' of struct '{}': expected {:?}, found {:?}",
+                                expr.span.line, expr.span.col, fname, name, expected_ty, actual_ty));
+                        }
+                    } else {
+                        return Err(format!("line {}, col {}: struct '{}' has no field '{}'", expr.span.line, expr.span.col, name, fname));
+                    }
+                }
+                Ok(Type::Named(name.clone()))
+            }
+            ExprNode::FieldAccess { object, field } => {
+                let obj_ty = self.infer_expr(object)?;
+                if let Type::Named(struct_name) = &obj_ty {
+                    let def = self.struct_defs.get(struct_name).cloned()
+                        .ok_or_else(|| format!("line {}, col {}: unknown struct '{}'", expr.span.line, expr.span.col, struct_name))?;
+                    if let Some((_, fty)) = def.iter().find(|(n, _)| n == field) {
+                        Ok(fty.clone())
+                    } else {
+                        Err(format!("line {}, col {}: struct '{}' has no field '{}'", expr.span.line, expr.span.col, struct_name, field))
+                    }
+                } else {
+                    Err(format!("line {}, col {}: field access '.{}' on non-struct type {:?}", expr.span.line, expr.span.col, field, obj_ty))
+                }
             }
         }
     }

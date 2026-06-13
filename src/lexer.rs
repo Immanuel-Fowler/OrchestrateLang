@@ -24,6 +24,7 @@ pub enum TokenKind {
     Trigger,
     OnStart,
     OnStop,
+    Struct,
 
     // Literals
     Identifier(String),
@@ -357,6 +358,7 @@ impl Lexer {
             "trigger" => TokenKind::Trigger,
             "on_start" => TokenKind::OnStart,
             "on_stop" => TokenKind::OnStop,
+            "struct" => TokenKind::Struct,
             _ => TokenKind::Identifier(s),
         };
 

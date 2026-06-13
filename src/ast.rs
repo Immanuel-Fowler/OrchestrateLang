@@ -54,6 +54,7 @@ pub enum Type {
     Void,
     Process,
     Array(Box<Type>, Vec<String>),
+    Named(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -114,6 +115,14 @@ pub enum ExprNode {
         target: Box<Expr>,
     },
     ArrayLiteral(Vec<Expr>),
+    StructLiteral {
+        name: String,
+        fields: Vec<(String, Box<Expr>)>,
+    },
+    FieldAccess {
+        object: Box<Expr>,
+        field: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -176,4 +185,8 @@ pub enum StmtNode {
     },
     OnStart(Expr), // Typically ExprNode::Block
     OnStop(Expr),  // Typically ExprNode::Block
+    StructDef {
+        name: String,
+        fields: Vec<(String, Type)>,
+    },
 }

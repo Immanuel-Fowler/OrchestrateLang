@@ -1,6 +1,6 @@
-use crate::ast::{ExprNode, StmtNode, BinaryOp, Expr, Literal, Stmt, Type};
+use crate::ast::{ExprNode, StmtNode, BinaryOp, Expr, Literal};
 use std::collections::HashSet;
-use super::core::{Codegen, pascal_case};
+use super::core::Codegen;
 
 impl Codegen {
     pub fn compile_expr(&mut self, expr: &Expr) -> String {
@@ -300,8 +300,18 @@ impl Codegen {
                     .join(", ");
                 format!("vec![{}]", elems_str)
             }
+            ExprNode::StructLiteral { name, fields } => {
+                let fields_str = fields.iter()
+                    .map(|(fname, val)| format!("    {}: {},", fname, self.compile_expr(val)))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!("{} {{\n{}\n}}", name, fields_str)
+            }
+            ExprNode::FieldAccess { object, field } => {
+                format!("{}.{}", self.compile_expr(object), field)
+            }
         }
     }
 
-    
+
 }

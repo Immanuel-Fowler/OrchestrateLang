@@ -1,38 +1,48 @@
 use std::env;
+use orchestrate_lib::{driver, prom};
 
-mod ast;
-mod lexer;
-mod parser;
-mod codegen;
-mod typechecker;
-mod prom;
-mod ffi_parser;
-mod errors;
-mod ffi_rust;
-mod driver;
+fn print_help() {
+    println!("Orchestrate Language Compiler v{}", env!("CARGO_PKG_VERSION"));
+    println!();
+    println!("USAGE:");
+    println!("  orchestrate <command> [options]");
+    println!();
+    println!("COMMANDS:");
+    println!("  run <file.orch>              Compile and run a program immediately");
+    println!("  build <file.orch>            Compile to a standalone binary");
+    println!("  build <file.orch> -o <out>   Specify the output binary name");
+    println!();
+    println!("  prom add <name> <path>       Register a module path under a short name");
+    println!("  prom remove <name>           Remove a registered module");
+    println!("  prom list                    List all registered modules");
+    println!();
+    println!("FLAGS:");
+    println!("  --help, -h                   Show this help message");
+    println!();
+    println!("ENVIRONMENT:");
+    println!("  ORCH_SHOW_GENERATED=1        Print the generated Rust code before compiling");
+    println!();
+    println!("EXAMPLES:");
+    println!("  orchestrate run hello.orch");
+    println!("  orchestrate build main.orch -o myapp");
+}
 
-fn print_usage() {
+fn print_short_usage() {
     println!("Orchestrate Language Compiler");
-    println!("Usage:");
-    println!("  orchestrate run <file.orch>            Compile and run the program immediately");
-    println!("  orchestrate build <file.orch>          Compile the program to a standalone binary");
-    println!("  orchestrate build <file.orch> -o <out> Specify the output binary name");
-    println!("  orchestrate prom add <name> <path>     Register a module path under a short name");
-    println!("  orchestrate prom remove <name>         Remove a registered module");
-    println!("  orchestrate prom list                  List all registered modules");
+    println!("Run 'orchestrate --help' for usage.");
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        print_usage();
+        print_short_usage();
         std::process::exit(1);
     }
 
     match args[1].as_str() {
         "run" => {
             if args.len() < 3 {
-                print_usage();
+                eprintln!("Usage: orchestrate run <file.orch>");
                 std::process::exit(1);
             }
             if let Err(e) = driver::run_run(&args[2]) {
@@ -42,7 +52,7 @@ fn main() {
         }
         "build" => {
             if args.len() < 3 {
-                print_usage();
+                eprintln!("Usage: orchestrate build <file.orch> [-o <output>]");
                 std::process::exit(1);
             }
             let input = &args[2];
@@ -57,7 +67,7 @@ fn main() {
         }
         "prom" => {
             if args.len() < 3 {
-                print_usage();
+                eprintln!("Usage: orchestrate prom <add|remove|list> [args]");
                 std::process::exit(1);
             }
             match args[2].as_str() {
@@ -88,14 +98,16 @@ fn main() {
                     }
                 }
                 _ => {
-                    eprintln!("Unknown prom subcommand: {}", args[2]);
-                    print_usage();
+                    eprintln!("Unknown prom subcommand: '{}'. Expected add, remove, or list.", args[2]);
                     std::process::exit(1);
                 }
             }
         }
+        "--help" | "-h" | "help" => {
+            print_help();
+        }
         _ => {
-            print_usage();
+            eprintln!("Unknown command: '{}'. Run 'orchestrate --help' for usage.", args[1]);
             std::process::exit(1);
         }
     }

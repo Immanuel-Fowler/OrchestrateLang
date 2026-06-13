@@ -9,7 +9,7 @@ use crate::codegen;
 use crate::typechecker;
 use crate::prom;
 use crate::ffi_parser;
-use crate::ffi_rust::extract_and_register_rust_functions;
+use crate::ffi_rust::register_rust_ffi_from_sidecar;
 use crate::errors::print_friendly_errors;
 
 pub fn prepare_cache_dir(input_path: &Path) -> Result<PathBuf, String> {
@@ -140,10 +140,16 @@ pub fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Resu
             if let ast::StmtNode::LoadForeign { language, path } = &stmt.node {
                 if language == "rust" {
                     let foreign_path = module_path.join(path);
-                    if let Ok(code) = fs::read_to_string(&foreign_path) {
-                        let file_name = foreign_path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown.rs");
-                        extract_and_register_rust_functions(&code, local_name, file_name, &mut type_checker);
+                    let mut sidecar_path = foreign_path.clone();
+                    sidecar_path.set_extension("orch_ffi");
+                    if !sidecar_path.exists() {
+                        return Err(format!("load_foreign 'rust': no sidecar file found at {:?} — create this file to declare the function signatures", sidecar_path));
                     }
+                    let sidecar_content = fs::read_to_string(&sidecar_path)
+                        .map_err(|e| format!("Failed to read Rust FFI sidecar {:?}: {}", sidecar_path, e))?;
+                    let sidecar_name = sidecar_path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown.orch_ffi");
+                    register_rust_ffi_from_sidecar(&sidecar_content, local_name, sidecar_name, &mut type_checker)
+                        .map_err(|e| format!("Rust FFI sidecar error: {}", e))?;
                 }
             }
         }

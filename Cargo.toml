@@ -1,11 +1,19 @@
 [package]
 name = "orchestrate"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 description = "A compiled, asynchronous orchestration language that transpiles to native Rust"
 license = "MIT"
 repository = "https://github.com/Immanuel-Fowler/OrchestrateLang"
 keywords = ["language", "orchestration", "async", "concurrency", "compiler"]
 categories = ["compilers", "asynchronous"]
+
+[[bin]]
+name = "orchestrate"
+path = "src/main.rs"
+
+[lib]
+name = "orchestrate_lib"
+path = "src/lib.rs"
 
 [dependencies]
