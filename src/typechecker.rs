@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use crate::ast::{BinaryOp, Expr, Literal, Stmt, Type};
+use crate::ast::{ExprNode, StmtNode, BinaryOp, Expr, Literal, Stmt, Type};
 
 pub struct TypeChecker {
     env: Vec<HashMap<String, Type>>,
@@ -33,11 +33,11 @@ impl TypeChecker {
     pub fn type_check(&mut self, stmts: &[Stmt]) -> Result<(), String> {
         // First pass: register all functions and tasks to allow forward references
         for stmt in stmts {
-            match stmt {
-                Stmt::FnDecl { name, params, return_type, .. } |
-                Stmt::TaskDecl { name, params, return_type, .. } |
-                Stmt::ProcessDecl { name, params, return_type, .. } |
-                Stmt::OrchestratorDecl { name, params, return_type, .. } => {
+            match &stmt.node {
+                StmtNode::FnDecl { name, params, return_type, .. } |
+                StmtNode::TaskDecl { name, params, return_type, .. } |
+                StmtNode::ProcessDecl { name, params, return_type, .. } |
+                StmtNode::OrchestratorDecl { name, params, return_type, .. } => {
                     let param_types: Vec<Type> = params.iter().map(|p| p.ty.clone()).collect();
                     self.functions.insert(name.clone(), (param_types, return_type.clone()));
                 }
@@ -54,16 +54,16 @@ impl TypeChecker {
 
     pub fn register_module_functions(&mut self, alias: &str, stmts: &[Stmt]) {
         for stmt in stmts {
-            match stmt {
-                Stmt::FnDecl { name, params, return_type, .. } |
-                Stmt::TaskDecl { name, params, return_type, .. } |
-                Stmt::ProcessDecl { name, params, return_type, .. } |
-                Stmt::OrchestratorDecl { name, params, return_type, .. } => {
+            match &stmt.node {
+                StmtNode::FnDecl { name, params, return_type, .. } |
+                StmtNode::TaskDecl { name, params, return_type, .. } |
+                StmtNode::ProcessDecl { name, params, return_type, .. } |
+                StmtNode::OrchestratorDecl { name, params, return_type, .. } => {
                     let param_types: Vec<Type> = params.iter().map(|p| p.ty.clone()).collect();
                     let full_name = format!("{}::{}", alias, name);
                     self.functions.insert(full_name, (param_types, return_type.clone()));
                 }
-                Stmt::Serverlet { name: serverlet_name, handlers, .. } => {
+                StmtNode::Serverlet { name: serverlet_name, handlers, .. } => {
                     for h in handlers {
                         let param_types: Vec<Type> = h.params.iter().map(|p| p.ty.clone()).collect();
                         let alias_name = format!("{}::{}", alias, h.name);
@@ -111,30 +111,30 @@ impl TypeChecker {
     }
 
     fn check_stmt(&mut self, stmt: &Stmt) -> Result<(), String> {
-        match stmt {
-            Stmt::Let { name, ty, value } => {
+        match &stmt.node {
+            StmtNode::Let { name, ty, value } => {
                 let val_ty = self.infer_expr(value)?;
                 if let Some(expected_ty) = ty {
                     if *expected_ty != val_ty && *expected_ty != Type::Void && val_ty != Type::Void {
-                        return Err(format!("Type mismatch in let statement: expected {:?}, found {:?}", expected_ty, val_ty));
+                        return Err(format!("line {}, col {}: Type mismatch in let statement: expected {:?}, found {:?}", stmt.span.line, stmt.span.col, expected_ty, val_ty));
                     }
                     self.define_var(name.clone(), expected_ty.clone());
                 } else {
                     self.define_var(name.clone(), val_ty);
                 }
             }
-            Stmt::Expr(expr) => {
+            StmtNode::Expr(expr) => {
                 self.infer_expr(expr)?;
             }
-            Stmt::Return(opt_expr) => {
+            StmtNode::Return(opt_expr) => {
                 if let Some(expr) = opt_expr {
                     self.infer_expr(expr)?;
                 }
             }
-            Stmt::FnDecl { params, body, .. } |
-            Stmt::TaskDecl { params, body, .. } |
-            Stmt::ProcessDecl { params, body, .. } |
-            Stmt::OrchestratorDecl { params, body, .. } => {
+            StmtNode::FnDecl { params, body, .. } |
+            StmtNode::TaskDecl { params, body, .. } |
+            StmtNode::ProcessDecl { params, body, .. } |
+            StmtNode::OrchestratorDecl { params, body, .. } => {
                 self.push_env();
                 for p in params {
                     self.define_var(p.name.clone(), p.ty.clone());
@@ -142,12 +142,12 @@ impl TypeChecker {
                 self.infer_expr(body)?;
                 self.pop_env();
             }
-            Stmt::Trigger { args, .. } => {
+            StmtNode::Trigger { args, .. } => {
                 for arg in args {
                     self.infer_expr(arg)?;
                 }
             }
-            Stmt::Parallel(stmts) => {
+            StmtNode::Parallel(stmts) => {
                 // NOTE: Intentionally no push_env/pop_env here.
                 // Variables bound inside a parallel block (let x = task()) are
                 // available after the block — they escape into the enclosing scope.
@@ -157,15 +157,15 @@ impl TypeChecker {
                     self.check_stmt(s)?;
                 }
             }
-            Stmt::While { cond, body } => {
+            StmtNode::While { cond, body } => {
                 let cond_ty = self.infer_expr(cond)?;
                 if cond_ty != Type::Bool {
-                    return Err("While condition must be a boolean".to_string());
+                    return Err(format!("line {}, col {}: While condition must be a boolean", stmt.span.line, stmt.span.col));
                 }
                 self.infer_expr(body)?;
             }
-            Stmt::UseModule { .. } | Stmt::Load { .. } | Stmt::LoadForeign { .. } => {}
-            Stmt::Serverlet { state, handlers, .. } => {
+            StmtNode::UseModule { .. } | StmtNode::Load { .. } | StmtNode::LoadForeign { .. } => {}
+            StmtNode::Serverlet { state, handlers, .. } => {
                 self.push_env();
                 for s in state {
                     self.check_stmt(s)?;
@@ -180,7 +180,7 @@ impl TypeChecker {
                 }
                 self.pop_env();
             }
-            Stmt::OnStart(expr) | Stmt::OnStop(expr) => {
+            StmtNode::OnStart(expr) | StmtNode::OnStop(expr) => {
                 self.infer_expr(expr)?;
             }
         }
@@ -188,21 +188,21 @@ impl TypeChecker {
     }
 
     fn infer_expr(&mut self, expr: &Expr) -> Result<Type, String> {
-        match expr {
-            Expr::Literal(lit) => match lit {
+        match &expr.node {
+            ExprNode::Literal(lit) => match lit {
                 Literal::Int(_) => Ok(Type::Int),
                 Literal::Float(_) => Ok(Type::Float),
                 Literal::Str(_) => Ok(Type::Str),
                 Literal::Bool(_) => Ok(Type::Bool),
             },
-            Expr::Identifier(name) => {
+            ExprNode::Identifier(name) => {
                 if let Some(ty) = self.lookup_var(name) {
                     Ok(ty)
                 } else {
-                    Err(format!("undefined variable '{}'", name))
+                    Err(format!("line {}, col {}: undefined variable '{}'", expr.span.line, expr.span.col, name))
                 }
             }
-            Expr::Binary { op, lhs, rhs } => {
+            ExprNode::Binary { op, lhs, rhs } => {
                 let lhs_ty = self.infer_expr(lhs)?;
                 let rhs_ty = self.infer_expr(rhs)?;
                 
@@ -213,7 +213,7 @@ impl TypeChecker {
                     Ok(Type::Bool)
                 } else if [BinaryOp::And, BinaryOp::Or].contains(op) {
                     if lhs_ty != Type::Bool || rhs_ty != Type::Bool {
-                        return Err(format!("Logical operations require boolean operands, got {:?} and {:?}", lhs_ty, rhs_ty));
+                        return Err(format!("line {}, col {}: Logical operations require boolean operands, got {:?} and {:?}", expr.span.line, expr.span.col, lhs_ty, rhs_ty));
                     }
                     Ok(Type::Bool)
                 } else {
@@ -224,11 +224,11 @@ impl TypeChecker {
                     } else if *op == BinaryOp::Add && (lhs_ty == Type::Str || rhs_ty == Type::Str) {
                         Ok(Type::Str) // String concatenation
                     } else {
-                        Err(format!("Mismatched types in binary operation: {:?} and {:?}", lhs_ty, rhs_ty))
+                        Err(format!("line {}, col {}: Mismatched types in binary operation: {:?} and {:?}", expr.span.line, expr.span.col, lhs_ty, rhs_ty))
                     }
                 }
             }
-            Expr::Call { callee, args } => {
+            ExprNode::Call { callee, args } => {
                 let mut arg_types = Vec::new();
                 for a in args {
                     arg_types.push(self.infer_expr(a)?);
@@ -239,7 +239,7 @@ impl TypeChecker {
                     if let Type::Array(_, _) = arg_types[0] {
                         return Ok(Type::Int);
                     } else {
-                        return Err(format!("length() expects an array, got {:?}", arg_types[0]));
+                        return Err(format!("line {}, col {}: length() expects an array, got {:?}", expr.span.line, expr.span.col, arg_types[0]));
                     }
                 }
                 if callee == "append" && args.len() == 2 {
@@ -248,23 +248,23 @@ impl TypeChecker {
                         // For now, we trust the types align or fallback to rustc
                         return Ok(Type::Void);
                     } else {
-                        return Err(format!("append() expects an array as first argument, got {:?}", arg_types[0]));
+                        return Err(format!("line {}, col {}: append() expects an array as first argument, got {:?}", expr.span.line, expr.span.col, arg_types[0]));
                     }
                 }
                 if callee == "remove" && args.len() == 2 {
                     if let Type::Array(_, _) = arg_types[0] {
                         if arg_types[1] != Type::Int {
-                            return Err(format!("remove() expects an integer index, got {:?}", arg_types[1]));
+                            return Err(format!("line {}, col {}: remove() expects an integer index, got {:?}", expr.span.line, expr.span.col, arg_types[1]));
                         }
                         return Ok(Type::Void); // Returns value in Rust, but Void for simplicity or inner_ty
                     } else {
-                        return Err(format!("remove() expects an array as first argument, got {:?}", arg_types[0]));
+                        return Err(format!("line {}, col {}: remove() expects an array as first argument, got {:?}", expr.span.line, expr.span.col, arg_types[0]));
                     }
                 }
 
                 if let Some((expected_args, ret_ty)) = self.functions.get(callee) {
                     if expected_args.len() != args.len() {
-                        return Err(format!("Function {} expected {} arguments, got {}", callee, expected_args.len(), args.len()));
+                        return Err(format!("line {}, col {}: Function {} expected {} arguments, got {}", expr.span.line, expr.span.col, callee, expected_args.len(), args.len()));
                     }
                     Ok(ret_ty.clone())
                 } else {
@@ -274,12 +274,12 @@ impl TypeChecker {
                     Ok(Type::Void) // Unknown function
                 }
             }
-            Expr::Pipeline { value, function } => {
+            ExprNode::Pipeline { value, function } => {
                 let _val_ty = self.infer_expr(value)?;
                 // The piped value is implicitly prepended as the first argument.
                 // When the function side is a Call, adjust arity checking accordingly.
-                match function.as_ref() {
-                    Expr::Call { callee, args } => {
+                match &function.node {
+                    ExprNode::Call { callee, args } => {
                         // Infer types of explicit args
                         for a in args {
                             self.infer_expr(a)?;
@@ -289,7 +289,8 @@ impl TypeChecker {
                             let effective_arg_count = args.len() + 1; // +1 for piped value
                             if expected_args.len() != effective_arg_count {
                                 return Err(format!(
-                                    "Function {} expected {} arguments, got {} (including piped value)",
+                                    "line {}, col {}: Function {} expected {} arguments, got {} (including piped value)",
+                                    expr.span.line, expr.span.col,
                                     callee,
                                     expected_args.len(),
                                     effective_arg_count
@@ -300,12 +301,13 @@ impl TypeChecker {
                             Ok(Type::Void) // Unknown function
                         }
                     }
-                    Expr::Identifier(name) => {
+                    ExprNode::Identifier(name) => {
                         // Pipeline to a bare identifier: value |> fn
                         if let Some((expected_args, ret_ty)) = self.functions.get(name) {
                             if expected_args.len() != 1 {
                                 return Err(format!(
-                                    "Function {} expected {} arguments, got 1 (piped value)",
+                                    "line {}, col {}: Function {} expected {} arguments, got 1 (piped value)",
+                                    expr.span.line, expr.span.col,
                                     name,
                                     expected_args.len()
                                 ));
@@ -318,12 +320,12 @@ impl TypeChecker {
                     _ => self.infer_expr(function),
                 }
             }
-            Expr::Block(stmts) => {
+            ExprNode::Block(stmts) => {
                 self.push_env();
                 let mut last_ty = Type::Void;
                 for stmt in stmts {
                     self.check_stmt(stmt)?;
-                    if let Stmt::Expr(e) = stmt {
+                    if let StmtNode::Expr(e) = &stmt.node {
                         last_ty = self.infer_expr(e)?;
                     } else {
                         last_ty = Type::Void;
@@ -332,10 +334,10 @@ impl TypeChecker {
                 self.pop_env();
                 Ok(last_ty)
             }
-            Expr::If { cond, then_branch, else_branch } => {
+            ExprNode::If { cond, then_branch, else_branch } => {
                 let cond_ty = self.infer_expr(cond)?;
                 if cond_ty != Type::Bool {
-                    return Err("If condition must be a boolean".to_string());
+                    return Err(format!("line {}, col {}: If condition must be a boolean", expr.span.line, expr.span.col));
                 }
                 let then_ty = self.infer_expr(then_branch)?;
                 if let Some(eb) = else_branch {
@@ -343,7 +345,7 @@ impl TypeChecker {
                 }
                 Ok(then_ty)
             }
-            Expr::ModuleCall { module_local_name, function, args } => {
+            ExprNode::ModuleCall { module_local_name, function, args } => {
                 let mut arg_types = Vec::new();
                 for arg in args {
                     arg_types.push(self.infer_expr(arg)?);
@@ -352,7 +354,7 @@ impl TypeChecker {
                 let alias_key = format!("{}::{}", module_local_name, function);
                 if let Some((expected_args, ret_ty)) = self.functions.get(&alias_key) {
                     if expected_args.len() != args.len() {
-                        return Err(format!("Module function {} expected {} arguments, got {}", alias_key, expected_args.len(), args.len()));
+                        return Err(format!("line {}, col {}: Module function {} expected {} arguments, got {}", expr.span.line, expr.span.col, alias_key, expected_args.len(), args.len()));
                     }
                     return Ok(ret_ty.clone());
                 }
@@ -363,7 +365,7 @@ impl TypeChecker {
                 for (key, (expected_args, ret_ty)) in self.functions.iter() {
                     if key.ends_with(&format!("::{}", function)) {
                         if expected_args.len() != args.len() {
-                            return Err(format!("Module function {} expected {} arguments, got {}", key, expected_args.len(), args.len()));
+                            return Err(format!("line {}, col {}: Module function {} expected {} arguments, got {}", expr.span.line, expr.span.col, key, expected_args.len(), args.len()));
                         }
                         return Ok(ret_ty.clone());
                     }
@@ -375,17 +377,17 @@ impl TypeChecker {
                 
                 Ok(Type::Void)
             }
-            Expr::StartServerlet { args, .. } => {
+            ExprNode::StartServerlet { args, .. } => {
                 for arg in args {
                     self.infer_expr(arg)?;
                 }
                 Ok(Type::Process)
             }
-            Expr::AutomaticBlock { body } => {
+            ExprNode::AutomaticBlock { body } => {
                 self.infer_expr(body)?;
                 Ok(Type::Process)
             }
-            Expr::TriggeredBlock { params, body, .. } => {
+            ExprNode::TriggeredBlock { params, body, .. } => {
                 self.push_env();
                 for p in params {
                     self.define_var(p.name.clone(), p.ty.clone());
@@ -394,11 +396,11 @@ impl TypeChecker {
                 self.pop_env();
                 Ok(Type::Process)
             }
-            Expr::StartProcess { target } => {
+            ExprNode::StartProcess { target } => {
                 self.infer_expr(target)?;
                 Ok(Type::Process)
             }
-            Expr::ArrayLiteral(elements) => {
+            ExprNode::ArrayLiteral(elements) => {
                 let mut inner_ty = Type::Void;
                 for e in elements {
                     let ty = self.infer_expr(e)?;
@@ -414,3 +416,32 @@ impl TypeChecker {
         }
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    #[test]
+    fn test_typecheck_let() {
+        let mut lexer = Lexer::new("let x = 5; let y: int = x;");
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let stmts = parser.parse().unwrap();
+        let mut tc = TypeChecker::new();
+        assert!(tc.type_check(&stmts).is_ok());
+    }
+
+    #[test]
+    fn test_typecheck_error() {
+        let mut lexer = Lexer::new("let x = 5; let y: string = x;");
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let stmts = parser.parse().unwrap();
+        let mut tc = TypeChecker::new();
+        assert!(tc.type_check(&stmts).is_err());
+    }
+}
+

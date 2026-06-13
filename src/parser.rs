@@ -1,4 +1,4 @@
-use crate::ast::{BinaryOp, Expr, Literal, Param, Stmt, Type, Handler};
+use crate::ast::{BinaryOp, Expr, ExprNode, Literal, Param, Stmt, StmtNode, Type, Handler, Span, Spanned};
 use crate::lexer::{Token, TokenKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
@@ -72,7 +72,9 @@ impl Parser {
     }
 
     fn parse_statement(&mut self) -> Result<Stmt, String> {
-        let stmt = if self.match_token(TokenKind::Use) {
+        let start_tok = self.peek().clone();
+        let span = Span::new(start_tok.line, start_tok.col);
+        let node = if self.match_token(TokenKind::Use) {
             self.parse_use_statement()?
         } else if self.match_token(TokenKind::Load) {
             self.parse_load_statement()?
@@ -109,10 +111,10 @@ impl Parser {
         // Consume optional semicolon
         let _ = self.match_token(TokenKind::Semicolon);
 
-        Ok(stmt)
+        Ok(Spanned { node, span })
     }
 
-    fn parse_use_statement(&mut self) -> Result<Stmt, String> {
+    fn parse_use_statement(&mut self) -> Result<StmtNode, String> {
         self.consume(TokenKind::Module, "Expected 'module' after 'use'")?;
         
         let tok_ident = self.advance().clone();
@@ -129,19 +131,19 @@ impl Parser {
             _ => return Err(format!("Expected string literal for module name at line {}, col {}", tok_str.line, tok_str.col)),
         };
 
-        Ok(Stmt::UseModule { local_name, module_name })
+        Ok(StmtNode::UseModule { local_name, module_name })
     }
 
-    fn parse_load_statement(&mut self) -> Result<Stmt, String> {
+    fn parse_load_statement(&mut self) -> Result<StmtNode, String> {
         let tok = self.advance().clone();
         let path = match &tok.kind {
             TokenKind::Str(s) => s.clone(),
             _ => return Err(format!("Expected string literal path after 'load' at line {}, col {}", tok.line, tok.col)),
         };
-        Ok(Stmt::Load { path })
+        Ok(StmtNode::Load { path })
     }
 
-    fn parse_load_foreign_statement(&mut self) -> Result<Stmt, String> {
+    fn parse_load_foreign_statement(&mut self) -> Result<StmtNode, String> {
         let tok_lang = self.advance().clone();
         let language = match &tok_lang.kind {
             TokenKind::Str(s) => s.clone(),
@@ -154,10 +156,10 @@ impl Parser {
             _ => return Err(format!("Expected string literal for path after 'load_foreign' at line {}, col {}", tok_path.line, tok_path.col)),
         };
 
-        Ok(Stmt::LoadForeign { language, path })
+        Ok(StmtNode::LoadForeign { language, path })
     }
 
-    fn parse_serverlet_statement(&mut self) -> Result<Stmt, String> {
+    fn parse_serverlet_statement(&mut self) -> Result<StmtNode, String> {
         let tok_ident = self.advance().clone();
         let name = match &tok_ident.kind {
             TokenKind::Identifier(n) => n.clone(),
@@ -171,7 +173,10 @@ impl Parser {
 
         while self.peek().kind != TokenKind::RBrace && self.peek().kind != TokenKind::EOF {
             if self.match_token(TokenKind::Let) {
-                state.push(self.parse_let_statement()?);
+                let start_tok = self.peek().clone();
+                let span = Span::new(start_tok.line, start_tok.col);
+                let node = self.parse_let_statement()?;
+                state.push(Spanned { node, span });
                 let _ = self.match_token(TokenKind::Semicolon);
             } else if self.match_token(TokenKind::On) {
                 handlers.push(self.parse_handler()?);
@@ -183,7 +188,7 @@ impl Parser {
 
         self.consume(TokenKind::RBrace, "Expected '}' to end serverlet body")?;
 
-        Ok(Stmt::Serverlet { name, state, handlers })
+        Ok(StmtNode::Serverlet { name: name.to_string(), state, handlers })
     }
 
     fn parse_handler(&mut self) -> Result<Handler, String> {
@@ -211,7 +216,7 @@ impl Parser {
         })
     }
 
-    fn parse_let_statement(&mut self) -> Result<Stmt, String> {
+    fn parse_let_statement(&mut self) -> Result<StmtNode, String> {
         let tok = self.advance().clone();
         let name = match &tok.kind {
             TokenKind::Identifier(s) => s.clone(),
@@ -225,36 +230,36 @@ impl Parser {
 
         self.consume(TokenKind::Eq, "Expected '=' in variable declaration")?;
         let value = self.parse_expression(Precedence::Lowest)?;
-        Ok(Stmt::Let { name, ty, value })
+        Ok(StmtNode::Let { name, ty, value })
     }
 
-    fn parse_return_statement(&mut self) -> Result<Stmt, String> {
+    fn parse_return_statement(&mut self) -> Result<StmtNode, String> {
         let next_kind = &self.peek().kind;
         if next_kind == &TokenKind::Semicolon || next_kind == &TokenKind::RBrace || next_kind == &TokenKind::EOF {
-            Ok(Stmt::Return(None))
+            Ok(StmtNode::Return(None))
         } else {
             let value = self.parse_expression(Precedence::Lowest)?;
-            Ok(Stmt::Return(Some(value)))
+            Ok(StmtNode::Return(Some(value)))
         }
     }
 
-    fn parse_while_statement(&mut self) -> Result<Stmt, String> {
+    fn parse_while_statement(&mut self) -> Result<StmtNode, String> {
         let cond = self.parse_expression(Precedence::Lowest)?;
         let body = self.parse_block()?;
-        Ok(Stmt::While { cond, body })
+        Ok(StmtNode::While { cond, body })
     }
 
-    fn parse_parallel_statement(&mut self) -> Result<Stmt, String> {
+    fn parse_parallel_statement(&mut self) -> Result<StmtNode, String> {
         self.consume(TokenKind::LBrace, "Expected '{' after parallel keyword")?;
         let mut stmts = Vec::new();
         while self.peek().kind != TokenKind::RBrace && self.peek().kind != TokenKind::EOF {
             stmts.push(self.parse_statement()?);
         }
         self.consume(TokenKind::RBrace, "Expected '}' to end parallel block")?;
-        Ok(Stmt::Parallel(stmts))
+        Ok(StmtNode::Parallel(stmts))
     }
 
-    fn parse_fn_statement(&mut self) -> Result<Stmt, String> {
+    fn parse_fn_statement(&mut self) -> Result<StmtNode, String> {
         let tok = self.advance().clone();
         let name = match &tok.kind {
             TokenKind::Identifier(s) => s.clone(),
@@ -271,7 +276,7 @@ impl Parser {
         }
 
         let body = self.parse_block()?;
-        Ok(Stmt::FnDecl {
+        Ok(StmtNode::FnDecl {
             name,
             params,
             return_type,
@@ -279,7 +284,7 @@ impl Parser {
         })
     }
 
-    fn parse_task_statement(&mut self) -> Result<Stmt, String> {
+    fn parse_task_statement(&mut self) -> Result<StmtNode, String> {
         let tok = self.advance().clone();
         let name = match &tok.kind {
             TokenKind::Identifier(s) => s.clone(),
@@ -296,7 +301,7 @@ impl Parser {
         }
 
         let body = self.parse_block()?;
-        Ok(Stmt::TaskDecl {
+        Ok(StmtNode::TaskDecl {
             name,
             params,
             return_type,
@@ -304,7 +309,7 @@ impl Parser {
         })
     }
 
-    fn parse_process_statement(&mut self) -> Result<Stmt, String> {
+    fn parse_process_statement(&mut self) -> Result<StmtNode, String> {
         let tok = self.advance().clone();
         let name = match &tok.kind {
             TokenKind::Identifier(s) => s.clone(),
@@ -321,7 +326,7 @@ impl Parser {
         }
 
         let body = self.parse_block()?;
-        Ok(Stmt::ProcessDecl {
+        Ok(StmtNode::ProcessDecl {
             name,
             params,
             return_type,
@@ -329,7 +334,7 @@ impl Parser {
         })
     }
 
-    fn parse_orchestrator_statement(&mut self) -> Result<Stmt, String> {
+    fn parse_orchestrator_statement(&mut self) -> Result<StmtNode, String> {
         let tok = self.advance().clone();
         let name = match &tok.kind {
             TokenKind::Identifier(s) => s.clone(),
@@ -346,7 +351,7 @@ impl Parser {
         }
 
         let body = self.parse_block()?;
-        Ok(Stmt::OrchestratorDecl {
+        Ok(StmtNode::OrchestratorDecl {
             name,
             params,
             return_type,
@@ -354,7 +359,7 @@ impl Parser {
         })
     }
 
-    fn parse_trigger_statement(&mut self) -> Result<Stmt, String> {
+    fn parse_trigger_statement(&mut self) -> Result<StmtNode, String> {
         let tok = self.advance().clone();
         let event_name = match &tok.kind {
             TokenKind::Identifier(s) => s.clone(),
@@ -362,17 +367,17 @@ impl Parser {
         };
         self.consume(TokenKind::LParen, "Expected '(' after event name")?;
         let args = self.parse_call_args()?;
-        Ok(Stmt::Trigger { event_name, args })
+        Ok(StmtNode::Trigger { event_name, args })
     }
 
-    fn parse_on_start_statement(&mut self) -> Result<Stmt, String> {
+    fn parse_on_start_statement(&mut self) -> Result<StmtNode, String> {
         let body = self.parse_block()?;
-        Ok(Stmt::OnStart(body))
+        Ok(StmtNode::OnStart(body))
     }
 
-    fn parse_on_stop_statement(&mut self) -> Result<Stmt, String> {
+    fn parse_on_stop_statement(&mut self) -> Result<StmtNode, String> {
         let body = self.parse_block()?;
-        Ok(Stmt::OnStop(body))
+        Ok(StmtNode::OnStop(body))
     }
 
     fn parse_params(&mut self) -> Result<Vec<Param>, String> {
@@ -444,19 +449,21 @@ impl Parser {
         }
     }
 
-    fn parse_expr_statement(&mut self) -> Result<Stmt, String> {
+    fn parse_expr_statement(&mut self) -> Result<StmtNode, String> {
         let expr = self.parse_expression(Precedence::Lowest)?;
-        Ok(Stmt::Expr(expr))
+        Ok(StmtNode::Expr(expr))
     }
 
     fn parse_block(&mut self) -> Result<Expr, String> {
+        let start_tok = self.peek().clone();
+        let span = Span::new(start_tok.line, start_tok.col);
         self.consume(TokenKind::LBrace, "Expected '{' to start block")?;
         let mut stmts = Vec::new();
         while self.peek().kind != TokenKind::RBrace && self.peek().kind != TokenKind::EOF {
             stmts.push(self.parse_statement()?);
         }
         self.consume(TokenKind::RBrace, "Expected '}' to end block")?;
-        Ok(Expr::Block(stmts))
+        Ok(Spanned { node: ExprNode::Block(stmts), span })
     }
 
     fn parse_expression(&mut self, prec: Precedence) -> Result<Expr, String> {
@@ -483,37 +490,51 @@ impl Parser {
     }
 
     fn parse_prefix(&mut self) -> Result<Expr, String> {
+        let start_tok = self.peek().clone();
+        let span = Span::new(start_tok.line, start_tok.col);
+        let node = self.parse_prefix_node()?;
+        Ok(Spanned { node, span })
+    }
+
+    fn parse_infix(&mut self, lhs: Expr) -> Result<Expr, String> {
+        let start_tok = self.peek().clone();
+        let span = Span::new(start_tok.line, start_tok.col);
+        let node = self.parse_infix_node(lhs)?;
+        Ok(Spanned { node, span })
+    }
+
+    fn parse_prefix_node(&mut self) -> Result<ExprNode, String> {
         let tok = self.peek().clone();
         match &tok.kind {
             TokenKind::Int(v) => {
                 self.advance();
-                Ok(Expr::Literal(Literal::Int(*v)))
+                Ok(ExprNode::Literal(Literal::Int(*v)))
             }
             TokenKind::Float(v) => {
                 self.advance();
-                Ok(Expr::Literal(Literal::Float(*v)))
+                Ok(ExprNode::Literal(Literal::Float(*v)))
             }
             TokenKind::Str(v) => {
                 self.advance();
-                Ok(Expr::Literal(Literal::Str(v.clone())))
+                Ok(ExprNode::Literal(Literal::Str(v.clone())))
             }
             TokenKind::True => {
                 self.advance();
-                Ok(Expr::Literal(Literal::Bool(true)))
+                Ok(ExprNode::Literal(Literal::Bool(true)))
             }
             TokenKind::False => {
                 self.advance();
-                Ok(Expr::Literal(Literal::Bool(false)))
+                Ok(ExprNode::Literal(Literal::Bool(false)))
             }
             TokenKind::Identifier(name) => {
                 self.advance();
-                Ok(Expr::Identifier(name.clone()))
+                Ok(ExprNode::Identifier(name.clone()))
             }
             TokenKind::LParen => {
                 self.advance(); // consume '('
                 let expr = self.parse_expression(Precedence::Lowest)?;
                 self.consume(TokenKind::RParen, "Expected ')' after grouped expression")?;
-                Ok(expr)
+                Ok(expr.node)
             }
             TokenKind::If => {
                 self.advance(); // consume 'if'
@@ -530,34 +551,34 @@ impl Parser {
                         return Err(format!("Expected 'if' or '{{' after 'else' at line {}, col {}", next_tok.line, next_tok.col));
                     }
                 }
-                Ok(Expr::If {
+                Ok(ExprNode::If {
                     cond: Box::new(cond),
                     then_branch: Box::new(then_branch),
                     else_branch: else_branch.map(Box::new),
                 })
             }
             TokenKind::LBrace => {
-                self.parse_block()
+                Ok(self.parse_block()?.node)
             }
             TokenKind::Start => {
                 self.advance(); // consume 'start'
                 let expr = self.parse_expression(Precedence::Lowest)?;
-                match expr {
-                    Expr::Call { callee, args } => {
-                        Ok(Expr::StartServerlet { name: callee, args })
+                match expr.node {
+                    ExprNode::Call { callee, args } => {
+                        Ok(ExprNode::StartServerlet { name: callee, args })
                     }
-                    Expr::ModuleCall { module_local_name, function, args } => {
-                        Ok(Expr::StartServerlet { name: format!("{}::{}", module_local_name, function), args })
+                    ExprNode::ModuleCall { module_local_name, function, args } => {
+                        Ok(ExprNode::StartServerlet { name: format!("{}::{}", module_local_name, function), args })
                     }
                     _ => {
-                        Ok(Expr::StartProcess { target: Box::new(expr) })
+                        Ok(ExprNode::StartProcess { target: Box::new(expr) })
                     }
                 }
             }
             TokenKind::Automatic => {
                 self.advance(); // consume 'automatic'
                 let body = self.parse_block()?;
-                Ok(Expr::AutomaticBlock { body: Box::new(body) })
+                Ok(ExprNode::AutomaticBlock { body: Box::new(body) })
             }
             TokenKind::On => {
                 self.advance(); // consume 'on'
@@ -570,7 +591,7 @@ impl Parser {
                 let params = self.parse_params()?;
                 self.consume(TokenKind::RParen, "Expected ')' after parameters")?;
                 let body = self.parse_block()?;
-                Ok(Expr::TriggeredBlock {
+                Ok(ExprNode::TriggeredBlock {
                     event_name,
                     params,
                     body: Box::new(body),
@@ -589,20 +610,20 @@ impl Parser {
                     }
                 }
                 self.consume(TokenKind::RBracket, "Expected ']' to close array literal")?;
-                Ok(Expr::ArrayLiteral(elements))
+                Ok(ExprNode::ArrayLiteral(elements))
             }
             _ => Err(format!("Expected expression at line {}, col {}, found {:?}", tok.line, tok.col, tok.kind)),
         }
     }
 
-    fn parse_infix(&mut self, lhs: Expr) -> Result<Expr, String> {
+    fn parse_infix_node(&mut self, lhs: Expr) -> Result<ExprNode, String> {
         let tok = self.peek().clone();
         let op_prec = self.peek_precedence();
         match &tok.kind {
             TokenKind::Eq => {
                 self.advance(); // consume '='
                 let rhs = self.parse_expression(Precedence::Assign)?;
-                Ok(Expr::Binary {
+                Ok(ExprNode::Binary {
                     op: BinaryOp::Assign,
                     lhs: Box::new(lhs),
                     rhs: Box::new(rhs),
@@ -611,8 +632,8 @@ impl Parser {
             TokenKind::LParen => {
                 self.advance(); // consume '('
                 let args = self.parse_call_args()?;
-                if let Expr::Identifier(name) = lhs {
-                    Ok(Expr::Call { callee: name, args })
+                if let ExprNode::Identifier(name) = &lhs.node {
+                    Ok(ExprNode::Call { callee: name.to_string(), args })
                 } else {
                     Err(format!("Expected identifier before '(', found {:?} at line {}, col {}", lhs, tok.line, tok.col))
                 }
@@ -620,7 +641,7 @@ impl Parser {
             TokenKind::Pipe => {
                 self.advance(); // consume '|>'
                 let rhs = self.parse_expression(Precedence::Pipe)?;
-                Ok(Expr::Pipeline {
+                Ok(ExprNode::Pipeline {
                     value: Box::new(lhs),
                     function: Box::new(rhs),
                 })
@@ -636,9 +657,9 @@ impl Parser {
                 self.consume(TokenKind::LParen, "Expected '(' after module function name")?;
                 let args = self.parse_call_args()?;
 
-                if let Expr::Identifier(module_local_name) = lhs {
-                    Ok(Expr::ModuleCall {
-                        module_local_name,
+                if let ExprNode::Identifier(module_local_name) = &lhs.node {
+                    Ok(ExprNode::ModuleCall {
+                        module_local_name: module_local_name.to_string(),
                         function,
                         args,
                     })
@@ -662,7 +683,7 @@ impl Parser {
                     _ => unreachable!(),
                 };
                 let rhs = self.parse_expression(op_prec)?;
-                Ok(Expr::Binary {
+                Ok(ExprNode::Binary {
                     op,
                     lhs: Box::new(lhs),
                     rhs: Box::new(rhs),
@@ -699,18 +720,18 @@ mod tests {
         let ast = parser.parse().unwrap();
 
         assert_eq!(ast.len(), 1);
-        if let Stmt::Let { name, ty, value } = &ast[0] {
+        if let StmtNode::Let { name, ty, value } = &ast[0].node {
             assert_eq!(name, "x");
             assert_eq!(ty, &None);
             
             // Value should be parsed as 5 + (10 * 2) due to precedence
-            if let Expr::Binary { op, lhs, rhs } = value {
+            if let ExprNode::Binary { op, lhs, rhs } = &value.node {
                 assert_eq!(op, &BinaryOp::Add);
-                assert!(matches!(**lhs, Expr::Literal(Literal::Int(5))));
-                if let Expr::Binary { op: op2, lhs: lhs2, rhs: rhs2 } = &**rhs {
+                assert!(matches!(&lhs.node, ExprNode::Literal(Literal::Int(5))));
+                if let ExprNode::Binary { op: op2, lhs: lhs2, rhs: rhs2 } = &rhs.node {
                     assert_eq!(op2, &BinaryOp::Mul);
-                    assert!(matches!(**lhs2, Expr::Literal(Literal::Int(10))));
-                    assert!(matches!(**rhs2, Expr::Literal(Literal::Int(2))));
+                    assert!(matches!(&lhs2.node, ExprNode::Literal(Literal::Int(10))));
+                    assert!(matches!(&rhs2.node, ExprNode::Literal(Literal::Int(2))));
                 } else {
                     panic!("Expected binary right side");
                 }
@@ -731,21 +752,21 @@ mod tests {
 
         assert_eq!(ast.len(), 2);
         assert_eq!(
-            ast[0],
-            Stmt::UseModule {
+            ast[0].node,
+            StmtNode::UseModule {
                 local_name: "frontend".to_string(),
                 module_name: "react_app".to_string(),
             }
         );
 
-        if let Stmt::Let { name, ty, value } = &ast[1] {
+        if let StmtNode::Let { name, ty, value } = &ast[1].node {
             assert_eq!(name, "res");
             assert_eq!(ty, &None);
-            if let Expr::ModuleCall { module_local_name, function, args } = value {
+            if let ExprNode::ModuleCall { module_local_name, function, args } = &value.node {
                 assert_eq!(module_local_name, "frontend");
                 assert_eq!(function, "prompt");
                 assert_eq!(args.len(), 1);
-                assert!(matches!(&args[0], Expr::Literal(Literal::Str(s)) if s == "Name"));
+                assert!(matches!(&args[0].node, ExprNode::Literal(Literal::Str(s)) if s == "Name"));
             } else {
                 panic!("Expected ModuleCall expression");
             }

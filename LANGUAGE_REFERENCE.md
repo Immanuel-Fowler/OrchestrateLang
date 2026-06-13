@@ -699,6 +699,11 @@ load_foreign "rust" "./math_helpers.rs"
 
 The compiler reads the `.rs` file and injects its contents verbatim into the generated Rust module. Any `pub fn` you define is immediately callable from Orchestrate. The compiler also auto-scans the file for `pub fn` signatures and registers them in the typechecker so return types are correctly inferred.
 
+> **Important Limitations for Rust FFI:**
+> - The parser is primitive: the entire `pub fn name(...) -> ... {` signature **must reside on a single line**. Multiline signatures will not be registered by the typechecker.
+> - Only basic types are supported: `i64` (`int`), `f64` (`float`), `String` or `&str` (`string`), and `bool` (`bool`).
+> - Return types must be explicitly stated on the same line if they return a value.
+
 ```rust
 // math_helpers.rs
 pub fn circle_area(radius: f64) -> f64 {

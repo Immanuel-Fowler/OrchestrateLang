@@ -1,3 +1,24 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub line: usize,
+    pub col: usize,
+}
+
+impl Span {
+    pub fn new(line: usize, col: usize) -> Self {
+        Span { line, col }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Spanned<T> {
+    pub node: T,
+    pub span: Span,
+}
+
+pub type Expr = Spanned<ExprNode>;
+pub type Stmt = Spanned<StmtNode>;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     Int(i64),
@@ -50,7 +71,7 @@ pub struct Handler {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Expr {
+pub enum ExprNode {
     Literal(Literal),
     Identifier(String),
     Binary {
@@ -96,7 +117,7 @@ pub enum Expr {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Stmt {
+pub enum StmtNode {
     Let {
         name: String,
         ty: Option<Type>,
@@ -108,13 +129,13 @@ pub enum Stmt {
         name: String,
         params: Vec<Param>,
         return_type: Type,
-        body: Expr, // Often a Expr::Block
+        body: Expr, // Often a ExprNode::Block
     },
     TaskDecl {
         name: String,
         params: Vec<Param>,
         return_type: Type,
-        body: Expr, // Often a Expr::Block
+        body: Expr, // Often a ExprNode::Block
     },
     ProcessDecl {
         name: String,
@@ -135,7 +156,7 @@ pub enum Stmt {
     Parallel(Vec<Stmt>),
     While {
         cond: Expr,
-        body: Expr, // Often a Expr::Block
+        body: Expr, // Often a ExprNode::Block
     },
     UseModule {
         local_name: String,
@@ -153,6 +174,6 @@ pub enum Stmt {
         state: Vec<Stmt>,
         handlers: Vec<Handler>,
     },
-    OnStart(Expr), // Typically Expr::Block
-    OnStop(Expr),  // Typically Expr::Block
+    OnStart(Expr), // Typically ExprNode::Block
+    OnStop(Expr),  // Typically ExprNode::Block
 }
