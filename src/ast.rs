@@ -182,6 +182,7 @@ pub enum StmtNode {
         name: String,
         state: Vec<Stmt>,
         handlers: Vec<Handler>,
+        secret: bool,
     },
     OnStart(Expr), // Typically ExprNode::Block
     OnStop(Expr),  // Typically ExprNode::Block

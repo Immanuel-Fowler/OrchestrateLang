@@ -1,0 +1,3 @@
+circle_area(radius: float) -> float
+rectangle_area(width: float, height: float) -> float
+hypotenuse(a: float, b: float) -> float

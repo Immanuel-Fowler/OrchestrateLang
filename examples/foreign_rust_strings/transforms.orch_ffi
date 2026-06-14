@@ -1,0 +1,3 @@
+reverse_string(s: string) -> string
+count_vowels(s: string) -> int
+to_uppercase(s: string) -> string

@@ -1,6 +1,147 @@
 use crate::ast::{ExprNode, StmtNode, Expr, Stmt, Type};
 use std::collections::HashSet;
 
+/// The shared runtime preamble (operator traits + builtins). When
+/// `print_to_stderr` is true, `print_val` writes to stderr — used by secret
+/// serverlet child programs whose stdout is the IPC channel.
+pub fn runtime_preamble(print_to_stderr: bool) -> String {
+    let print_macro = if print_to_stderr { "eprintln!" } else { "println!" };
+    format!(r#"trait OrchAdd<RHS = Self> {{
+    type Output;
+    fn orch_add(self, rhs: RHS) -> Self::Output;
+}}
+
+impl OrchAdd for i64 {{
+    type Output = i64;
+    fn orch_add(self, rhs: i64) -> i64 {{ self + rhs }}
+}}
+
+impl OrchAdd for f64 {{
+    type Output = f64;
+    fn orch_add(self, rhs: f64) -> f64 {{ self + rhs }}
+}}
+
+impl OrchAdd<&str> for String {{
+    type Output = String;
+    fn orch_add(mut self, rhs: &str) -> String {{
+        self.push_str(rhs);
+        self
+    }}
+}}
+
+impl OrchAdd<String> for String {{
+    type Output = String;
+    fn orch_add(mut self, rhs: String) -> String {{
+        self.push_str(&rhs);
+        self
+    }}
+}}
+
+impl OrchAdd<&str> for &str {{
+    type Output = String;
+    fn orch_add(self, rhs: &str) -> String {{
+        let mut s = self.to_string();
+        s.push_str(rhs);
+        s
+    }}
+}}
+
+impl OrchAdd<String> for &str {{
+    type Output = String;
+    fn orch_add(self, rhs: String) -> String {{
+        let mut s = self.to_string();
+        s.push_str(&rhs);
+        s
+    }}
+}}
+
+fn print_val<T: std::fmt::Display>(val: T) {{
+    {print_macro}("{{}}", val);
+}}
+
+fn to_string<T: std::fmt::Display>(val: T) -> String {{
+    val.to_string()
+}}
+
+fn stop_orch() {{
+    std::process::exit(0);
+}}
+
+type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send + Sync + 'static>;
+
+"#, print_macro = print_macro)
+}
+
+/// Async length-prefixed frame helpers used by a secret serverlet's mirror
+/// (orchestrator side) to talk to the child process over its stdio.
+pub const SECRET_MIRROR_HELPERS: &str = r#"async fn __secret_write_frame<W: tokio::io::AsyncWriteExt + Unpin>(w: &mut W, fields: &[String]) -> std::io::Result<()> {
+    w.write_all(&(fields.len() as u32).to_le_bytes()).await?;
+    for f in fields {
+        let b = f.as_bytes();
+        w.write_all(&(b.len() as u32).to_le_bytes()).await?;
+        w.write_all(b).await?;
+    }
+    w.flush().await?;
+    Ok(())
+}
+
+async fn __secret_read_frame<R: tokio::io::AsyncReadExt + Unpin>(r: &mut R) -> std::io::Result<Option<Vec<String>>> {
+    let mut n_buf = [0u8; 4];
+    match r.read_exact(&mut n_buf).await {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e) => return Err(e),
+    }
+    let n = u32::from_le_bytes(n_buf);
+    let mut fields = Vec::with_capacity(n as usize);
+    for _ in 0..n {
+        let mut len_buf = [0u8; 4];
+        r.read_exact(&mut len_buf).await?;
+        let len = u32::from_le_bytes(len_buf) as usize;
+        let mut buf = vec![0u8; len];
+        r.read_exact(&mut buf).await?;
+        fields.push(String::from_utf8_lossy(&buf).into_owned());
+    }
+    Ok(Some(fields))
+}
+
+"#;
+
+/// Blocking length-prefixed frame helpers used by a secret serverlet's child
+/// program (stdin/stdout side).
+pub const SECRET_CHILD_FRAMES: &str = r#"fn __frame_read<R: std::io::Read>(r: &mut R) -> std::io::Result<Option<Vec<String>>> {
+    let mut n_buf = [0u8; 4];
+    match r.read_exact(&mut n_buf) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e) => return Err(e),
+    }
+    let n = u32::from_le_bytes(n_buf);
+    let mut fields = Vec::with_capacity(n as usize);
+    for _ in 0..n {
+        let mut len_buf = [0u8; 4];
+        r.read_exact(&mut len_buf)?;
+        let len = u32::from_le_bytes(len_buf) as usize;
+        let mut buf = vec![0u8; len];
+        r.read_exact(&mut buf)?;
+        fields.push(String::from_utf8_lossy(&buf).into_owned());
+    }
+    Ok(Some(fields))
+}
+
+fn __frame_write<W: std::io::Write>(w: &mut W, fields: &[String]) -> std::io::Result<()> {
+    w.write_all(&(fields.len() as u32).to_le_bytes())?;
+    for f in fields {
+        let b = f.as_bytes();
+        w.write_all(&(b.len() as u32).to_le_bytes())?;
+        w.write_all(b)?;
+    }
+    w.flush()?;
+    Ok(())
+}
+
+"#;
+
 pub fn pascal_case(s: &str) -> String {
     let mut res = String::new();
     let mut capitalize = true;
@@ -24,6 +165,12 @@ pub struct Codegen {
     pub is_main: bool,
     pub events: std::collections::HashMap<String, Vec<Type>>,
     pub local_stmts: Vec<Stmt>,
+    /// Standalone programs for secret serverlets: (binary_name, rust_source).
+    /// The driver writes each to `.orch_cache/src/bin/<binary_name>.rs`.
+    pub secret_programs: Vec<(String, String)>,
+    /// True if any secret serverlet was emitted, so the main/module file pulls in
+    /// the async IPC frame helpers.
+    pub has_secret: bool,
 }
 
 impl Codegen {
@@ -36,6 +183,8 @@ impl Codegen {
             is_main: false,
             events: std::collections::HashMap::new(),
             local_stmts: Vec::new(),
+            secret_programs: Vec::new(),
+            has_secret: false,
         }
     }
 
@@ -273,6 +422,14 @@ impl Codegen {
         self.scan_modules(stmts);
         self.scan_events(stmts);
 
+        // Detect secret serverlets up front so the preamble can include the IPC
+        // frame helpers before any mirror code is emitted.
+        for stmt in stmts {
+            if let StmtNode::Serverlet { secret: true, .. } = &stmt.node {
+                self.has_secret = true;
+            }
+        }
+
         let mut code = String::new();
 
         // Preamble
@@ -318,70 +475,13 @@ impl Codegen {
             }
         }
 
-        code.push_str(r#"trait OrchAdd<RHS = Self> {
-    type Output;
-    fn orch_add(self, rhs: RHS) -> Self::Output;
-}
+        code.push_str(&runtime_preamble(false));
 
-impl OrchAdd for i64 {
-    type Output = i64;
-    fn orch_add(self, rhs: i64) -> i64 { self + rhs }
-}
-
-impl OrchAdd for f64 {
-    type Output = f64;
-    fn orch_add(self, rhs: f64) -> f64 { self + rhs }
-}
-
-impl OrchAdd<&str> for String {
-    type Output = String;
-    fn orch_add(mut self, rhs: &str) -> String {
-        self.push_str(rhs);
-        self
-    }
-}
-
-impl OrchAdd<String> for String {
-    type Output = String;
-    fn orch_add(mut self, rhs: String) -> String {
-        self.push_str(&rhs);
-        self
-    }
-}
-
-impl OrchAdd<&str> for &str {
-    type Output = String;
-    fn orch_add(self, rhs: &str) -> String {
-        let mut s = self.to_string();
-        s.push_str(rhs);
-        s
-    }
-}
-
-impl OrchAdd<String> for &str {
-    type Output = String;
-    fn orch_add(self, rhs: String) -> String {
-        let mut s = self.to_string();
-        s.push_str(&rhs);
-        s
-    }
-}
-
-fn print_val<T: std::fmt::Display>(val: T) {
-    println!("{}", val);
-}
-
-fn to_string<T: std::fmt::Display>(val: T) -> String {
-    val.to_string()
-}
-
-fn stop_orch() {
-    std::process::exit(0);
-}
-
-type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send + Sync + 'static>;
-
-"#);
+        // Async IPC frame helpers, emitted only when a secret serverlet's mirror
+        // is present in this file (main or module).
+        if self.has_secret {
+            code.push_str(SECRET_MIRROR_HELPERS);
+        }
 
         let mut global_stmts = Vec::new();
         let mut local_stmts = Vec::new();

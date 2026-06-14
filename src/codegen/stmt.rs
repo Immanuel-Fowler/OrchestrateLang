@@ -1,5 +1,5 @@
-use crate::ast::{ExprNode, StmtNode, Stmt, Type};
-use super::core::{Codegen, pascal_case};
+use crate::ast::{ExprNode, StmtNode, Stmt, Type, Handler};
+use super::core::{Codegen, pascal_case, runtime_preamble, SECRET_CHILD_FRAMES};
 
 impl Codegen {
     pub fn compile_stmt(&mut self, stmt: &Stmt) -> String {
@@ -392,7 +392,7 @@ impl Codegen {
                 format!("mod {};", local_name)
             }
             StmtNode::Load { .. } | StmtNode::LoadForeign { .. } => "".to_string(),
-            StmtNode::Serverlet { name, state, handlers } => {
+            StmtNode::Serverlet { name, state, handlers, secret } => {
                 let mut enum_variants = Vec::new();
                 for h in handlers {
                     let variant_name = pascal_case(&h.name);
@@ -482,6 +482,16 @@ impl Codegen {
                     }
                 }
 
+                if *secret {
+                    // Secret serverlet: the handler logic is emitted as a separate
+                    // program (pushed to self.secret_programs); the orchestrator
+                    // only gets a mirror that relays messages over IPC.
+                    let start_fn = self.compile_secret_mirror(name, handlers);
+                    let child_program = self.compile_secret_program(name, state, handlers);
+                    self.secret_programs.push((format!("secret_{}", name), child_program));
+                    return format!("{}\n\n{}\n\n{}", msg_enum, client_struct, start_fn);
+                }
+
                 let start_fn = format!(
                     "#[allow(non_snake_case)]\npub fn start_{}() -> {}Client {{\n    let (tx, mut rx) = tokio::sync::mpsc::channel::<{}Msg>(100);\n    tokio::spawn(async move {{\n{}\n        while let Some(msg) = rx.recv().await {{\n            match msg {{\n{}\n            }}\n        }}\n    }});\n    {}Client {{ tx }}\n}}",
                     name, name, name,
@@ -502,5 +512,141 @@ impl Codegen {
         }
     }
 
+    /// Orchestrator-side mirror for a secret serverlet: same XClient/XMsg surface,
+    /// but `start_X` spawns the separate `secret_X` process and relays each call
+    /// over its stdio instead of running the handler bodies inline.
+    fn compile_secret_mirror(&mut self, name: &str, handlers: &[Handler]) -> String {
+        if let Some(reason) = secret_unsupported_reason(handlers) {
+            return format!("compile_error!(\"secret serverlet '{}': {}\");\n", name, reason);
+        }
 
+        let mut arms = Vec::new();
+        for (k, h) in handlers.iter().enumerate() {
+            let variant = pascal_case(&h.name);
+            let param_names: Vec<String> = h.params.iter().map(|p| p.name.clone()).collect();
+            let binding = if param_names.is_empty() {
+                "reply_to".to_string()
+            } else {
+                format!("{}, reply_to", param_names.join(", "))
+            };
+
+            let mut req_fields = vec![format!("\"{}\".to_string()", k)];
+            for p in &h.params {
+                let enc = match p.ty {
+                    Type::Str => p.name.clone(),
+                    Type::Float => format!("format!(\"{{:?}}\", {})", p.name),
+                    _ => format!("{}.to_string()", p.name),
+                };
+                req_fields.push(enc);
+            }
+
+            let decode = if h.return_type == Type::Void {
+                "()".to_string()
+            } else {
+                match h.return_type {
+                    Type::Str => "__f.get(0).cloned().unwrap_or_default()".to_string(),
+                    Type::Float => "__f.get(0).and_then(|s| s.parse::<f64>().ok()).unwrap_or_default()".to_string(),
+                    Type::Bool => "__f.get(0).and_then(|s| s.parse::<bool>().ok()).unwrap_or_default()".to_string(),
+                    _ => "__f.get(0).and_then(|s| s.parse::<i64>().ok()).unwrap_or_default()".to_string(),
+                }
+            };
+
+            arms.push(format!(
+"                {n}Msg::{v} {{ {b} }} => {{\n                    let __req: Vec<String> = vec![{req}];\n                    if __secret_write_frame(&mut __cin, &__req).await.is_err() {{\n                        eprintln!(\"[orchestrate] secret serverlet '{n}' is not reachable\");\n                        let _ = reply_to.send(Default::default());\n                        continue;\n                    }}\n                    match __secret_read_frame(&mut __cout).await {{\n                        Ok(Some(__f)) => {{ let _ = reply_to.send({dec}); }}\n                        _ => {{ eprintln!(\"[orchestrate] secret serverlet '{n}' exited unexpectedly\"); let _ = reply_to.send(Default::default()); }}\n                    }}\n                }}",
+                n = name, v = variant, b = binding, req = req_fields.join(", "), dec = decode
+            ));
+        }
+
+        format!(
+"#[allow(non_snake_case)]\npub fn start_{n}() -> {n}Client {{\n    let (tx, mut rx) = tokio::sync::mpsc::channel::<{n}Msg>(100);\n    tokio::spawn(async move {{\n        use tokio::io::{{AsyncReadExt, AsyncWriteExt}};\n        let __exe = std::env::current_exe().expect(\"current_exe\");\n        let __dir = __exe.parent().expect(\"exe dir\").to_path_buf();\n        let __bin = if cfg!(target_os = \"windows\") {{ \"secret_{n}.exe\" }} else {{ \"secret_{n}\" }};\n        let mut __child = match tokio::process::Command::new(__dir.join(__bin))\n            .stdin(std::process::Stdio::piped())\n            .stdout(std::process::Stdio::piped())\n            .spawn() {{\n            Ok(c) => c,\n            Err(e) => {{ eprintln!(\"[orchestrate] failed to spawn secret serverlet '{n}': {{}}\", e); return; }}\n        }};\n        let mut __cin = __child.stdin.take().expect(\"child stdin\");\n        let mut __cout = __child.stdout.take().expect(\"child stdout\");\n        let _ = __secret_read_frame(&mut __cout).await;\n        while let Some(msg) = rx.recv().await {{\n            match msg {{\n{arms}\n            }}\n        }}\n        drop(__cin);\n        let _ = __child.wait().await;\n    }});\n    {n}Client {{ tx }}\n}}",
+            n = name, arms = arms.join("\n")
+        )
+    }
+
+    /// The standalone child program for a secret serverlet: owns the state, reads
+    /// framed requests from stdin, dispatches by handler index, writes framed
+    /// replies to stdout. `print` is routed to stderr (stdout is the IPC channel).
+    fn compile_secret_program(&mut self, name: &str, state: &[Stmt], handlers: &[Handler]) -> String {
+        if let Some(reason) = secret_unsupported_reason(handlers) {
+            return format!("compile_error!(\"secret serverlet '{}': {}\");\n", name, reason);
+        }
+
+        let mut state_vars = Vec::new();
+        for s in state {
+            if let StmtNode::Let { name: vname, ty, value } = &s.node {
+                let val_str = self.compile_expr(value);
+                if let Some(t) = ty {
+                    state_vars.push(format!("    let mut {}: {} = {};", vname, self.compile_type(t), val_str));
+                } else {
+                    state_vars.push(format!("    let mut {} = {};", vname, val_str));
+                }
+            }
+        }
+
+        let mut arms = Vec::new();
+        for (k, h) in handlers.iter().enumerate() {
+            let mut arg_lets = Vec::new();
+            for (j, p) in h.params.iter().enumerate() {
+                let idx = j + 1;
+                let decode = match p.ty {
+                    Type::Str => format!("__fields[{}].clone()", idx),
+                    Type::Int => format!("__fields[{}].parse::<i64>().unwrap_or_default()", idx),
+                    Type::Float => format!("__fields[{}].parse::<f64>().unwrap_or_default()", idx),
+                    Type::Bool => format!("__fields[{}].parse::<bool>().unwrap_or_default()", idx),
+                    _ => "Default::default()".to_string(),
+                };
+                arg_lets.push(format!("                        let {}: {} = {};", p.name, self.compile_type(&p.ty), decode));
+            }
+            let body = self.compile_expr(&h.body);
+            let finish = if h.return_type == Type::Void {
+                "                        let _ = __handler();\n                        let _ = __frame_write(&mut __writer, &[]);".to_string()
+            } else {
+                let enc = match h.return_type {
+                    Type::Float => "format!(\"{:?}\", __r)".to_string(),
+                    Type::Str => "__r".to_string(),
+                    _ => "__r.to_string()".to_string(),
+                };
+                format!("                        let __r = __handler();\n                        let _ = __frame_write(&mut __writer, &[{}]);", enc)
+            };
+            arms.push(format!(
+"                    {k}usize => {{\n{args}\n                        #[allow(unused_mut)]\n                        let mut __handler = || {{ {body} }};\n{finish}\n                    }}",
+                k = k, args = arg_lets.join("\n"), body = body, finish = finish
+            ));
+        }
+
+        format!(
+"// Generated by Orchestrate Compiler — secret serverlet '{name}'\n#![allow(unused_variables)]\n#![allow(dead_code)]\n#![allow(unused_imports)]\n#![allow(unused_parens)]\n#![allow(unused_mut)]\n\n{preamble}\n{frames}\nfn main() {{\n    let __stdin = std::io::stdin();\n    let mut __reader = std::io::BufReader::new(__stdin.lock());\n    let __stdout = std::io::stdout();\n    let mut __writer = std::io::BufWriter::new(__stdout.lock());\n\n{state}\n\n    let _ = __frame_write(&mut __writer, &[\"ready\".to_string()]);\n\n    loop {{\n        match __frame_read(&mut __reader) {{\n            Ok(Some(__fields)) => {{\n                if __fields.is_empty() {{ continue; }}\n                let __idx: usize = __fields[0].parse().unwrap_or(usize::MAX);\n                match __idx {{\n{arms}\n                    _ => {{}}\n                }}\n            }}\n            Ok(None) => break,\n            Err(_) => break,\n        }}\n    }}\n}}\n",
+            name = name,
+            preamble = runtime_preamble(true),
+            frames = SECRET_CHILD_FRAMES,
+            state = state_vars.join("\n"),
+            arms = arms.join("\n")
+        )
+    }
+
+
+}
+
+/// Returns Some(reason) if any handler uses a type the secret-serverlet IPC layer
+/// can't marshal in v1 (only int, float, bool, string params; those plus void as
+/// returns). Kept free-standing so both the mirror and the child program guard
+/// identically.
+fn secret_unsupported_reason(handlers: &[Handler]) -> Option<String> {
+    for h in handlers {
+        for p in &h.params {
+            if !matches!(p.ty, Type::Int | Type::Float | Type::Str | Type::Bool) {
+                return Some(format!(
+                    "handler '{}' parameter '{}' uses an unsupported type; secret serverlets support only int, float, bool, string in v1",
+                    h.name, p.name
+                ));
+            }
+        }
+        if !matches!(h.return_type, Type::Int | Type::Float | Type::Str | Type::Bool | Type::Void) {
+            return Some(format!(
+                "handler '{}' uses an unsupported return type; secret serverlets support int, float, bool, string, void in v1",
+                h.name
+            ));
+        }
+    }
+    None
 }

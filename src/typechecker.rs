@@ -46,6 +46,15 @@ impl TypeChecker {
                 StmtNode::StructDef { name, fields } => {
                     self.struct_defs.insert(name.clone(), fields.clone());
                 }
+                StmtNode::Serverlet { name, handlers, .. } => {
+                    // Register handlers as `Serverlet::handler` so calls through a
+                    // client variable (`v.handler(..)`) resolve to the right return
+                    // type instead of falling back to void.
+                    for h in handlers {
+                        let param_types: Vec<Type> = h.params.iter().map(|p| p.ty.clone()).collect();
+                        self.functions.insert(format!("{}::{}", name, h.name), (param_types, h.return_type.clone()));
+                    }
+                }
                 _ => {}
             }
         }

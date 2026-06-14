@@ -29,6 +29,31 @@ fn compile_to_rust(source: &str) -> String {
     gen.generate(&ast, true)
 }
 
+/// Like `compile_to_rust`, but also appends each generated secret-serverlet child
+/// program so the snapshot covers both the orchestrator-side mirror and the child.
+fn compile_with_secret(source: &str) -> String {
+    let mut lex = lexer::Lexer::new(source);
+    let tokens = lex.tokenize().expect("lex failed");
+    let mut p = parser::Parser::new(tokens);
+    let ast = p.parse().expect("parse failed");
+    let mut tc = typechecker::TypeChecker::new();
+    tc.type_check(&ast).expect("typecheck failed");
+    let tasks = ast.iter().filter_map(|s| {
+        use orchestrate_lib::ast::StmtNode;
+        match &s.node {
+            StmtNode::TaskDecl { name, .. } | StmtNode::ProcessDecl { name, .. } => Some(name.clone()),
+            _ => None,
+        }
+    }).collect();
+    let mut gen = codegen::Codegen::new(tasks);
+    let main = gen.generate(&ast, true);
+    let mut out = main;
+    for (bin_name, program) in &gen.secret_programs {
+        out.push_str(&format!("\n\n// ===== CHILD: {} =====\n\n{}", bin_name, program));
+    }
+    out
+}
+
 fn assert_snapshot(name: &str, actual: &str) {
     let dir = snapshots_dir();
     fs::create_dir_all(&dir).unwrap();
@@ -128,4 +153,27 @@ orchestrator main() {
 }
 "#;
     assert_snapshot("if_else", &compile_to_rust(src));
+}
+
+#[test]
+fn snapshot_secret_serverlet() {
+    let src = r#"
+serverlet Counter secret {
+    let count = 0
+    on add(n: int) -> int {
+        count = count + n
+        return count
+    }
+    on greet(who: string) -> string {
+        return "hello " + who
+    }
+}
+orchestrator main() {
+    let c = start Counter()
+    let a = c.add(5)
+    print(to_string(a))
+    stop_orch()
+}
+"#;
+    assert_snapshot("secret_serverlet", &compile_with_secret(src));
 }

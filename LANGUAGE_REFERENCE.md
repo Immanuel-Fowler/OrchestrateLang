@@ -85,6 +85,26 @@ count = count + 1
 | `process` | A handle to a process block | `let p: process = automatic { ... }` |
 | `process[]` | Array of process handles | `orchestrator main(procs: process[])` |
 
+#### User-Defined Structs
+
+Declare a struct to group related values, then construct it with a struct literal
+and read fields with `.`:
+
+```orchestrate
+struct Point {
+    x: int,
+    y: int,
+}
+
+orchestrator main() {
+    let p = Point { x: 3, y: 4 }
+    print(to_string(p.x))   // 3
+}
+```
+
+Struct fields may be any type (`int`, `float`, `string`, `bool`, or another
+struct). Structs compile to a Rust `struct` deriving `Clone` and `Debug`.
+
 ### 2.3 Operators
 
 #### Arithmetic
@@ -697,12 +717,24 @@ Orchestrate allows you to natively call functions written in Rust, C, or C++ by 
 load_foreign "rust" "./math_helpers.rs"
 ```
 
-The compiler reads the `.rs` file and injects its contents verbatim into the generated Rust module. Any `pub fn` you define is immediately callable from Orchestrate. The compiler also auto-scans the file for `pub fn` signatures and registers them in the typechecker so return types are correctly inferred.
+The compiler injects the `.rs` file's contents verbatim into the generated Rust
+module, and reads a companion **`.orch_ffi` sidecar file** that declares the
+function signatures Orchestrate exposes — the same mechanism used for C/C++. The
+sidecar lives next to the `.rs` file with the same base name:
 
-> **Important Limitations for Rust FFI:**
-> - The parser is primitive: the entire `pub fn name(...) -> ... {` signature **must reside on a single line**. Multiline signatures will not be registered by the typechecker.
-> - Only basic types are supported: `i64` (`int`), `f64` (`float`), `String` or `&str` (`string`), and `bool` (`bool`).
-> - Return types must be explicitly stated on the same line if they return a value.
+```
+math/
+├── module.orch
+├── math_helpers.rs
+└── math_helpers.orch_ffi    ← required alongside the .rs file
+```
+
+The sidecar declares each callable function in Orchestrate types:
+
+```
+// math_helpers.orch_ffi
+circle_area(radius: float) -> float
+```
 
 ```rust
 // math_helpers.rs
@@ -710,6 +742,14 @@ pub fn circle_area(radius: f64) -> f64 {
     radius * radius * std::f64::consts::PI
 }
 ```
+
+> **Notes for Rust FFI:**
+> - Supported sidecar types: `int` (`i64`), `float` (`f64`), `bool` (`bool`),
+>   `string` (`String`), and `void` for no return value.
+> - Only the functions you declare in the sidecar are registered with the
+>   typechecker; the `.rs` file may contain additional private helpers.
+> - The old behavior (auto-scanning `pub fn` signatures, single-line only) has been
+>   replaced by the sidecar, which is robust to multi-line signatures and helpers.
 
 ```orchestrate
 // main.orch
@@ -926,6 +966,65 @@ serverlet DatabaseConnector {
 | Wrapping a database driver or network connection | **Serverlet** |
 | Bridging a Python, Go, or Node.js service | **Serverlet** |
 | Exposing a WebSocket or HTTP interface | **Serverlet** |
+
+### 6.8 Secret Serverlets (Out-of-Process)
+
+A **secret serverlet** is a serverlet whose handler logic runs in a **separate OS
+process**. The orchestrator never contains its code — it holds only a *mirror* that
+relays calls to the separate process over IPC. Add the `secret` modifier after the
+serverlet name:
+
+```orchestrate
+serverlet Counter secret {
+    let count = 0
+
+    on add(n: int) -> int {
+        count = count + n
+        return count
+    }
+}
+
+orchestrator main() {
+    let c = start Counter()
+    print(to_string(c.add(5)))    // 5
+    print(to_string(c.add(10)))   // 15  (state persists across calls)
+    stop_orch()
+}
+```
+
+From the caller's side a secret serverlet is **identical** to a normal one —
+`start` returns the same client handle and you call the same methods. The compiler
+emits the handler logic as its own binary (`secret_<name>`) and wires the mirror to
+spawn it on first use and shut it down when the orchestrator stops.
+
+**What you get:**
+
+- **Secrecy** — the serverlet's logic is not present in the orchestrator binary.
+  When distributed as a compiled artifact, a consumer's orchestrator never holds
+  the source or logic.
+- **Crash isolation** — if the serverlet panics, it takes down only its own process.
+- **Decoupling** — anything speaking the mirror's protocol can be the implementation.
+
+**Be precise about what "secret" means (and does not):**
+
+- "Secret" means *the code is not shared with / not linked into the consumer's
+  orchestrator* — **not** that it is cryptographically protected. A distributed
+  binary can still be reverse-engineered.
+- A secret serverlet runs as the **same OS user** with the **same privileges** as
+  the orchestrator. It is **not** a security sandbox. Use it for code you trust and
+  want decoupled or private; to *contain untrusted code*, use a sandboxed serverlet
+  (planned — see `SANDBOXED_SERVERLETS.md`).
+
+**v1 limitations:**
+
+- Handler parameters and returns must be `int`, `float`, `bool`, `string`, or
+  `void`. Using a struct (or other non-primitive) across a secret handler boundary
+  is a compile error for now.
+- A secret serverlet's handlers are self-contained: they may use built-ins and
+  primitives but cannot call top-level or module functions from the parent program.
+- `print(...)` inside a secret serverlet writes to **stderr** (its stdout is the IPC
+  channel).
+- Secret serverlet names must be unique across the program.
 
 ---
 ---

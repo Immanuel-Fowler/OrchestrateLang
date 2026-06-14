@@ -136,3 +136,72 @@ orchestrator main() {
     let lines: Vec<&str> = stdout.trim().lines().collect();
     assert_eq!(lines, vec!["0", "1", "2"]);
 }
+
+#[test]
+fn runtime_secret_serverlet_state_persists() {
+    // The body runs in a separate process; state must survive across calls,
+    // proving the child is long-lived and reused.
+    let src = r#"
+serverlet Counter secret {
+    let count = 0
+    on add(n: int) -> int {
+        count = count + n
+        return count
+    }
+}
+orchestrator main() {
+    let c = start Counter()
+    print(to_string(c.add(5)))
+    print(to_string(c.add(10)))
+    print(to_string(c.add(2)))
+    stop_orch()
+}
+"#;
+    let stdout = run_orch("secret_state", src);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines, vec!["5", "15", "17"]);
+}
+
+#[test]
+fn runtime_secret_serverlet_string_roundtrip() {
+    let src = r#"
+serverlet Greeter secret {
+    on greet(who: string) -> string {
+        return "hello " + who
+    }
+}
+orchestrator main() {
+    let g = start Greeter()
+    print(g.greet("world"))
+    print(g.greet("orchestrate"))
+    stop_orch()
+}
+"#;
+    let stdout = run_orch("secret_string", src);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines, vec!["hello world", "hello orchestrate"]);
+}
+
+#[test]
+fn runtime_secret_serverlet_float_and_bool() {
+    let src = r#"
+serverlet Calc secret {
+    on scale(x: float) -> float {
+        return x * 2.0
+    }
+    on positive(n: int) -> bool {
+        return n > 0
+    }
+}
+orchestrator main() {
+    let c = start Calc()
+    print(to_string(c.scale(1.5)))
+    print(to_string(c.positive(3)))
+    stop_orch()
+}
+"#;
+    let stdout = run_orch("secret_float_bool", src);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines[0], "3");
+    assert_eq!(lines[1], "true");
+}

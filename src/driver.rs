@@ -77,6 +77,9 @@ pub fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Resu
     let source = fs::read_to_string(input_path)
         .map_err(|e| format!("Failed to read source file '{}': {}", input_file, e))?;
 
+    // Clear any stale secret-serverlet child binaries from a previous compile.
+    let _ = fs::remove_dir_all(cache_dir.join("src/bin"));
+
     let mut lexer = lexer::Lexer::new(&source);
     let tokens = lexer.tokenize()?;
 
@@ -158,9 +161,12 @@ pub fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Resu
     // Type checking phase (after modules are parsed and registered)
     type_checker.type_check(&ast).map_err(|e| format!("Type Error: {}", e))?;
 
+    let mut all_secret_programs: Vec<(String, String)> = Vec::new();
+
     for (local_name, module_stmts, module_path) in modules_data {
         let mut generator = codegen::Codegen::new(all_tasks.clone());
         let mut module_rust_code = generator.generate(&module_stmts, false);
+        all_secret_programs.append(&mut generator.secret_programs);
         
         let mut foreign_code = String::new();
         for stmt in &module_stmts {
@@ -218,6 +224,19 @@ pub fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Resu
 
     let mut generator = codegen::Codegen::new(all_tasks);
     let main_rust = generator.generate(&ast, true);
+    all_secret_programs.append(&mut generator.secret_programs);
+
+    // Write each secret serverlet's standalone program as its own cargo binary.
+    if !all_secret_programs.is_empty() {
+        let bin_dir = cache_dir.join("src/bin");
+        fs::create_dir_all(&bin_dir)
+            .map_err(|e| format!("Failed to create src/bin directory: {}", e))?;
+        for (bin_name, program_src) in &all_secret_programs {
+            let bin_file = bin_dir.join(format!("{}.rs", bin_name));
+            fs::write(&bin_file, program_src)
+                .map_err(|e| format!("Failed to write secret serverlet program {:?}: {}", bin_file, e))?;
+        }
+    }
 
     let mut cargo_toml_content = r#"[package]
 name = "orch_generated"
@@ -318,6 +337,22 @@ pub fn run_build(input_file: &str, output_binary: Option<&str>) -> Result<(), St
 
     fs::copy(&src_exe_path, &dest_exe_path)
         .map_err(|e| format!("Failed to copy compiled binary: {}", e))?;
+
+    // Copy any secret serverlet child binaries next to the output binary, since
+    // the orchestrator locates them relative to its own executable at runtime.
+    let release_dir = cache_dir.join("target/release");
+    let dest_dir = dest_exe_path.parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    if let Ok(entries) = fs::read_dir(&release_dir) {
+        for entry in entries.flatten() {
+            let fname = entry.file_name();
+            let fname_str = fname.to_string_lossy().to_string();
+            if fname_str.starts_with("secret_") && !fname_str.ends_with(".d") && entry.path().is_file() {
+                let _ = fs::copy(entry.path(), dest_dir.join(&fname_str));
+            }
+        }
+    }
 
     println!("[Orchestrate] Successfully built binary: {}", exe_name);
     Ok(())

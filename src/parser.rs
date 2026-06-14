@@ -199,6 +199,16 @@ impl Parser {
             _ => return Err(format!("Expected identifier for serverlet name at line {}, col {}", tok_ident.line, tok_ident.col)),
         };
 
+        // Optional `secret` modifier (contextual keyword): runs the serverlet
+        // out of process via a mirror, keeping its code out of the orchestrator.
+        let mut secret = false;
+        if let TokenKind::Identifier(kw) = &self.peek().kind {
+            if kw == "secret" {
+                self.advance();
+                secret = true;
+            }
+        }
+
         self.consume(TokenKind::LBrace, "Expected '{' to start serverlet body")?;
 
         let mut state = Vec::new();
@@ -221,7 +231,7 @@ impl Parser {
 
         self.consume(TokenKind::RBrace, "Expected '}' to end serverlet body")?;
 
-        Ok(StmtNode::Serverlet { name: name.to_string(), state, handlers })
+        Ok(StmtNode::Serverlet { name: name.to_string(), state, handlers, secret })
     }
 
     fn parse_handler(&mut self) -> Result<Handler, String> {
