@@ -11,6 +11,7 @@ fn print_help() {
     println!("  run <file.orch>              Compile and run a program immediately");
     println!("  build <file.orch>            Compile to a standalone binary");
     println!("  build <file.orch> -o <out>   Specify the output binary name");
+    println!("  check <file.orch>            Type-check only — no compilation (fast)");
     println!();
     println!("  prom add <name> <path>       Register a module path under a short name");
     println!("  prom remove <name>           Remove a registered module");
@@ -61,6 +62,16 @@ fn main() {
                 out = Some(args[4].as_str());
             }
             if let Err(e) = driver::run_build(input, out) {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        "check" => {
+            if args.len() < 3 {
+                eprintln!("Usage: orchestrate check <file.orch>");
+                std::process::exit(1);
+            }
+            if let Err(e) = driver::run_check(&args[2]) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }

@@ -1,0 +1,35 @@
+// Generics example
+
+fn identity<T>(x: T) -> T {
+    x
+}
+
+fn first<T>(items: T[]) -> T {
+    items[0]
+}
+
+fn wrap_some<T>(value: T) -> option<T> {
+    some(value)
+}
+
+orchestrator main() {
+    // Generic identity function
+    let n = identity(42)
+    let s = identity("hello")
+    let b = identity(true)
+
+    print("identity(42) = {n}")
+    print("identity(hello) = {s}")
+    print("identity(true) = {b}")
+
+    // Generic with arrays
+    let nums = [10, 20, 30]
+    let words = ["foo", "bar", "baz"]
+
+    // Generic option wrapping
+    let maybe = wrap_some(99)
+    match maybe {
+        option::Some(v) => print("Got: {v}")
+        option::None => print("Empty")
+    }
+}

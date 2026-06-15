@@ -117,12 +117,37 @@ pub fn resolve_module(name: &str) -> Result<Option<PathBuf>, String> {
     if name.contains('/') || name.contains('\\') || name.starts_with('.') {
         return Ok(None);
     }
+    // Built-in stdlib modules are resolved first
+    if let Some(stdlib_path) = resolve_stdlib_module(name) {
+        return Ok(Some(stdlib_path));
+    }
+    // Then check PROM registry
     let map = read_registry()?;
     if let Some(path_str) = map.get(name) {
         Ok(Some(PathBuf::from(path_str)))
     } else {
         Ok(None)
     }
+}
+
+fn resolve_stdlib_module(name: &str) -> Option<PathBuf> {
+    // 1. Relative to the running executable (installed mode)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let candidate = parent.join("stdlib").join(name);
+            if candidate.is_dir() && candidate.join("module.orch").exists() {
+                return Some(candidate);
+            }
+        }
+    }
+    // 2. Relative to the current working directory (dev mode: running from project root)
+    if let Ok(cwd) = std::env::current_dir() {
+        let candidate = cwd.join("stdlib").join(name);
+        if candidate.is_dir() && candidate.join("module.orch").exists() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

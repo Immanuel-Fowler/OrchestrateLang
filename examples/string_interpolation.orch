@@ -1,0 +1,35 @@
+// String interpolation example
+
+fn greet(name: string, age: int) -> string {
+    "Hello, {name}! You are {age} years old."
+}
+
+fn describe_list(items: string[]) -> string {
+    let count = length(items)
+    "List has {count} items"
+}
+
+orchestrator main() {
+    let name = "Alice"
+    let age = 30
+    let greeting = greet(name, age)
+    print(greeting)
+
+    // Inline interpolation
+    let city = "New York"
+    let population = 8000000
+    print("Welcome to {city}, population {population}!")
+
+    // Nested expressions
+    let x = 10
+    let y = 20
+    print("Sum of {x} and {y} is {x + y}")
+
+    // With array length
+    let colors = ["red", "green", "blue"]
+    let info = describe_list(colors)
+    print(info)
+
+    // Escaped braces
+    print("Use {{ and }} to include literal braces")
+}

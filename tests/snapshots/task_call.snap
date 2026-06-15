@@ -4,6 +4,7 @@
 #![allow(unused_imports)]
 #![allow(unused_parens)]
 #![allow(unused_mut)]
+#![allow(unreachable_code)]
 
 static REGISTRY_UPDATE_ORCHESTRATOR: std::sync::OnceLock<std::sync::Mutex<Vec<tokio::sync::mpsc::Sender<std::sync::Arc<Vec<ProcessRef>>>>>> = std::sync::OnceLock::new();
 fn get_registry_update_orchestrator() -> &'static std::sync::Mutex<Vec<tokio::sync::mpsc::Sender<std::sync::Arc<Vec<ProcessRef>>>>> {
@@ -73,12 +74,17 @@ fn stop_orch() {
 
 type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send + Sync + 'static>;
 
+// orch:2:1
 async fn add(a: i64, b: i64) -> i64 {
-    return OrchAdd::orch_add(a, b);
+    // orch:3:5
+        return OrchAdd::orch_add(a, b);
 }
 
+// orch:5:1
 async fn orchestrator_main() {
-    let mut result = add(3, 4).await;
+    // orch:6:5
+        let mut result = add(3, 4).await;
+        // orch:7:5
         print_val(to_string(result));
 }
 

@@ -159,7 +159,20 @@ pub fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Resu
     }
 
     // Type checking phase (after modules are parsed and registered)
-    type_checker.type_check(&ast).map_err(|e| format!("Type Error: {}", e))?;
+    type_checker.type_check(&ast).map_err(|e| {
+        // Prefix each error line with "file:line:" so editors can make them clickable
+        let lines: Vec<String> = e.lines()
+            .map(|line| {
+                // If the line already contains a line number hint like "line N", keep it
+                if line.trim_start().starts_with("line ") || line.contains(':') {
+                    format!("{}:{}", input_file, line)
+                } else {
+                    format!("{}:1: {}", input_file, line)
+                }
+            })
+            .collect();
+        format!("Type Error: {}", lines.join("\n"))
+    })?;
 
     let mut all_secret_programs: Vec<(String, String)> = Vec::new();
 
@@ -314,6 +327,7 @@ pub fn run_build(input_file: &str, output_binary: Option<&str>) -> Result<(), St
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        std::env::set_var("ORCH_SOURCE_FILE", input_file);
         print_friendly_errors(&stderr, &cache_dir);
         return Err("Cargo compilation failed".to_string());
     }
@@ -377,6 +391,7 @@ pub fn run_run(input_file: &str) -> Result<(), String> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        std::env::set_var("ORCH_SOURCE_FILE", input_file);
         print_friendly_errors(&stderr, &cache_dir);
         return Err("Cargo compilation failed".to_string());
     }
@@ -399,5 +414,53 @@ pub fn run_run(input_file: &str) -> Result<(), String> {
         std::process::exit(status.code().unwrap_or(1));
     }
 
+    Ok(())
+}
+
+/// Type-check only (no codegen, no Cargo invocation). Designed to be fast (<100ms).
+pub fn run_check(input_file: &str) -> Result<(), String> {
+    let input_path = Path::new(input_file);
+    let source = fs::read_to_string(input_path)
+        .map_err(|e| format!("Failed to read source file '{}': {}", input_file, e))?;
+
+    let mut lexer = lexer::Lexer::new(&source);
+    let tokens = lexer.tokenize()?;
+
+    let mut parser = parser::Parser::new(tokens);
+    let ast = parser.parse()?;
+
+    let mut type_checker = typechecker::TypeChecker::new();
+
+    let parent_dir = input_path.parent().unwrap_or(Path::new("."));
+
+    // Register modules for type-checking (no codegen)
+    for stmt in &ast {
+        if let ast::StmtNode::UseModule { local_name, module_name } = &stmt.node {
+            let module_path = if let Some(resolved) = prom::resolve_module(module_name)? {
+                resolved
+            } else if module_name.contains('/') || module_name.contains('\\') || module_name.starts_with('.') {
+                parent_dir.join(module_name)
+            } else {
+                return Err(format!("Module '{}' not found in PROM registry", module_name));
+            };
+            let module_stmts = compile_module(&module_path)?;
+            type_checker.register_module_functions(local_name, &module_stmts);
+        }
+    }
+
+    type_checker.type_check(&ast).map_err(|e| {
+        let lines: Vec<String> = e.lines()
+            .map(|line| {
+                if line.trim_start().starts_with("line ") || line.contains(':') {
+                    format!("{}:{}", input_file, line)
+                } else {
+                    format!("{}:1: {}", input_file, line)
+                }
+            })
+            .collect();
+        format!("Type Error: {}", lines.join("\n"))
+    })?;
+
+    println!("[Orchestrate] {} — no type errors found", input_file);
     Ok(())
 }

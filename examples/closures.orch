@@ -1,0 +1,42 @@
+// Closures and higher-order functions example
+
+fn apply(x: int, f: fn(int) -> int) -> int {
+    f(x)
+}
+
+orchestrator main() {
+    // Basic closure
+    let double = fn(x: int) -> int { x * 2 }
+    let triple = fn(x: int) -> int { x * 3 }
+
+    print("double(5) = {apply(5, double)}")
+    print("triple(5) = {apply(5, triple)}")
+
+    // Inline closure with map
+    let numbers = [1, 2, 3, 4, 5]
+    let doubled = map(numbers, fn(x: int) -> int { x * 2 })
+    for n in doubled {
+        print(to_string(n))
+    }
+
+    // Filter: keep only even numbers
+    let evens = filter(numbers, fn(x: int) -> bool { x * 2 == x + x && x == 2 || x == 4 })
+    print("Evens count: {length(evens)}")
+
+    // Reduce: sum
+    let sum = reduce(numbers, 0, fn(acc: int, x: int) -> int { acc + x })
+    print("Sum = {sum}")
+
+    // any / all
+    let has_positive = any(numbers, fn(x: int) -> bool { x > 0 })
+    let all_positive = all(numbers, fn(x: int) -> bool { x > 0 })
+    print("Has positive: {has_positive}")
+    print("All positive: {all_positive}")
+
+    // find: first element > 3
+    let found = find(numbers, fn(x: int) -> bool { x > 3 })
+    match found {
+        option::Some(v) => print("Found: {v}")
+        option::None => print("Not found")
+    }
+}

@@ -1,0 +1,35 @@
+// For loops and iterators example
+
+orchestrator main() {
+    // Basic for loop over an array
+    let fruits = ["apple", "banana", "cherry"]
+    for fruit in fruits {
+        print(fruit)
+    }
+
+    // Indexed for loop
+    for i, fruit in fruits {
+        let msg = "Item {i}: {fruit}"
+        print(msg)
+    }
+
+    // Range-based for loop
+    print("Counting 0 to 4:")
+    for n in range(5) {
+        print(to_string(n))
+    }
+
+    // Range with start and end
+    print("Counting 3 to 7:")
+    for n in range(3, 8) {
+        print(to_string(n))
+    }
+
+    // Accumulate with for loop
+    let total = 0
+    let numbers = [10, 20, 30, 40, 50]
+    for num in numbers {
+        total = total + num
+    }
+    print("Total: {total}")
+}

@@ -1,0 +1,54 @@
+// enums.orch — demonstrates enum definitions, variant construction, and match expressions
+
+enum Color {
+    Red,
+    Green,
+    Blue,
+    Custom(int),
+}
+
+enum Shape {
+    Circle(int),
+    Rectangle(int),
+    Triangle,
+}
+
+task describe_color(c: Color) -> string {
+    match c {
+        Color::Red(v) => "red"
+        Color::Green(v) => "green"
+        Color::Blue(v) => "blue"
+        Color::Custom(n) => "custom color #" + to_string(n)
+        _ => "unknown color"
+    }
+}
+
+task area_estimate(s: Shape) -> int {
+    match s {
+        Shape::Circle(r) => r * r * 3
+        Shape::Rectangle(side) => side * side
+        Shape::Triangle => 0
+        _ => 0
+    }
+}
+
+orchestrator main {
+    let c1 = Color::Red
+    let c2 = Color::Custom(42)
+
+    let name1 = describe_color(c1)
+    let name2 = describe_color(c2)
+    print("c1 is: " + name1)
+    print("c2 is: " + name2)
+
+    let s1 = Shape::Circle(5)
+    let s2 = Shape::Rectangle(4)
+    let s3 = Shape::Triangle
+
+    let a1 = area_estimate(s1)
+    let a2 = area_estimate(s2)
+    let a3 = area_estimate(s3)
+    print("circle area estimate: " + to_string(a1))
+    print("rectangle area estimate: " + to_string(a2))
+    print("triangle area estimate: " + to_string(a3))
+}

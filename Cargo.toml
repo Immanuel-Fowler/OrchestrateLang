@@ -12,8 +12,13 @@ categories = ["compilers", "asynchronous"]
 name = "orchestrate"
 path = "src/main.rs"
 
+[[bin]]
+name = "orchestrate-lsp"
+path = "src/lsp_main.rs"
+
 [lib]
 name = "orchestrate_lib"
 path = "src/lib.rs"
 
 [dependencies]
+serde_json = "1"

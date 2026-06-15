@@ -1,0 +1,10 @@
+split(s: string, delimiter: string) -> string[]
+join(parts: string[], separator: string) -> string
+contains(s: string, needle: string) -> bool
+upper(s: string) -> string
+lower(s: string) -> string
+trim(s: string) -> string
+starts_with(s: string, prefix: string) -> bool
+ends_with(s: string, suffix: string) -> bool
+replace(s: string, old: string, new: string) -> string
+len(s: string) -> int

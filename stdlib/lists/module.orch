@@ -1,0 +1,31 @@
+load_foreign "rust" "impl.rs"
+
+// List utility module
+// All functions are implemented in Rust via FFI
+
+// Return the first element, or none if empty
+fn head(items: int[]) -> option<int> {}
+
+// Return all elements except the first
+fn tail(items: int[]) -> int[] {}
+
+// Reverse a list
+fn reverse(items: int[]) -> int[] {}
+
+// Sort a list of ints ascending
+fn sort(items: int[]) -> int[] {}
+
+// Flatten a list of int lists
+fn flatten(lists: int[][]) -> int[] {}
+
+// Return unique elements (deduplicate)
+fn unique(items: int[]) -> int[] {}
+
+// Sum of a list
+fn sum(items: int[]) -> int {}
+
+// Maximum value
+fn max(items: int[]) -> int {}
+
+// Minimum value
+fn min(items: int[]) -> int {}

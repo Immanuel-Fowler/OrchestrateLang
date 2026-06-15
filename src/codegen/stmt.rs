@@ -1,17 +1,36 @@
 use crate::ast::{ExprNode, StmtNode, Stmt, Type, Handler};
 use super::core::{Codegen, pascal_case, runtime_preamble, SECRET_CHILD_FRAMES};
 
+fn type_params_str(type_params: &[String]) -> String {
+    if type_params.is_empty() {
+        String::new()
+    } else {
+        let bounds = type_params.iter()
+            .map(|t| format!("{}: Clone + std::fmt::Debug + Send + Sync + 'static", t))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("<{}>", bounds)
+    }
+}
+
 impl Codegen {
     pub fn compile_stmt(&mut self, stmt: &Stmt) -> String {
         match &stmt.node {
             StmtNode::Let { name, ty, value } => {
                 let val_str = self.compile_expr(value);
                 if let Some(t) = ty {
-                    format!("let mut {}: {} = {};", name, self.compile_type(t), val_str)
+                    // Closure types can't be annotated directly — let Rust infer
+                    if matches!(t, Type::Fn(_, _)) {
+                        format!("let mut {} = {};", name, val_str)
+                    } else {
+                        format!("let mut {}: {} = {};", name, self.compile_type(t), val_str)
+                    }
                 } else {
                     format!("let mut {} = {};", name, val_str)
                 }
             }
+            StmtNode::Break => "break".to_string(),
+            StmtNode::Continue => "continue".to_string(),
             StmtNode::Expr(expr) => self.compile_expr(expr),
             StmtNode::OnStart(expr) => {
                 let inner = self.compile_expr(expr);
@@ -28,14 +47,9 @@ impl Codegen {
                     "return".to_string()
                 }
             }
-            StmtNode::FnDecl {
-                name,
-                params,
-                return_type,
-                body,
-            } => {
-                let params_str = params
-                    .iter()
+            StmtNode::FnDecl { name, params, return_type, body, type_params } => {
+                let generics = type_params_str(type_params);
+                let params_str = params.iter()
                     .map(|p| format!("{}: {}", p.name, self.compile_type(&p.ty)))
                     .collect::<Vec<String>>()
                     .join(", ");
@@ -44,7 +58,6 @@ impl Codegen {
                 } else {
                     format!(" -> {}", self.compile_type(return_type))
                 };
-                
                 let body_str = if let ExprNode::Block(_) = &body.node {
                     let force_semi = *return_type == Type::Void;
                     let inner = self.compile_block_inner(body, force_semi);
@@ -52,18 +65,12 @@ impl Codegen {
                 } else {
                     self.compile_expr(body)
                 };
-
                 let vis = if self.is_main { "" } else { "pub " };
-                format!("{}fn {}({}){} {}", vis, name, params_str, ret_str, body_str)
+                format!("{}fn {}{}({}){} {}", vis, name, generics, params_str, ret_str, body_str)
             }
-            StmtNode::TaskDecl {
-                name,
-                params,
-                return_type,
-                body,
-            } => {
-                let params_str = params
-                    .iter()
+            StmtNode::TaskDecl { name, params, return_type, body, type_params } => {
+                let generics = type_params_str(type_params);
+                let params_str = params.iter()
                     .map(|p| format!("{}: {}", p.name, self.compile_type(&p.ty)))
                     .collect::<Vec<String>>()
                     .join(", ");
@@ -72,7 +79,6 @@ impl Codegen {
                 } else {
                     format!(" -> {}", self.compile_type(return_type))
                 };
-                
                 let body_str = if let ExprNode::Block(_) = &body.node {
                     let force_semi = *return_type == Type::Void;
                     let inner = self.compile_block_inner(body, force_semi);
@@ -80,18 +86,12 @@ impl Codegen {
                 } else {
                     self.compile_expr(body)
                 };
-                
                 let vis = if self.is_main { "" } else { "pub " };
-                format!("{}async fn {}({}){} {}", vis, name, params_str, ret_str, body_str)
+                format!("{}async fn {}{}({}){} {}", vis, name, generics, params_str, ret_str, body_str)
             }
-            StmtNode::ProcessDecl {
-                name,
-                params,
-                return_type,
-                body,
-            } => {
-                let params_str = params
-                    .iter()
+            StmtNode::ProcessDecl { name, params, return_type, body, type_params } => {
+                let generics = type_params_str(type_params);
+                let params_str = params.iter()
                     .map(|p| format!("{}: {}", p.name, self.compile_type(&p.ty)))
                     .collect::<Vec<String>>()
                     .join(", ");
@@ -100,7 +100,6 @@ impl Codegen {
                 } else {
                     format!(" -> {}", self.compile_type(return_type))
                 };
-                
                 let body_str = if let ExprNode::Block(_) = &body.node {
                     let force_semi = *return_type == Type::Void;
                     let inner = self.compile_block_inner(body, force_semi);
@@ -108,23 +107,17 @@ impl Codegen {
                 } else {
                     self.compile_expr(body)
                 };
-                
                 let vis = if self.is_main { "" } else { "pub " };
-                format!("{}async fn {}({}){} {}", vis, name, params_str, ret_str, body_str)
+                format!("{}async fn {}{}({}){} {}", vis, name, generics, params_str, ret_str, body_str)
             }
-            StmtNode::OrchestratorDecl {
-                name,
-                params,
-                return_type,
-                body,
-            } => {
+            StmtNode::OrchestratorDecl { name, params, return_type, body } => {
                 if name == "main" {
                     let mut decl_code = Vec::new();
                     let mut exec_code = Vec::new();
                     let local_stmts = self.local_stmts.clone();
                     for s in &local_stmts {
                         let mut compiled = self.compile_stmt(s);
-                        
+
                         let mut is_auto_let = false;
                         let mut auto_name = String::new();
                         if let StmtNode::Let { name, value, .. } = &s.node {
@@ -147,21 +140,17 @@ impl Codegen {
                                     decl_code.push(format!("{}();", auto_name));
                                 }
                             }
-                            _ => {
-                                exec_code.push(compiled);
-                            }
+                            _ => { exec_code.push(compiled); }
                         }
                     }
                     let decl_body_str = decl_code.join("\n");
                     let exec_body_str = exec_code.join("\n");
 
-                    // Compile orchestrator_main helper function
-                    let params_str = params
-                        .iter()
+                    let params_str = params.iter()
                         .map(|p| format!("{}: {}", p.name, self.compile_type(&p.ty)))
                         .collect::<Vec<String>>()
                         .join(", ");
-                    
+
                     let mut has_process_array = false;
                     let mut param_name = String::new();
                     let mut initial_procs = Vec::new();
@@ -176,8 +165,7 @@ impl Codegen {
                     }
 
                     let body_str = if let ExprNode::Block(_) = &body.node {
-                        let force_semi = true;
-                        self.compile_block_inner(body, force_semi)
+                        self.compile_block_inner(body, true)
                     } else {
                         self.compile_expr(body)
                     };
@@ -189,7 +177,7 @@ impl Codegen {
         handles: Vec<(ProcessRef, tokio::task::JoinHandle<()>)>,
     }}
     let state = std::sync::Arc::new(std::sync::Mutex::new(ActiveState {{
-        procs: {}.clone(),
+        procs: {param}.clone(),
         handles: Vec::new(),
     }}));
     {{
@@ -205,6 +193,29 @@ impl Codegen {
         let mut locked = state.lock().unwrap();
         locked.handles = handles;
     }}
+
+    // Liveness monitor: restart processes that exit unexpectedly
+    let state_monitor = state.clone();
+    tokio::spawn(async move {{
+        loop {{
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let mut locked = state_monitor.lock().unwrap();
+            let mut to_restart = Vec::new();
+            locked.handles.retain(|(p, h)| {{
+                if h.is_finished() {{
+                    to_restart.push(p.clone());
+                    false
+                }} else {{
+                    true
+                }}
+            }});
+            for p in to_restart {{
+                eprintln!("[orchestrate] process exited unexpectedly — restarting");
+                let handle = p();
+                locked.handles.push((p, handle));
+            }}
+        }}
+    }});
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<std::sync::Arc<Vec<ProcessRef>>>(100);
     get_registry_update_orchestrator().lock().unwrap().push(tx);
@@ -249,9 +260,9 @@ impl Codegen {
         }}
     }});
 
-    {}"#,
-                            param_name,
-                            body_str
+    {body}"#,
+                            param = param_name,
+                            body = body_str
                         )
                     } else {
                         body_str
@@ -263,22 +274,12 @@ impl Codegen {
                         helper_fn_body.replace("\n", "\n    ")
                     );
 
-                    // Compile main entry point call
-                    let mut args_str = params
-                        .iter()
-                        .map(|p| p.name.clone())
-                        .collect::<Vec<String>>()
-                        .join(", ");
-
+                    let mut args_str = params.iter().map(|p| p.name.clone()).collect::<Vec<String>>().join(", ");
                     if has_process_array {
                         if initial_procs.is_empty() {
                             args_str = "vec![]".to_string();
                         } else {
-                            let procs_list = initial_procs
-                                .iter()
-                                .map(|name| name.clone())
-                                .collect::<Vec<String>>()
-                                .join(", ");
+                            let procs_list = initial_procs.join(", ");
                             args_str = format!("vec![{}]", procs_list);
                         }
                     }
@@ -286,12 +287,12 @@ impl Codegen {
                     let mut main_body = String::new();
                     if !decl_body_str.is_empty() {
                         main_body.push_str(&decl_body_str);
-                        main_body.push_str("\n");
+                        main_body.push('\n');
                     }
                     main_body.push_str(&format!("orchestrator_main({}).await;\n", args_str));
                     if !exec_body_str.is_empty() {
                         main_body.push_str(&exec_body_str);
-                        main_body.push_str("\n");
+                        main_body.push('\n');
                     }
                     main_body.push_str("loop {\n    tokio::time::sleep(std::time::Duration::from_secs(3600)).await;\n}");
 
@@ -301,8 +302,7 @@ impl Codegen {
                         main_body.replace("\n", "\n    ")
                     )
                 } else {
-                    let params_str = params
-                        .iter()
+                    let params_str = params.iter()
                         .map(|p| format!("{}: {}", p.name, self.compile_type(&p.ty)))
                         .collect::<Vec<String>>()
                         .join(", ");
@@ -311,7 +311,6 @@ impl Codegen {
                     } else {
                         format!(" -> {}", self.compile_type(return_type))
                     };
-                    
                     let body_str = if let ExprNode::Block(_) = &body.node {
                         let force_semi = *return_type == Type::Void;
                         let inner = self.compile_block_inner(body, force_semi);
@@ -319,7 +318,6 @@ impl Codegen {
                     } else {
                         self.compile_expr(body)
                     };
-
                     format!("async fn {}({}){} {}", name, params_str, ret_str, body_str)
                 }
             }
@@ -331,14 +329,9 @@ impl Codegen {
                 } else if args.len() == 1 {
                     self.compile_expr(&args[0])
                 } else {
-                    let compiled_args = args
-                        .iter()
-                        .map(|a| self.compile_expr(a))
-                        .collect::<Vec<String>>()
-                        .join(", ");
+                    let compiled_args = args.iter().map(|a| self.compile_expr(a)).collect::<Vec<String>>().join(", ");
                     format!("({})", compiled_args)
                 };
-                
                 format!(
                     "let payload_eval = std::sync::Arc::new({});\nif let Ok(handlers) = {}().lock() {{\n    for tx in handlers.iter() {{\n        if tx.try_send(std::sync::Arc::clone(&payload_eval)).is_err() {{\n            eprintln!(\"[orchestrate] warning: dropped event '{}' — subscriber channel full\");\n        }}\n    }}\n}}",
                     payload, func_name, event_name
@@ -362,7 +355,6 @@ impl Codegen {
                             futures.push(self.compile_expr(expr));
                         }
                         _ => {
-                            // Non-expressions inside parallel are wrapped in async block
                             binds.push("_".to_string());
                             futures.push(format!("async move {{ {} }}", self.compile_stmt(s)));
                         }
@@ -376,11 +368,36 @@ impl Codegen {
                 } else if futures.len() == 1 {
                     format!("let {} = {};", binds[0], futures[0])
                 } else {
+                    format!("let ({}) = tokio::join!({});", binds.join(", "), futures.join(", "))
+                }
+            }
+            StmtNode::ForIn { var, index_var, iter, body } => {
+                // Build iterator expression — detect range() for efficient codegen
+                let iter_str = if let ExprNode::Call { callee, args } = &iter.node {
+                    if callee == "range" {
+                        if args.len() == 1 {
+                            format!("(0i64..{} as i64)", self.compile_expr(&args[0]))
+                        } else if args.len() == 2 {
+                            format!("({} as i64..{} as i64)", self.compile_expr(&args[0]), self.compile_expr(&args[1]))
+                        } else {
+                            format!("({}).clone().into_iter()", self.compile_expr(iter))
+                        }
+                    } else {
+                        format!("({}).clone().into_iter()", self.compile_expr(iter))
+                    }
+                } else {
+                    format!("({}).clone().into_iter()", self.compile_expr(iter))
+                };
+
+                if let Some(idx) = index_var {
+                    let inner = self.compile_block_inner(body, true);
                     format!(
-                        "let ({}) = tokio::join!({});",
-                        binds.join(", "),
-                        futures.join(", ")
+                        "for (__orch_enum_i, {}) in ({}).enumerate() {{\n    let {} = __orch_enum_i as i64;\n    {}\n}}",
+                        var, iter_str, idx, inner
                     )
+                } else {
+                    let body_str = self.compile_expr(body);
+                    format!("for {} in {} {}", var, iter_str, body_str)
                 }
             }
             StmtNode::While { cond, body } => {
@@ -392,12 +409,11 @@ impl Codegen {
                 format!("mod {};", local_name)
             }
             StmtNode::Load { .. } | StmtNode::LoadForeign { .. } => "".to_string(),
-            StmtNode::Serverlet { name, state, handlers, secret } => {
+            StmtNode::Serverlet { name, state, handlers, secret, crash_handler } => {
                 let mut enum_variants = Vec::new();
                 for h in handlers {
                     let variant_name = pascal_case(&h.name);
-                    let mut fields = h.params
-                        .iter()
+                    let mut fields = h.params.iter()
                         .map(|p| format!("{}: {}", p.name, self.compile_type(&p.ty)))
                         .collect::<Vec<String>>();
                     let ret_ty = self.compile_type(&h.return_type);
@@ -407,40 +423,31 @@ impl Codegen {
 
                 let msg_enum = format!(
                     "#[derive(Debug)]\npub enum {}Msg {{\n{}\n}}",
-                    name,
-                    enum_variants.join("\n")
+                    name, enum_variants.join("\n")
                 );
 
                 let mut client_methods = Vec::new();
                 for h in handlers {
-                    let method_params = h.params
-                        .iter()
+                    let method_params = h.params.iter()
                         .map(|p| format!("{}: {}", p.name, self.compile_type(&p.ty)))
                         .collect::<Vec<String>>()
                         .join(", ");
-                    let self_params = if method_params.is_empty() {
-                        "&self"
-                    } else {
-                        "&self, "
-                    };
+                    let self_params = if method_params.is_empty() { "&self" } else { "&self, " };
                     let ret_ty = self.compile_type(&h.return_type);
-                    
                     let variant_name = pascal_case(&h.name);
-                    let mut send_fields = h.params
-                        .iter()
-                        .map(|p| p.name.clone())
-                        .collect::<Vec<String>>();
+                    let mut send_fields = h.params.iter().map(|p| p.name.clone()).collect::<Vec<String>>();
                     send_fields.push("reply_to: reply_tx".to_string());
 
+                    // Use ? on reply_rx.await so channel errors propagate cleanly
+                    let await_expr = if h.return_type == Type::Void {
+                        "let _ = reply_rx.await;".to_string()
+                    } else {
+                        format!("reply_rx.await.unwrap_or_default()")
+                    };
+
                     client_methods.push(format!(
-                        "    pub async fn {}({}{}) -> {} {{\n        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();\n        let _ = self.tx.send({}Msg::{} {{ {} }}).await;\n        reply_rx.await.unwrap()\n    }}",
-                        h.name,
-                        self_params,
-                        method_params,
-                        ret_ty,
-                        name,
-                        variant_name,
-                        send_fields.join(", ")
+                        "    pub async fn {}({}{}) -> {} {{\n        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();\n        let _ = self.tx.send({}Msg::{} {{ {} }}).await;\n        {}\n    }}",
+                        h.name, self_params, method_params, ret_ty, name, variant_name, send_fields.join(", "), await_expr
                     ));
                 }
 
@@ -449,43 +456,53 @@ impl Codegen {
                     name, name, name, client_methods.join("\n\n")
                 );
 
+                // Build match arms with catch_unwind for panic safety
                 let mut match_arms = Vec::new();
                 for h in handlers {
                     let variant_name = pascal_case(&h.name);
-                    let mut bindings = h.params
-                        .iter()
-                        .map(|p| p.name.clone())
-                        .collect::<Vec<String>>();
+                    let mut bindings = h.params.iter().map(|p| p.name.clone()).collect::<Vec<String>>();
                     bindings.push("reply_to".to_string());
                     let bindings_str = bindings.join(", ");
-
                     let body_str = self.compile_expr(&h.body);
 
+                    let handler_name_str = &h.name;
+
+                    let crash_recovery = if let Some((err_name, crash_body)) = crash_handler {
+                        let crash_body_str = self.compile_expr(crash_body);
+                        format!(
+                            "Err(__panic_err) => {{\n                    let {err_name} = format!(\"{{:?}}\", __panic_err);\n                    eprintln!(\"[orchestrate] serverlet '{name}' handler '{handler_name_str}' panicked: {{}}\", {err_name});\n                    {crash_body_str};\n                    let _ = reply_to.send(Default::default());\n                }}",
+                            err_name = err_name,
+                            name = name,
+                            handler_name_str = handler_name_str,
+                            crash_body_str = crash_body_str,
+                        )
+                    } else {
+                        format!(
+                            "Err(__panic_err) => {{\n                    eprintln!(\"[orchestrate] serverlet '{name}' handler '{handler_name_str}' panicked: {{:?}}\", __panic_err);\n                    let _ = reply_to.send(Default::default());\n                }}",
+                            name = name,
+                            handler_name_str = handler_name_str,
+                        )
+                    };
+
                     match_arms.push(format!(
-                        "                {}Msg::{} {{ {} }} => {{\n                    #[allow(unused_mut)]\n                    let mut handler = || {{ {} }};\n                    let res = handler();\n                    let _ = reply_to.send(res);\n                }}",
-                        name,
-                        variant_name,
-                        bindings_str,
-                        body_str
+                        "                {}Msg::{} {{ {} }} => {{\n                    #[allow(unused_mut)]\n                    let mut __handler = std::panic::AssertUnwindSafe(|| {{ {} }});\n                    match std::panic::catch_unwind(__handler) {{\n                        Ok(res) => {{ let _ = reply_to.send(res); }}\n                        {}\n                    }}\n                }}",
+                        name, variant_name, bindings_str, body_str, crash_recovery
                     ));
                 }
 
                 let mut state_vars = Vec::new();
                 for s in state {
-                    if let StmtNode::Let { name, ty, value } = &s.node {
+                    if let StmtNode::Let { name: vname, ty, value } = &s.node {
                         let val_str = self.compile_expr(value);
                         if let Some(t) = ty {
-                            state_vars.push(format!("            let mut {}: {} = {};", name, self.compile_type(t), val_str));
+                            state_vars.push(format!("            let mut {}: {} = {};", vname, self.compile_type(t), val_str));
                         } else {
-                            state_vars.push(format!("            let mut {} = {};", name, val_str));
+                            state_vars.push(format!("            let mut {} = {};", vname, val_str));
                         }
                     }
                 }
 
                 if *secret {
-                    // Secret serverlet: the handler logic is emitted as a separate
-                    // program (pushed to self.secret_programs); the orchestrator
-                    // only gets a mirror that relays messages over IPC.
                     let start_fn = self.compile_secret_mirror(name, handlers);
                     let child_program = self.compile_secret_program(name, state, handlers);
                     self.secret_programs.push((format!("secret_{}", name), child_program));
@@ -507,14 +524,20 @@ impl Codegen {
                     .map(|(fname, fty)| format!("    pub {}: {},", fname, self.compile_type(fty)))
                     .collect::<Vec<_>>()
                     .join("\n");
-                format!("#[derive(Clone, Debug)]\npub struct {} {{\n{}\n}}", name, fields_str)
+                format!("#[derive(Clone, Debug, Default)]\npub struct {} {{\n{}\n}}", name, fields_str)
+            }
+            StmtNode::EnumDef { name, variants } => {
+                let variants_str = variants.iter().map(|v| {
+                    match &v.payload {
+                        Some(ty) => format!("    {}({}),", v.name, self.compile_type(ty)),
+                        None => format!("    {},", v.name),
+                    }
+                }).collect::<Vec<_>>().join("\n");
+                format!("#[derive(Clone, Debug)]\npub enum {} {{\n{}\n}}", name, variants_str)
             }
         }
     }
 
-    /// Orchestrator-side mirror for a secret serverlet: same XClient/XMsg surface,
-    /// but `start_X` spawns the separate `secret_X` process and relays each call
-    /// over its stdio instead of running the handler bodies inline.
     fn compile_secret_mirror(&mut self, name: &str, handlers: &[Handler]) -> String {
         if let Some(reason) = secret_unsupported_reason(handlers) {
             return format!("compile_error!(\"secret serverlet '{}': {}\");\n", name, reason);
@@ -563,9 +586,6 @@ impl Codegen {
         )
     }
 
-    /// The standalone child program for a secret serverlet: owns the state, reads
-    /// framed requests from stdin, dispatches by handler index, writes framed
-    /// replies to stdout. `print` is routed to stderr (stdout is the IPC channel).
     fn compile_secret_program(&mut self, name: &str, state: &[Stmt], handlers: &[Handler]) -> String {
         if let Some(reason) = secret_unsupported_reason(handlers) {
             return format!("compile_error!(\"secret serverlet '{}': {}\");\n", name, reason);
@@ -623,14 +643,8 @@ impl Codegen {
             arms = arms.join("\n")
         )
     }
-
-
 }
 
-/// Returns Some(reason) if any handler uses a type the secret-serverlet IPC layer
-/// can't marshal in v1 (only int, float, bool, string params; those plus void as
-/// returns). Kept free-standing so both the mirror and the child program guard
-/// identically.
 fn secret_unsupported_reason(handlers: &[Handler]) -> Option<String> {
     for h in handlers {
         for p in &h.params {

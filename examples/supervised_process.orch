@@ -1,0 +1,31 @@
+// supervised_process.orch — demonstrates automatic blocks with restart policies and on_crash handlers
+
+// A process that will restart at most 3 times on failure
+let flaky_worker = automatic(restart: 3) {
+    print("flaky worker: starting iteration")
+    sleep(500)
+    print("flaky worker: done with iteration")
+} on_crash e {
+    print("flaky worker crashed: " + e)
+}
+
+// A process that always restarts with exponential backoff
+let persistent_monitor = automatic(restart: always) {
+    print("monitor: heartbeat")
+    sleep(2000)
+} on_crash e {
+    print("monitor crashed and will restart: " + e)
+}
+
+// A process that never restarts — runs once and stops
+let one_shot = automatic(restart: never) {
+    print("one-shot: running initialization")
+    sleep(100)
+    print("one-shot: done — will not restart")
+}
+
+orchestrator main {
+    start flaky_worker
+    start persistent_monitor
+    start one_shot
+}

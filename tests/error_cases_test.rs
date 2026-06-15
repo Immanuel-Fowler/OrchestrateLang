@@ -38,7 +38,7 @@ fn test_error_cases() {
     assert_compilation_fails("err_test2.orch", "no sidecar file found");
     assert_compilation_fails("test_type_errors.orch", "Type Error");
     assert_compilation_fails("test_type_mismatch.orch", "Type Error");
-    assert_compilation_fails("test_type_mismatch.orch", "Mismatch");
+    assert_compilation_fails("test_type_mismatch.orch", "mismatch");
     assert_compilation_fails("test_undefined_var.orch", "Type Error");
     assert_compilation_fails("test_undefined_var.orch", "undefined variable");
 }

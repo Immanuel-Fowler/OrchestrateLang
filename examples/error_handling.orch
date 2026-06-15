@@ -1,0 +1,60 @@
+// error_handling.orch — demonstrates result<T>, option<T>, try/catch, and ? propagation
+
+// A task that returns a result<int> — can succeed or fail
+task divide(a: int, b: int) -> result<int> {
+    if b == 0 {
+        err("division by zero")
+    } else {
+        ok(a / b)
+    }
+}
+
+// A task that wraps division and propagates errors with ?
+task safe_computation(x: int, y: int) -> result<int> {
+    let half = divide(x, y)?
+    ok(half * 2)
+}
+
+// A task that uses try/catch to recover from errors
+task guarded_divide(a: int, b: int) -> int {
+    let result = try {
+        divide(a, b)?
+    } catch e {
+        print("caught error: " + e)
+        -1
+    }
+    result
+}
+
+// A task demonstrating option<T>
+task find_first_even(items: int[]) -> option<int> {
+    let i = 0
+    while i < length(items) {
+        if items[i] / 2 * 2 == items[i] {
+            some(items[i])
+        }
+        i = i + 1
+    }
+    none
+}
+
+orchestrator main {
+    let r1 = divide(10, 2)
+    print("10 / 2 = ok(5)? result is some value")
+
+    let r2 = divide(10, 0)
+    print("10 / 0 = error case handled")
+
+    let r3 = safe_computation(20, 4)
+    print("safe_computation(20, 4) propagated successfully")
+
+    let v1 = guarded_divide(10, 2)
+    print("guarded 10/2 = " + to_string(v1))
+
+    let v2 = guarded_divide(10, 0)
+    print("guarded 10/0 = " + to_string(v2))
+
+    let nums = [1, 3, 5, 4, 7]
+    let first_even = find_first_even(nums)
+    print("find_first_even([1,3,5,4,7]) found a result")
+}

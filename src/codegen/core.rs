@@ -1,9 +1,6 @@
-use crate::ast::{ExprNode, StmtNode, Expr, Stmt, Type};
+use crate::ast::{ExprNode, StmtNode, Expr, Stmt, StringPart, Type};
 use std::collections::HashSet;
 
-/// The shared runtime preamble (operator traits + builtins). When
-/// `print_to_stderr` is true, `print_val` writes to stderr — used by secret
-/// serverlet child programs whose stdout is the IPC channel.
 pub fn runtime_preamble(print_to_stderr: bool) -> String {
     let print_macro = if print_to_stderr { "eprintln!" } else { "println!" };
     format!(r#"trait OrchAdd<RHS = Self> {{
@@ -72,8 +69,6 @@ type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send 
 "#, print_macro = print_macro)
 }
 
-/// Async length-prefixed frame helpers used by a secret serverlet's mirror
-/// (orchestrator side) to talk to the child process over its stdio.
 pub const SECRET_MIRROR_HELPERS: &str = r#"async fn __secret_write_frame<W: tokio::io::AsyncWriteExt + Unpin>(w: &mut W, fields: &[String]) -> std::io::Result<()> {
     w.write_all(&(fields.len() as u32).to_le_bytes()).await?;
     for f in fields {
@@ -107,8 +102,6 @@ async fn __secret_read_frame<R: tokio::io::AsyncReadExt + Unpin>(r: &mut R) -> s
 
 "#;
 
-/// Blocking length-prefixed frame helpers used by a secret serverlet's child
-/// program (stdin/stdout side).
 pub const SECRET_CHILD_FRAMES: &str = r#"fn __frame_read<R: std::io::Read>(r: &mut R) -> std::io::Result<Option<Vec<String>>> {
     let mut n_buf = [0u8; 4];
     match r.read_exact(&mut n_buf) {
@@ -165,11 +158,7 @@ pub struct Codegen {
     pub is_main: bool,
     pub events: std::collections::HashMap<String, Vec<Type>>,
     pub local_stmts: Vec<Stmt>,
-    /// Standalone programs for secret serverlets: (binary_name, rust_source).
-    /// The driver writes each to `.orch_cache/src/bin/<binary_name>.rs`.
     pub secret_programs: Vec<(String, String)>,
-    /// True if any secret serverlet was emitted, so the main/module file pulls in
-    /// the async IPC frame helpers.
     pub has_secret: bool,
 }
 
@@ -188,19 +177,12 @@ impl Codegen {
         }
     }
 
-    /// Scan the program to find all declared tasks, so we know which calls need .await
     pub fn scan_tasks(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
             match &stmt.node {
-                StmtNode::TaskDecl { name, .. } => {
-                    self.tasks.insert(name.clone());
-                }
-                StmtNode::ProcessDecl { name, .. } => {
-                    self.tasks.insert(name.clone());
-                }
-                StmtNode::OrchestratorDecl { name, .. } => {
-                    self.tasks.insert(name.clone());
-                }
+                StmtNode::TaskDecl { name, .. } => { self.tasks.insert(name.clone()); }
+                StmtNode::ProcessDecl { name, .. } => { self.tasks.insert(name.clone()); }
+                StmtNode::OrchestratorDecl { name, .. } => { self.tasks.insert(name.clone()); }
                 _ => {}
             }
         }
@@ -208,11 +190,8 @@ impl Codegen {
 
     pub fn scan_modules(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
-            match &stmt.node {
-                StmtNode::UseModule { local_name, .. } => {
-                    self.modules.insert(local_name.clone());
-                }
-                _ => {}
+            if let StmtNode::UseModule { local_name, .. } = &stmt.node {
+                self.modules.insert(local_name.clone());
             }
         }
     }
@@ -228,31 +207,29 @@ impl Codegen {
             StmtNode::Let { value, .. } => self.scan_events_in_expr(value),
             StmtNode::Expr(expr) => self.scan_events_in_expr(expr),
             StmtNode::Return(opt_expr) => {
-                if let Some(expr) = opt_expr {
-                    self.scan_events_in_expr(expr);
-                }
+                if let Some(expr) = opt_expr { self.scan_events_in_expr(expr); }
             }
             StmtNode::FnDecl { body, .. } => self.scan_events_in_expr(body),
             StmtNode::TaskDecl { body, .. } => self.scan_events_in_expr(body),
             StmtNode::ProcessDecl { body, .. } => self.scan_events_in_expr(body),
             StmtNode::OrchestratorDecl { body, .. } => self.scan_events_in_expr(body),
             StmtNode::Parallel(stmts) => {
-                for s in stmts {
-                    self.scan_events_in_stmt(s);
-                }
+                for s in stmts { self.scan_events_in_stmt(s); }
             }
             StmtNode::While { cond, body } => {
                 self.scan_events_in_expr(cond);
                 self.scan_events_in_expr(body);
             }
-            StmtNode::Serverlet { state, handlers, .. } => {
-                for s in state {
-                    self.scan_events_in_stmt(s);
-                }
-                for h in handlers {
-                    self.scan_events_in_expr(&h.body);
-                }
+            StmtNode::ForIn { iter, body, .. } => {
+                self.scan_events_in_expr(iter);
+                self.scan_events_in_expr(body);
             }
+            StmtNode::Serverlet { state, handlers, crash_handler, .. } => {
+                for s in state { self.scan_events_in_stmt(s); }
+                for h in handlers { self.scan_events_in_expr(&h.body); }
+                if let Some((_, handler)) = crash_handler { self.scan_events_in_expr(handler); }
+            }
+            StmtNode::Break | StmtNode::Continue => {}
             _ => {}
         }
     }
@@ -260,18 +237,14 @@ impl Codegen {
     pub fn scan_events_in_expr(&mut self, expr: &Expr) {
         match &expr.node {
             ExprNode::Block(stmts) => {
-                for s in stmts {
-                    self.scan_events_in_stmt(s);
-                }
+                for s in stmts { self.scan_events_in_stmt(s); }
             }
             ExprNode::Binary { lhs, rhs, .. } => {
                 self.scan_events_in_expr(lhs);
                 self.scan_events_in_expr(rhs);
             }
             ExprNode::Call { args, .. } => {
-                for a in args {
-                    self.scan_events_in_expr(a);
-                }
+                for a in args { self.scan_events_in_expr(a); }
             }
             ExprNode::Pipeline { value, function } => {
                 self.scan_events_in_expr(value);
@@ -280,25 +253,18 @@ impl Codegen {
             ExprNode::If { cond, then_branch, else_branch } => {
                 self.scan_events_in_expr(cond);
                 self.scan_events_in_expr(then_branch);
-                if let Some(eb) = else_branch {
-                    self.scan_events_in_expr(eb);
-                }
+                if let Some(eb) = else_branch { self.scan_events_in_expr(eb); }
             }
             ExprNode::ModuleCall { args, .. } => {
-                for a in args {
-                    self.scan_events_in_expr(a);
-                }
+                for a in args { self.scan_events_in_expr(a); }
             }
             ExprNode::StartServerlet { args, .. } => {
-                for a in args {
-                    self.scan_events_in_expr(a);
-                }
+                for a in args { self.scan_events_in_expr(a); }
             }
-            ExprNode::StartProcess { target } => {
-                self.scan_events_in_expr(target);
-            }
-            ExprNode::AutomaticBlock { body } => {
+            ExprNode::StartProcess { target } => self.scan_events_in_expr(target),
+            ExprNode::AutomaticBlock { body, crash_handler, .. } => {
                 self.scan_events_in_expr(body);
+                if let Some((_, handler)) = crash_handler { self.scan_events_in_expr(handler); }
             }
             ExprNode::TriggeredBlock { event_name, params, body } => {
                 let types = params.iter().map(|p| p.ty.clone()).collect();
@@ -306,9 +272,36 @@ impl Codegen {
                 self.scan_events_in_expr(body);
             }
             ExprNode::ArrayLiteral(elements) => {
-                for e in elements {
-                    self.scan_events_in_expr(e);
+                for e in elements { self.scan_events_in_expr(e); }
+            }
+            ExprNode::TryCatch { body, handler, .. } => {
+                self.scan_events_in_expr(body);
+                self.scan_events_in_expr(handler);
+            }
+            ExprNode::Match { value, arms } => {
+                self.scan_events_in_expr(value);
+                for arm in arms { self.scan_events_in_expr(&arm.body); }
+            }
+            ExprNode::SomeLiteral(inner) | ExprNode::OkLiteral(inner) |
+            ExprNode::ErrLiteral(inner) | ExprNode::Propagate(inner) => {
+                self.scan_events_in_expr(inner);
+            }
+            ExprNode::EnumVariantLiteral { payload, .. } => {
+                if let Some(p) = payload { self.scan_events_in_expr(p); }
+            }
+            ExprNode::Closure { body, .. } => {
+                self.scan_events_in_expr(body);
+            }
+            ExprNode::StringInterp { parts } => {
+                for part in parts {
+                    if let StringPart::Expr(e) = part { self.scan_events_in_expr(e); }
                 }
+            }
+            ExprNode::StructLiteral { fields, .. } => {
+                for (_, v) in fields { self.scan_events_in_expr(v); }
+            }
+            ExprNode::FieldAccess { object, .. } => {
+                self.scan_events_in_expr(object);
             }
             _ => {}
         }
@@ -326,9 +319,7 @@ impl Codegen {
                 self.get_free_vars_expr(rhs, local_env, free_vars);
             }
             ExprNode::Call { args, .. } => {
-                for a in args {
-                    self.get_free_vars_expr(a, local_env, free_vars);
-                }
+                for a in args { self.get_free_vars_expr(a, local_env, free_vars); }
             }
             ExprNode::Pipeline { value, function } => {
                 self.get_free_vars_expr(value, local_env, free_vars);
@@ -336,44 +327,64 @@ impl Codegen {
             }
             ExprNode::Block(stmts) => {
                 let mut inner_env = local_env.clone();
-                for s in stmts {
-                    self.get_free_vars_stmt(s, &mut inner_env, free_vars);
-                }
+                for s in stmts { self.get_free_vars_stmt(s, &mut inner_env, free_vars); }
             }
             ExprNode::If { cond, then_branch, else_branch } => {
                 self.get_free_vars_expr(cond, local_env, free_vars);
                 self.get_free_vars_expr(then_branch, local_env, free_vars);
-                if let Some(eb) = else_branch {
-                    self.get_free_vars_expr(eb, local_env, free_vars);
-                }
+                if let Some(eb) = else_branch { self.get_free_vars_expr(eb, local_env, free_vars); }
             }
             ExprNode::ModuleCall { args, .. } => {
-                for a in args {
-                    self.get_free_vars_expr(a, local_env, free_vars);
-                }
+                for a in args { self.get_free_vars_expr(a, local_env, free_vars); }
             }
             ExprNode::StartServerlet { args, .. } => {
-                for a in args {
-                    self.get_free_vars_expr(a, local_env, free_vars);
-                }
+                for a in args { self.get_free_vars_expr(a, local_env, free_vars); }
             }
-            ExprNode::StartProcess { target } => {
-                self.get_free_vars_expr(target, local_env, free_vars);
-            }
-            ExprNode::AutomaticBlock { body } => {
+            ExprNode::StartProcess { target } => self.get_free_vars_expr(target, local_env, free_vars),
+            ExprNode::AutomaticBlock { body, crash_handler, .. } => {
                 self.get_free_vars_expr(body, local_env, free_vars);
+                if let Some((_, handler)) = crash_handler { self.get_free_vars_expr(handler, local_env, free_vars); }
             }
             ExprNode::TriggeredBlock { params, body, .. } => {
                 let mut inner_env = local_env.clone();
-                for p in params {
-                    inner_env.insert(p.name.clone());
-                }
+                for p in params { inner_env.insert(p.name.clone()); }
                 self.get_free_vars_expr(body, &mut inner_env, free_vars);
             }
             ExprNode::ArrayLiteral(elements) => {
-                for e in elements {
-                    self.get_free_vars_expr(e, local_env, free_vars);
+                for e in elements { self.get_free_vars_expr(e, local_env, free_vars); }
+            }
+            ExprNode::SomeLiteral(inner) | ExprNode::OkLiteral(inner) |
+            ExprNode::ErrLiteral(inner) | ExprNode::Propagate(inner) => {
+                self.get_free_vars_expr(inner, local_env, free_vars);
+            }
+            ExprNode::TryCatch { body, handler, .. } => {
+                self.get_free_vars_expr(body, local_env, free_vars);
+                self.get_free_vars_expr(handler, local_env, free_vars);
+            }
+            ExprNode::Match { value, arms } => {
+                self.get_free_vars_expr(value, local_env, free_vars);
+                for arm in arms { self.get_free_vars_expr(&arm.body, local_env, free_vars); }
+            }
+            ExprNode::EnumVariantLiteral { payload, .. } => {
+                if let Some(p) = payload { self.get_free_vars_expr(p, local_env, free_vars); }
+            }
+            ExprNode::Closure { params, body, .. } => {
+                let mut inner_env = local_env.clone();
+                for p in params { inner_env.insert(p.name.clone()); }
+                self.get_free_vars_expr(body, &mut inner_env, free_vars);
+            }
+            ExprNode::StringInterp { parts } => {
+                for part in parts {
+                    if let StringPart::Expr(e) = part {
+                        self.get_free_vars_expr(e, local_env, free_vars);
+                    }
                 }
+            }
+            ExprNode::StructLiteral { fields, .. } => {
+                for (_, v) in fields { self.get_free_vars_expr(v, local_env, free_vars); }
+            }
+            ExprNode::FieldAccess { object, .. } => {
+                self.get_free_vars_expr(object, local_env, free_vars);
             }
             _ => {}
         }
@@ -387,23 +398,24 @@ impl Codegen {
             }
             StmtNode::Expr(expr) => self.get_free_vars_expr(expr, local_env, free_vars),
             StmtNode::Return(opt_expr) => {
-                if let Some(expr) = opt_expr {
-                    self.get_free_vars_expr(expr, local_env, free_vars);
-                }
+                if let Some(expr) = opt_expr { self.get_free_vars_expr(expr, local_env, free_vars); }
             }
             StmtNode::Trigger { args, .. } => {
-                for a in args {
-                    self.get_free_vars_expr(a, local_env, free_vars);
-                }
+                for a in args { self.get_free_vars_expr(a, local_env, free_vars); }
             }
             StmtNode::While { cond, body } => {
                 self.get_free_vars_expr(cond, local_env, free_vars);
                 self.get_free_vars_expr(body, local_env, free_vars);
             }
+            StmtNode::ForIn { var, index_var, iter, body } => {
+                self.get_free_vars_expr(iter, local_env, free_vars);
+                let mut inner_env = local_env.clone();
+                inner_env.insert(var.clone());
+                if let Some(idx) = index_var { inner_env.insert(idx.clone()); }
+                self.get_free_vars_expr(body, &mut inner_env, free_vars);
+            }
             StmtNode::Parallel(stmts) => {
-                for s in stmts {
-                    self.get_free_vars_stmt(s, local_env, free_vars);
-                }
+                for s in stmts { self.get_free_vars_stmt(s, local_env, free_vars); }
             }
             StmtNode::OnStart(expr) | StmtNode::OnStop(expr) => {
                 self.get_free_vars_expr(expr, local_env, free_vars);
@@ -413,7 +425,10 @@ impl Codegen {
     }
 
     pub fn functions_and_tasks_contain(&self, name: &str) -> bool {
-        self.tasks.contains(name) || name == "print" || name == "to_string" || name == "length" || name == "append" || name == "remove" || name == "sleep" || name == "stop_orch"
+        self.tasks.contains(name)
+            || matches!(name, "print" | "to_string" | "to_int" | "to_float" | "parse_int" | "parse_float"
+                            | "length" | "append" | "remove" | "sleep" | "stop_orch"
+                            | "range" | "map" | "filter" | "reduce" | "find" | "any" | "all")
     }
 
     pub fn generate(&mut self, stmts: &[Stmt], is_main: bool) -> String {
@@ -422,8 +437,6 @@ impl Codegen {
         self.scan_modules(stmts);
         self.scan_events(stmts);
 
-        // Detect secret serverlets up front so the preamble can include the IPC
-        // frame helpers before any mirror code is emitted.
         for stmt in stmts {
             if let StmtNode::Serverlet { secret: true, .. } = &stmt.node {
                 self.has_secret = true;
@@ -432,7 +445,6 @@ impl Codegen {
 
         let mut code = String::new();
 
-        // Preamble
         code.push_str("// Generated by Orchestrate Compiler\n");
         if is_main {
             self.events.entry("update_orchestrator".to_string())
@@ -442,28 +454,23 @@ impl Codegen {
             code.push_str("#![allow(dead_code)]\n");
             code.push_str("#![allow(unused_imports)]\n");
             code.push_str("#![allow(unused_parens)]\n");
-            code.push_str("#![allow(unused_mut)]\n\n");
+            code.push_str("#![allow(unused_mut)]\n");
+            code.push_str("#![allow(unreachable_code)]\n\n");
 
-            // Output dynamic event registries
             for (event_name, types) in &self.events {
                 let type_str = if types.is_empty() {
                     "()".to_string()
                 } else if types.len() == 1 {
                     self.compile_type(&types[0]).to_string()
                 } else {
-                    let compiled_tys = types
-                        .iter()
-                        .map(|t| self.compile_type(t))
-                        .collect::<Vec<String>>()
-                        .join(", ");
+                    let compiled_tys = types.iter().map(|t| self.compile_type(t)).collect::<Vec<String>>().join(", ");
                     format!("({})", compiled_tys)
                 };
 
                 let arc_type_str = format!("std::sync::Arc<{}>", type_str);
-
                 let var_name = format!("REGISTRY_{}", event_name.to_uppercase());
                 let func_name = format!("get_registry_{}", event_name);
-                
+
                 code.push_str(&format!(
                     "static {}: std::sync::OnceLock<std::sync::Mutex<Vec<tokio::sync::mpsc::Sender<{}>>>> = std::sync::OnceLock::new();\n",
                     var_name, arc_type_str
@@ -477,8 +484,6 @@ impl Codegen {
 
         code.push_str(&runtime_preamble(false));
 
-        // Async IPC frame helpers, emitted only when a secret serverlet's mirror
-        // is present in this file (main or module).
         if self.has_secret {
             code.push_str(SECRET_MIRROR_HELPERS);
         }
@@ -497,7 +502,8 @@ impl Codegen {
                     StmtNode::TaskDecl { .. } |
                     StmtNode::ProcessDecl { .. } |
                     StmtNode::Serverlet { .. } |
-                    StmtNode::StructDef { .. } => {
+                    StmtNode::StructDef { .. } |
+                    StmtNode::EnumDef { .. } => {
                         global_stmts.push(stmt.clone());
                     }
                     StmtNode::OrchestratorDecl { name, .. } => {
@@ -521,9 +527,9 @@ impl Codegen {
                         return_type: Type::Void,
                         body: crate::ast::Spanned {
                             span: crate::ast::Span::new(0, 0),
-                            node: crate::ast::ExprNode::Block(Vec::new())
+                            node: crate::ast::ExprNode::Block(Vec::new()),
                         },
-                    }
+                    },
                 });
             }
             global_stmts.push(main_decl.unwrap());
@@ -534,6 +540,10 @@ impl Codegen {
         self.local_stmts = local_stmts;
 
         for stmt in &global_stmts {
+            // Emit source-map comment before each top-level declaration
+            if stmt.span.line > 0 {
+                code.push_str(&format!("// orch:{}:{}\n", stmt.span.line, stmt.span.col));
+            }
             code.push_str(&self.compile_stmt(stmt));
             code.push_str("\n\n");
         }
@@ -541,22 +551,27 @@ impl Codegen {
         code
     }
 
-    
-pub fn compile_block_inner(&mut self, body: &Expr, force_semicolons: bool) -> String {
+    pub fn compile_block_inner(&mut self, body: &Expr, force_semicolons: bool) -> String {
         if let ExprNode::Block(stmts) = &body.node {
             let mut parts = Vec::new();
             for (i, s) in stmts.iter().enumerate() {
                 let is_last = i == stmts.len() - 1;
+                // Source map comment for each statement
+                let src_comment = if s.span.line > 0 {
+                    format!("// orch:{}:{}\n    ", s.span.line, s.span.col)
+                } else {
+                    String::new()
+                };
                 match &s.node {
                     StmtNode::Expr(expr) if is_last && !force_semicolons => {
-                        parts.push(self.compile_expr(expr));
+                        parts.push(format!("{}{}", src_comment, self.compile_expr(expr)));
                     }
                     _ => {
                         let compiled = self.compile_stmt(s);
                         if !compiled.ends_with(';') && !compiled.ends_with('}') {
-                            parts.push(format!("{};", compiled));
+                            parts.push(format!("{}{};", src_comment, compiled));
                         } else {
-                            parts.push(compiled);
+                            parts.push(format!("{}{}", src_comment, compiled));
                         }
                     }
                 }
@@ -567,8 +582,7 @@ pub fn compile_block_inner(&mut self, body: &Expr, force_semicolons: bool) -> St
         }
     }
 
-    
-pub fn compile_type(&self, ty: &Type) -> String {
+    pub fn compile_type(&self, ty: &Type) -> String {
         match ty {
             Type::Int => "i64".to_string(),
             Type::Float => "f64".to_string(),
@@ -578,6 +592,13 @@ pub fn compile_type(&self, ty: &Type) -> String {
             Type::Process => "ProcessRef".to_string(),
             Type::Array(inner, _init_vals) => format!("Vec<{}>", self.compile_type(inner)),
             Type::Named(name) => name.clone(),
+            Type::Option(inner) => format!("Option<{}>", self.compile_type(inner)),
+            Type::Result(inner) => format!("Result<{}, String>", self.compile_type(inner)),
+            Type::Fn(params, ret) => {
+                let params_str = params.iter().map(|t| self.compile_type(t)).collect::<Vec<_>>().join(", ");
+                format!("impl Fn({}) -> {}", params_str, self.compile_type(ret))
+            }
+            Type::TypeParam(name) => name.clone(),
         }
     }
 }

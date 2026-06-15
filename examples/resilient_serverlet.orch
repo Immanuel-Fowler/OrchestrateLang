@@ -1,0 +1,52 @@
+// resilient_serverlet.orch — demonstrates a serverlet with on_crash handler for panic isolation
+
+serverlet Calculator {
+    state {
+        let total: int = 0
+        let request_count: int = 0
+    }
+
+    fn add(a: int, b: int) -> int {
+        request_count = request_count + 1
+        total = total + (a + b)
+        a + b
+    }
+
+    fn divide(a: int, b: int) -> int {
+        request_count = request_count + 1
+        // This will panic if b == 0, but on_crash recovers
+        a / b
+    }
+
+    fn get_total() -> int {
+        total
+    }
+
+    fn get_count() -> int {
+        request_count
+    }
+
+    on_crash e {
+        print("Calculator handler recovered from panic: " + e)
+    }
+}
+
+orchestrator main {
+    let calc = start Calculator
+
+    let r1 = calc.add(10, 5)
+    print("10 + 5 = " + to_string(r1))
+
+    let r2 = calc.add(3, 7)
+    print("3 + 7 = " + to_string(r2))
+
+    // This would normally panic (divide by zero), but on_crash handles it
+    let r3 = calc.divide(10, 0)
+    print("divide recovered, got: " + to_string(r3))
+
+    // Calculator is still alive after the panic
+    let total = calc.get_total()
+    let count = calc.get_count()
+    print("total accumulated: " + to_string(total))
+    print("requests handled: " + to_string(count))
+}

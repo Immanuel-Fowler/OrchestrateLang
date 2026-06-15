@@ -1,0 +1,34 @@
+load_foreign "rust" "impl.rs"
+
+// String utility module
+// All functions are implemented in Rust via FFI
+
+// Split a string by a delimiter, returning an array of strings
+fn split(s: string, delimiter: string) -> string[] {}
+
+// Join an array of strings with a separator
+fn join(parts: string[], separator: string) -> string {}
+
+// Check if a string contains a substring
+fn contains(s: string, needle: string) -> bool {}
+
+// Convert string to uppercase
+fn upper(s: string) -> string {}
+
+// Convert string to lowercase
+fn lower(s: string) -> string {}
+
+// Trim whitespace from both ends
+fn trim(s: string) -> string {}
+
+// Check if string starts with prefix
+fn starts_with(s: string, prefix: string) -> bool {}
+
+// Check if string ends with suffix
+fn ends_with(s: string, suffix: string) -> bool {}
+
+// Replace all occurrences of old with new
+fn replace(s: string, old: string, new: string) -> string {}
+
+// Return the length of a string in characters
+fn len(s: string) -> int {}

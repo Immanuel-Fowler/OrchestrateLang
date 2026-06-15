@@ -1,0 +1,121 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "OrchestrateLang",
+  "scopeName": "source.orch",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#number" },
+    { "include": "#keyword-control" },
+    { "include": "#keyword-declaration" },
+    { "include": "#keyword-concurrency" },
+    { "include": "#literal-bool-none" },
+    { "include": "#builtin-type" },
+    { "include": "#builtin-function" },
+    { "include": "#enum-variant" },
+    { "include": "#function-call" },
+    { "include": "#operator" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.double-slash.orch",
+      "match": "//.*$"
+    },
+
+    "string": {
+      "name": "string.quoted.double.orch",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.orch",
+          "match": "\\\\."
+        },
+        {
+          "name": "punctuation.definition.template-expression.orch",
+          "match": "\\$\\{[^}]*\\}"
+        }
+      ]
+    },
+
+    "number": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.orch",
+          "match": "\\b[0-9]+\\.[0-9]+\\b"
+        },
+        {
+          "name": "constant.numeric.integer.orch",
+          "match": "\\b[0-9]+\\b"
+        }
+      ]
+    },
+
+    "keyword-control": {
+      "name": "keyword.control.orch",
+      "match": "\\b(if|else|while|for|in|break|continue|return|match|try|catch)\\b"
+    },
+
+    "keyword-declaration": {
+      "name": "keyword.declaration.orch",
+      "match": "\\b(let|fn|task|process|orchestrator|serverlet|struct|enum|on|module|use|load|start|trigger)\\b"
+    },
+
+    "keyword-concurrency": {
+      "name": "keyword.other.orch",
+      "match": "\\b(parallel|automatic)\\b"
+    },
+
+    "literal-bool-none": {
+      "name": "constant.language.orch",
+      "match": "\\b(true|false|none)\\b"
+    },
+
+    "builtin-type": {
+      "name": "support.type.orch",
+      "match": "\\b(int|float|string|bool|void|option|result|array)\\b"
+    },
+
+    "builtin-function": {
+      "name": "support.function.builtin.orch",
+      "match": "\\b(print|to_string|to_int|to_float|parse_int|parse_float|sleep|stop_orch|length|append|remove|map|filter|reduce|find|any|all|range|some|ok|err)\\b(?=\\s*[({]|\\s*$)"
+    },
+
+    "enum-variant": {
+      "name": "entity.name.type.orch",
+      "match": "\\b[A-Z][a-zA-Z0-9_]*(?:::[A-Za-z][a-zA-Z0-9_]*)?"
+    },
+
+    "function-call": {
+      "name": "entity.name.function.orch",
+      "match": "\\b([a-z_][a-zA-Z0-9_]*)(?=\\s*\\()"
+    },
+
+    "operator": {
+      "name": "keyword.operator.orch",
+      "match": "->|=>|\\|>|\\+|-|\\*|/|%|==|!=|<=|>=|<|>|&&|\\|\\||!|=|::|\\.\\.\\."
+    },
+
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.section.block.orch",
+          "match": "[{}]"
+        },
+        {
+          "name": "punctuation.section.brackets.orch",
+          "match": "[\\[\\]]"
+        },
+        {
+          "name": "punctuation.section.parens.orch",
+          "match": "[()]"
+        },
+        {
+          "name": "punctuation.separator.orch",
+          "match": "[,;:]"
+        }
+      ]
+    }
+  }
+}
