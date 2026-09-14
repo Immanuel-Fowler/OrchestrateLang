@@ -46,6 +46,7 @@ pub enum TokenKind {
     Minus,      // -
     Star,       // *
     Slash,      // /
+    Percent,    // %
     EqEq,       // ==
     BangEq,     // !=
     LtEq,       // <=
@@ -190,6 +191,7 @@ impl Lexer {
                 '+' => TokenKind::Plus,
                 '*' => TokenKind::Star,
                 '/' => TokenKind::Slash,
+                '%' => TokenKind::Percent,
                 '?' => TokenKind::Question,
                 ':' => {
                     if self.peek() == Some(':') {

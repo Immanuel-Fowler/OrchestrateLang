@@ -12,6 +12,12 @@ impl Codegen {
                 Literal::Bool(v) => v.to_string(),
             },
             ExprNode::Identifier(name) => name.clone(),
+            ExprNode::Unary { op, operand } => {
+                let operand_str = self.compile_expr(operand);
+                match op {
+                    crate::ast::UnaryOp::Neg => format!("(-{})", operand_str),
+                }
+            }
             ExprNode::Binary { op, lhs, rhs } => {
                 let lhs_str = self.compile_expr(lhs);
                 let rhs_str = self.compile_expr(rhs);
@@ -24,6 +30,7 @@ impl Codegen {
                         BinaryOp::Sub => "-",
                         BinaryOp::Mul => "*",
                         BinaryOp::Div => "/",
+                        BinaryOp::Mod => "%",
                         BinaryOp::Eq => "==",
                         BinaryOp::Ne => "!=",
                         BinaryOp::Lt => "<",

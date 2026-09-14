@@ -30,10 +30,15 @@ pub enum Literal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum BinaryOp {
-    Add, Sub, Mul, Div,
+    Add, Sub, Mul, Div, Mod,
     Eq, Ne, Lt, Gt, Le, Ge,
     And, Or,
     Assign,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+    Neg,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,6 +156,10 @@ pub enum StringPart {
 pub enum ExprNode {
     Literal(Literal),
     Identifier(String),
+    Unary {
+        op: UnaryOp,
+        operand: Box<Expr>,
+    },
     Binary {
         op: BinaryOp,
         lhs: Box<Expr>,

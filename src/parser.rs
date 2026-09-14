@@ -634,7 +634,7 @@ impl Parser {
             TokenKind::EqEq | TokenKind::BangEq => Precedence::Equality,
             TokenKind::Lt | TokenKind::Gt | TokenKind::LtEq | TokenKind::GtEq => Precedence::Comparison,
             TokenKind::Plus | TokenKind::Minus => Precedence::Sum,
-            TokenKind::Star | TokenKind::Slash => Precedence::Product,
+            TokenKind::Star | TokenKind::Slash | TokenKind::Percent => Precedence::Product,
             TokenKind::LParen | TokenKind::Dot => Precedence::Call,
             _ => Precedence::Lowest,
         }
@@ -845,6 +845,11 @@ impl Parser {
         match &tok.kind {
             TokenKind::Int(v) => { self.advance(); Ok(ExprNode::Literal(Literal::Int(*v))) }
             TokenKind::Float(v) => { self.advance(); Ok(ExprNode::Literal(Literal::Float(*v))) }
+            TokenKind::Minus => {
+                self.advance();
+                let operand = self.parse_expression(Precedence::Product)?;
+                Ok(ExprNode::Unary { op: crate::ast::UnaryOp::Neg, operand: Box::new(operand) })
+            }
             TokenKind::Str(v) => {
                 let v = v.clone();
                 let span = Span::new(tok.line, tok.col);
@@ -1089,6 +1094,7 @@ impl Parser {
                     TokenKind::Minus => BinaryOp::Sub,
                     TokenKind::Star => BinaryOp::Mul,
                     TokenKind::Slash => BinaryOp::Div,
+                    TokenKind::Percent => BinaryOp::Mod,
                     TokenKind::EqEq => BinaryOp::Eq,
                     TokenKind::BangEq => BinaryOp::Ne,
                     TokenKind::Lt => BinaryOp::Lt,

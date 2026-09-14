@@ -410,6 +410,16 @@ impl TypeChecker {
                     Err(format!("line {}, col {}: undefined variable '{}'", expr.span.line, expr.span.col, name))
                 }
             }
+            ExprNode::Unary { op, operand } => {
+                let ty = self.infer_expr(operand)?;
+                match op {
+                    crate::ast::UnaryOp::Neg if ty == Type::Int || ty == Type::Float => Ok(ty),
+                    crate::ast::UnaryOp::Neg => Err(format!(
+                        "line {}, col {}: cannot negate a value of type {}",
+                        expr.span.line, expr.span.col, ty.display_name()
+                    )),
+                }
+            }
             ExprNode::Binary { op, lhs, rhs } => {
                 let lhs_ty = self.infer_expr(lhs)?;
                 let rhs_ty = self.infer_expr(rhs)?;

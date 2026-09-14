@@ -246,6 +246,9 @@ impl Codegen {
             ExprNode::Block(stmts) => {
                 for s in stmts { self.scan_events_in_stmt(s); }
             }
+            ExprNode::Unary { operand, .. } => {
+                self.scan_events_in_expr(operand);
+            }
             ExprNode::Binary { lhs, rhs, .. } => {
                 self.scan_events_in_expr(lhs);
                 self.scan_events_in_expr(rhs);
@@ -320,6 +323,9 @@ impl Codegen {
                 if !local_env.contains(name) && !self.functions_and_tasks_contain(name) {
                     free_vars.insert(name.clone());
                 }
+            }
+            ExprNode::Unary { operand, .. } => {
+                self.get_free_vars_expr(operand, local_env, free_vars);
             }
             ExprNode::Binary { lhs, rhs, .. } => {
                 self.get_free_vars_expr(lhs, local_env, free_vars);

@@ -138,6 +138,27 @@ orchestrator main() {
 }
 
 #[test]
+fn runtime_unary_minus_and_modulo() {
+    let src = r#"
+orchestrator main() {
+    let a = -7
+    let b = 10 % 3
+    let c = -2.5 * 2.0
+    let d = -a % 4
+    print(to_string(a))
+    print(to_string(b))
+    print(to_string(c))
+    print(to_string(d))
+    print(to_string(3 - -1))
+    stop_orch()
+}
+"#;
+    let stdout = run_orch("unary_minus_modulo", src);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines, vec!["-7", "1", "-5", "3", "4"]);
+}
+
+#[test]
 fn runtime_sandbox_guest_compiles_to_wasm() {
     // Step 2: a sandboxed serverlet's handler logic must compile to a wasm32-wasip1
     // artifact. (Host integration via wasmtime is step 3; for now the serverlet

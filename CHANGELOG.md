@@ -9,6 +9,9 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+### Added
+- Unary minus (`-x`, `-1.5`) and the `%` operator.
+
 ## [0.1.0] - 2026-09-14
 
 First tagged release.
