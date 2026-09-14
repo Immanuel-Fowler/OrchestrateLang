@@ -9,6 +9,12 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-14
+
+Polyglot serverlets and embedding in a Rust host. See
+[docs/library-mode.md](docs/library-mode.md) and
+[sdk/python/README.md](sdk/python/README.md).
+
 ### Added
 - Library mode (`build --lib`): a generated Rust crate with per-instance lifecycle,
   async `ready`/`tick`/`shutdown`, and a stop-request flag that leaves the host alive.
@@ -27,6 +33,35 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 - Secret serverlets speak serverlet protocol v1: a startup handshake that checks the
   protocol version and every handler signature, a call id on each request, an error reply
   when a handler panics (the serverlet keeps running), and a clean shutdown message.
+
+### Changed
+- The secret serverlet wire format is now protocol v1. Rebuild any secret serverlet
+  binaries built with 0.1.0; an old child fails the startup handshake.
+
+### Known limitations
+- Python is the only landline runtime. TypeScript, C#, and embedded runtimes are planned.
+- Tick batching, per-call time budgets, and late-result handling are not implemented, and
+  there is no latency benchmark yet.
+- Grants limit which host functions a landline can call; they do not sandbox Python or
+  restrict its OS permissions.
+- In library mode, secret serverlet children are built for the compiler machine's
+  target, so cross-compiling the generated crate is not supported.
+- A line break does not end an expression, so a line that starts with an operator
+  continues the previous line.
+- The typechecker accepts payload patterns on unit enum variants (`Color::Red(v)`); the
+  Rust build then fails.
+- `start <process>` inside an orchestrator is not supported. List processes in
+  `process[...]` instead.
+- A `try` block cannot call a `task`, because the generated closure is not async. Call
+  `fn`s inside `try`.
+- Outside library mode, `on_stop` runs only on Ctrl+C; `stop_orch()` exits immediately
+  without running it.
+- Standard library modules are found only next to the `orchestrate` binary or in the
+  current directory, so they are not importable after `cargo install` yet.
+- Sandboxed serverlets provide no isolation yet.
+- `docs/language-reference.md` does not yet cover string interpolation, generics,
+  `option` / `result`, `try` / `catch`, supervision, `check`, the language server, or the
+  standard library. See `examples/` for working code.
 
 ## [0.1.0] - 2026-09-14
 
@@ -93,5 +128,6 @@ First tagged release.
   `option` / `result`, `try` / `catch`, supervision, `check`, the language server, or the
   standard library. See `examples/` for working code.
 
-[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/releases/tag/v0.1.0
