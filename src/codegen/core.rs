@@ -72,74 +72,88 @@ fn stop_orch() {{
 {process_ref}"#, print_macro = print_macro, process_ref = process_ref)
 }
 
-pub const SECRET_MIRROR_HELPERS: &str = r#"async fn __secret_write_frame<W: tokio::io::AsyncWriteExt + Unpin>(w: &mut W, fields: &[Vec<u8>]) -> std::io::Result<()> {
-    w.write_all(&(fields.len() as u32).to_le_bytes()).await?;
-    for f in fields {
-        w.write_all(&(f.len() as u32).to_le_bytes()).await?;
-        w.write_all(f).await?;
-    }
-    w.flush().await?;
-    Ok(())
+pub const SECRET_MIRROR_HELPERS: &str = r#"async fn __secret_write_frame<W: tokio::io::AsyncWriteExt + Unpin>(w: &mut W, kind: u8, call_id: u32, payload: &[u8]) -> std::io::Result<()> {
+    w.write_all(&((payload.len() + 5) as u32).to_le_bytes()).await?;
+    w.write_all(&[kind]).await?;
+    w.write_all(&call_id.to_le_bytes()).await?;
+    w.write_all(payload).await?;
+    w.flush().await
 }
 
-async fn __secret_read_frame<R: tokio::io::AsyncReadExt + Unpin>(r: &mut R) -> std::io::Result<Option<Vec<Vec<u8>>>> {
-    let mut n_buf = [0u8; 4];
-    match r.read_exact(&mut n_buf).await {
+async fn __secret_read_frame<R: tokio::io::AsyncReadExt + Unpin>(r: &mut R) -> std::io::Result<Option<OrchFrame>> {
+    let mut len_buf = [0u8; 4];
+    match r.read_exact(&mut len_buf).await {
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
         Err(e) => return Err(e),
     }
-    let n = u32::from_le_bytes(n_buf);
-    let mut fields = Vec::with_capacity(n as usize);
-    for _ in 0..n {
-        let mut len_buf = [0u8; 4];
-        r.read_exact(&mut len_buf).await?;
-        let len = u32::from_le_bytes(len_buf) as usize;
-        let mut buf = vec![0u8; len];
-        r.read_exact(&mut buf).await?;
-        fields.push(buf);
-    }
-    Ok(Some(fields))
+    let mut buf = vec![0u8; u32::from_le_bytes(len_buf) as usize];
+    r.read_exact(&mut buf).await?;
+    OrchFrame::parse(buf).map(Some)
 }
 
 "#;
 
-pub const SECRET_CHILD_FRAMES: &str = r#"fn __frame_read<R: std::io::Read>(r: &mut R) -> std::io::Result<Option<Vec<Vec<u8>>>> {
-    let mut n_buf = [0u8; 4];
-    match r.read_exact(&mut n_buf) {
+pub const SECRET_CHILD_FRAMES: &str = r#"fn __frame_read<R: std::io::Read>(r: &mut R) -> std::io::Result<Option<OrchFrame>> {
+    let mut len_buf = [0u8; 4];
+    match r.read_exact(&mut len_buf) {
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
         Err(e) => return Err(e),
     }
-    let n = u32::from_le_bytes(n_buf);
-    let mut fields = Vec::with_capacity(n as usize);
-    for _ in 0..n {
-        let mut len_buf = [0u8; 4];
-        r.read_exact(&mut len_buf)?;
-        let len = u32::from_le_bytes(len_buf) as usize;
-        let mut buf = vec![0u8; len];
-        r.read_exact(&mut buf)?;
-        fields.push(buf);
-    }
-    Ok(Some(fields))
+    let mut buf = vec![0u8; u32::from_le_bytes(len_buf) as usize];
+    r.read_exact(&mut buf)?;
+    OrchFrame::parse(buf).map(Some)
 }
 
-fn __frame_write<W: std::io::Write>(w: &mut W, fields: &[Vec<u8>]) -> std::io::Result<()> {
-    w.write_all(&(fields.len() as u32).to_le_bytes())?;
-    for f in fields {
-        w.write_all(&(f.len() as u32).to_le_bytes())?;
-        w.write_all(f)?;
-    }
-    w.flush()?;
-    Ok(())
+fn __frame_write<W: std::io::Write>(w: &mut W, kind: u8, call_id: u32, payload: &[u8]) -> std::io::Result<()> {
+    w.write_all(&((payload.len() + 5) as u32).to_le_bytes())?;
+    w.write_all(&[kind])?;
+    w.write_all(&call_id.to_le_bytes())?;
+    w.write_all(payload)?;
+    w.flush()
+}
+
+fn __panic_message(e: &Box<dyn std::any::Any + Send>) -> String {
+    e.downcast_ref::<&str>().map(|s| s.to_string())
+        .or_else(|| e.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "handler panicked".to_string())
 }
 
 "#;
 
-/// Binary value encoding shared by both ends of a serverlet wire: int and float as 8 bytes
-/// little-endian, bool as 1 byte, string as a u32 length + UTF-8, arrays as a u32 count +
-/// elements, and structs as their fields in declaration order (impls generated per struct).
-pub const WIRE_CODEC: &str = r#"trait OrchWire: Sized {
+/// Serverlet wire protocol v1 (docs/design/landline-serverlets.md §7), shared by both ends.
+///
+/// Frame: `[u32 length][u8 kind][u32 call_id][payload]`, little-endian; the length covers
+/// kind + call_id + payload. Values use the `OrchWire` encoding: int and float as 8 bytes,
+/// bool as 1 byte, string as a u32 length + UTF-8, arrays as a u32 count + elements, and
+/// structs as their fields in declaration order (impls generated per struct).
+pub const WIRE_CODEC: &str = r#"const ORCH_WIRE_VERSION: i64 = 1;
+const ORCH_KIND_HELLO: u8 = 1;
+const ORCH_KIND_READY: u8 = 2;
+const ORCH_KIND_CALL: u8 = 3;
+const ORCH_KIND_REPLY: u8 = 4;
+const ORCH_KIND_ERROR: u8 = 5;
+// 6 = HOST_CALL, 7 = HOST_REPLY, and 9 = TICK are reserved for landline serverlets.
+const ORCH_KIND_BYE: u8 = 8;
+
+struct OrchFrame {
+    kind: u8,
+    call_id: u32,
+    payload: Vec<u8>,
+}
+
+impl OrchFrame {
+    fn parse(mut buf: Vec<u8>) -> std::io::Result<OrchFrame> {
+        if buf.len() < 5 {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "serverlet frame too short"));
+        }
+        let payload = buf.split_off(5);
+        Ok(OrchFrame { kind: buf[0], call_id: u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]), payload })
+    }
+}
+
+trait OrchWire: Sized {
     fn wire_encode(&self, out: &mut Vec<u8>);
     fn wire_decode(buf: &[u8], pos: &mut usize) -> Option<Self>;
 }

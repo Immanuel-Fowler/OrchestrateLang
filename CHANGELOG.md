@@ -16,6 +16,9 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   same line as the value before it.
 - Secret serverlet handlers can take and return arrays and structs declared in the same
   file. Values cross the process boundary in a binary encoding.
+- Secret serverlets speak serverlet protocol v1: a startup handshake that checks the
+  protocol version and every handler signature, a call id on each request, an error reply
+  when a handler panics (the serverlet keeps running), and a clean shutdown message.
 
 ## [0.1.0] - 2026-09-14
 

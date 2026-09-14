@@ -1017,9 +1017,12 @@ spawn it on first use and shut it down when the orchestrator stops.
 
 **v1 limitations:**
 
-- Handler parameters and returns must be `int`, `float`, `bool`, `string`, or
-  `void`. Using a struct (or other non-primitive) across a secret handler boundary
-  is a compile error for now.
+- Handler parameters and returns support `int`, `float`, `bool`, `string`, arrays,
+  and structs declared in the same file with supported fields. Returns may also be `void`.
+- Protocol v1 checks the version and ordered handler signatures at startup. Calls and
+  replies carry matching IDs; closing the client sends a clean shutdown message.
+- A handler panic logs an error and returns the type’s default value. The child
+  continues serving; state mutations made before the panic are retained.
 - A secret serverlet's handlers are self-contained: they may use built-ins and
   primitives but cannot call top-level or module functions from the parent program.
 - `print(...)` inside a secret serverlet writes to **stderr** (its stdout is the IPC

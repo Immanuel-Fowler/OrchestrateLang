@@ -221,6 +221,35 @@ orchestrator main() {
 }
 
 #[test]
+fn runtime_secret_serverlet_handler_panic_is_isolated() {
+    // A panicking handler sends an ERROR reply; the caller gets a default value and the
+    // serverlet keeps its state and keeps serving.
+    let src = r#"
+serverlet Calc secret {
+    let calls = 0
+    on div(a: int, b: int) -> int {
+        calls = calls + 1
+        return a / b
+    }
+    on count() -> int {
+        return calls
+    }
+}
+orchestrator main() {
+    let c = start Calc()
+    print(to_string(c.div(10, 2)))
+    print(to_string(c.div(1, 0)))
+    print(to_string(c.div(9, 3)))
+    print(to_string(c.count()))
+    stop_orch()
+}
+"#;
+    let stdout = run_orch("secret_handler_panic", src);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines, vec!["5", "0", "3", "3"]);
+}
+
+#[test]
 fn runtime_sandbox_guest_compiles_to_wasm() {
     // Step 2: a sandboxed serverlet's handler logic must compile to a wasm32-wasip1
     // artifact. (Host integration via wasmtime is step 3; for now the serverlet
@@ -351,5 +380,76 @@ fn runtime_regression_programs() {
         assert!(out.status.success(),
             "{:?} failed:\nstdout: {}\nstderr: {}", program,
             String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    }
+}
+
+#[test]
+fn runtime_secret_protocol_frames() {
+    use std::io::{Read, Write};
+    use std::process::Stdio;
+    let source = r#"
+serverlet Protocol secret {
+    on echo(n: int) -> int { return n }
+}
+orchestrator main() {
+    let p = start Protocol()
+    print(to_string(p.echo(7)))
+    stop_orch()
+}
+"#;
+    run_orch("protocol_frames", source);
+    let binary = std::env::temp_dir().join("orch_runtime_protocol_frames/.orch_cache/target/debug")
+        .join(format!("secret_Protocol{}", std::env::consts::EXE_SUFFIX));
+    let mut child = Command::new(&binary).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut output = child.stdout.take().unwrap();
+    fn read_frame(r: &mut impl Read) -> (u8, u32, Vec<u8>) {
+        let mut len = [0; 4];
+        r.read_exact(&mut len).unwrap();
+        let mut frame = vec![0; u32::from_le_bytes(len) as usize];
+        r.read_exact(&mut frame).unwrap();
+        (frame[0], u32::from_le_bytes(frame[1..5].try_into().unwrap()), frame[5..].to_vec())
+    }
+    fn write_frame(w: &mut impl Write, kind: u8, id: u32, payload: &[u8]) {
+        w.write_all(&((payload.len() + 5) as u32).to_le_bytes()).unwrap();
+        w.write_all(&[kind]).unwrap();
+        w.write_all(&id.to_le_bytes()).unwrap();
+        w.write_all(payload).unwrap();
+        w.flush().unwrap();
+    }
+    let (kind, id, hello) = read_frame(&mut output);
+    assert_eq!((kind, id), (1, 0));
+    assert_eq!(i64::from_le_bytes(hello[..8].try_into().unwrap()), 1);
+    assert!(hello.windows(b"echo(int)->int".len()).any(|w| w == b"echo(int)->int"));
+    write_frame(&mut input, 2, 0, &[]);
+    // Missing arguments and unknown handlers yield correlated errors, not defaults.
+    for (id, handler) in [(41, 0i64), (42, 99i64)] {
+        write_frame(&mut input, 3, id, &handler.to_le_bytes());
+        let (kind, reply_id, _) = read_frame(&mut output);
+        assert_eq!((kind, reply_id), (5, id));
+    }
+    let mut payload = 0i64.to_le_bytes().to_vec();
+    payload.extend_from_slice(&123i64.to_le_bytes());
+    write_frame(&mut input, 3, 43, &payload);
+    assert_eq!(read_frame(&mut output), (4, 43, 123i64.to_le_bytes().to_vec()));
+    write_frame(&mut input, 8, 0, &[]);
+    drop(input);
+    assert!(child.wait().unwrap().success());
+
+    // Replace the child with a stale interface and verify the actual parent rejects it.
+    let cache = std::env::temp_dir().join("orch_runtime_protocol_frames/.orch_cache");
+    let child_source = cache.join("src/bin/secret_Protocol.rs");
+    let generated = fs::read_to_string(&child_source).unwrap();
+    for (old, new) in [("echo(int)->int", "renamed(int)->int"),
+                       ("ORCH_WIRE_VERSION: i64 = 1", "ORCH_WIRE_VERSION: i64 = 2")] {
+        fs::write(&child_source, generated.replace(old, new)).unwrap();
+        let compiled = Command::new("cargo").args(["build", "--quiet", "--bin", "secret_Protocol"])
+            .current_dir(&cache).output().unwrap();
+        assert!(compiled.status.success(), "{}", String::from_utf8_lossy(&compiled.stderr));
+        let parent = Command::new(cache.join("target/debug").join(format!("orch_generated{}", std::env::consts::EXE_SUFFIX)))
+            .output().unwrap();
+        let stderr = String::from_utf8_lossy(&parent.stderr);
+        assert!(stderr.contains("interface mismatch"), "{}", stderr);
+        assert!(stderr.contains("echo(int)->int"), "{}", stderr);
     }
 }

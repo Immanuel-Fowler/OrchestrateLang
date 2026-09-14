@@ -1,6 +1,6 @@
 # Landline Serverlets — Design & Build Plan
 
-> Status: **📋 DESIGN — not implemented.** Syntax, protocol details, and SDK names
+> Status: **🚧 IN PROGRESS — build steps 1–3 implemented; landline syntax and SDKs remain planned.** Syntax, protocol details, and SDK names
 > below are proposals. What *is* settled: a serverlet's handler bodies can be written in
 > another language and run behind a **landline** (a connection with no sockets);
 > OrchestrateLang can build as a Rust library that a host application links; and the
@@ -257,8 +257,8 @@ simulation, a desktop app — owns its own main loop, so:
 
 ## 7. What's genuinely hard (so we plan around it)
 
-1. **Data across the line.** The wire format today carries only `int`, `float`, `bool`,
-   and `string`, each encoded as text. Real interfaces need structs and arrays, and
+1. **Data across the line.** The secret serverlet wire now carries `int`, `float`, `bool`,
+   `string`, arrays, and same-file structs in binary. Real interfaces need structs and arrays, and
    per-tick batches need a binary encoding. **Plan:** protocol v1 (below) with typed
    binary values before any per-tick work.
 2. **Interface drift.** A Python method renamed without updating the `.orch`
@@ -279,9 +279,20 @@ simulation, a desktop app — owns its own main loop, so:
    and an embedded one shares its memory. Untrusted third-party plugins need sandboxed
    serverlets. Docs must say this as plainly as the secret serverlet docs do.
 
-### Protocol v1 (proposal)
+### Protocol v1 (implemented for secret serverlets; landline extensions proposed)
 
-Frame: `[u32 length][u8 kind][u32 call_id][payload]`, little-endian.
+Frame: `[u32 length][u8 kind][u32 call_id][payload]`, little-endian. Length
+covers the kind, call ID, and payload (not the length prefix). Implemented kind IDs
+are HELLO=1, READY=2, CALL=3, REPLY=4, ERROR=5, BYE=8; 6, 7, and 9 are reserved
+for HOST_CALL, HOST_REPLY, and TICK.
+
+For secret serverlets, HELLO uses call ID 0 and encodes an i64 version followed by
+an array of signature strings such as `echo(int)->int`, in declaration order.
+READY has call ID 0 and an empty payload. CALL starts with an i64 handler index
+(zero-based), followed by arguments in parameter order. REPLY contains the return
+value (empty for void); ERROR contains a string. Both echo the CALL ID.
+BYE uses call ID 0 and an empty payload. Struct signatures currently identify types
+by name; this handshake does not compare the fields of same-named structs.
 
 | Kind | Direction | Payload |
 |---|---|---|
@@ -297,6 +308,9 @@ Frame: `[u32 length][u8 kind][u32 call_id][payload]`, little-endian.
 Values: `int` as i64, `float` as f64, `bool` as u8, `string` as u32 length + UTF-8,
 arrays as u32 count + elements, and structs as fields in declaration order.
 
+Secret serverlets currently log handler errors and return the return type’s default value;
+state mutations before a panic persist. Host-call and tick kinds remain reserved.
+
 A foreign exception becomes an `ERROR` reply that the caller receives as an error. A
 dead process triggers `on_crash` and the serverlet's restart policy.
 
@@ -309,11 +323,11 @@ feature.
 
 **v0.2.0 — first working landline**
 
-1. **Language prerequisites.** Array indexing, unary minus, and `%`. Foreign-code glue
+1. **[IMPLEMENTED] Language prerequisites.** Array indexing, unary minus, and `%`. Foreign-code glue
    hits all three immediately.
-2. **Structs and arrays over the serverlet wire**, on secret serverlets first, where
+2. **[IMPLEMENTED] Structs and arrays over the serverlet wire**, on secret serverlets first, where
    both ends are generated Rust and easy to test.
-3. **Protocol v1** with the handshake and interface check; secret serverlets move to it.
+3. **[IMPLEMENTED] Protocol v1** with the handshake and interface check; secret serverlets move to it.
 4. **`via python(source: ...)` with body-less handlers** — parser, typechecker, codegen.
 5. **Python SDK + first pipe landline end to end.** *Runtime test: a Python serverlet
    keeps state across calls, and a renamed handler fails at startup.*

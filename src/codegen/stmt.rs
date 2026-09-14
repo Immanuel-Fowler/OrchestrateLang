@@ -560,28 +560,39 @@ impl Codegen {
                 format!("{}, reply_to", param_names.join(", "))
             };
 
-            // Field 0 is the handler index; each argument follows in the wire encoding.
-            let mut req_fields = vec![format!("__wire_to_bytes(&{}i64)", k)];
-            for p in &h.params {
-                req_fields.push(format!("__wire_to_bytes(&{})", p.name));
-            }
+            // CALL payload: the handler id, then each argument in the wire encoding.
+            let encode_args = h.params.iter()
+                .map(|p| format!("                    {}.wire_encode(&mut __payload);\n", p.name))
+                .collect::<String>();
 
             let decode = if h.return_type == Type::Void {
                 "()".to_string()
             } else {
-                format!("__f.get(0).map(|b| __wire_from_bytes::<{}>(b)).unwrap_or_default()", self.compile_type(&h.return_type))
+                format!("{{ let mut __p = 0usize; <{} as OrchWire>::wire_decode(&__f.payload, &mut __p).unwrap_or_default() }}", self.compile_type(&h.return_type))
             };
 
             arms.push(format!(
-"                {n}Msg::{v} {{ {b} }} => {{\n                    let __req: Vec<Vec<u8>> = vec![{req}];\n                    if __secret_write_frame(&mut __cin, &__req).await.is_err() {{\n                        eprintln!(\"[orchestrate] secret serverlet '{n}' is not reachable\");\n                        let _ = reply_to.send(Default::default());\n                        continue;\n                    }}\n                    match __secret_read_frame(&mut __cout).await {{\n                        Ok(Some(__f)) => {{ let _ = reply_to.send({dec}); }}\n                        _ => {{ eprintln!(\"[orchestrate] secret serverlet '{n}' exited unexpectedly\"); let _ = reply_to.send(Default::default()); }}\n                    }}\n                }}",
-                n = name, v = variant, b = binding, req = req_fields.join(", "), dec = decode
+"                {n}Msg::{v} {{ {b} }} => {{\n                    __next_call = __next_call.wrapping_add(1);\n                    let mut __payload = Vec::new();\n                    {k}i64.wire_encode(&mut __payload);\n{args}                    if __secret_write_frame(&mut __cin, ORCH_KIND_CALL, __next_call, &__payload).await.is_err() {{\n                        eprintln!(\"[orchestrate] secret serverlet '{n}' is not reachable\");\n                        let _ = reply_to.send(Default::default());\n                        continue;\n                    }}\n                    match __secret_read_frame(&mut __cout).await {{\n                        Ok(Some(__f)) if __f.kind == ORCH_KIND_REPLY && __f.call_id == __next_call => {{ let _ = reply_to.send({dec}); }}\n                        Ok(Some(__f)) if __f.kind == ORCH_KIND_ERROR && __f.call_id == __next_call => {{\n                            let mut __p = 0usize;\n                            let __msg: String = OrchWire::wire_decode(&__f.payload, &mut __p).unwrap_or_default();\n                            eprintln!(\"[orchestrate] secret serverlet '{n}' handler '{h}' failed: {{}}\", __msg);\n                            let _ = reply_to.send(Default::default());\n                        }}\n                        _ => {{ eprintln!(\"[orchestrate] secret serverlet '{n}' exited unexpectedly\"); let _ = reply_to.send(Default::default()); }}\n                    }}\n                }}",
+                n = name, v = variant, b = binding, k = k, h = h.name, args = encode_args, dec = decode
             ));
         }
 
         format!(
-"#[allow(non_snake_case)]\npub fn start_{n}() -> {n}Client {{\n    let (tx, mut rx) = tokio::sync::mpsc::channel::<{n}Msg>(100);\n    tokio::spawn(async move {{\n        use tokio::io::{{AsyncReadExt, AsyncWriteExt}};\n        let __exe = std::env::current_exe().expect(\"current_exe\");\n        let __dir = __exe.parent().expect(\"exe dir\").to_path_buf();\n        let __bin = if cfg!(target_os = \"windows\") {{ \"secret_{n}.exe\" }} else {{ \"secret_{n}\" }};\n        let mut __child = match tokio::process::Command::new(__dir.join(__bin))\n            .stdin(std::process::Stdio::piped())\n            .stdout(std::process::Stdio::piped())\n            .spawn() {{\n            Ok(c) => c,\n            Err(e) => {{ eprintln!(\"[orchestrate] failed to spawn secret serverlet '{n}': {{}}\", e); return; }}\n        }};\n        let mut __cin = __child.stdin.take().expect(\"child stdin\");\n        let mut __cout = __child.stdout.take().expect(\"child stdout\");\n        let _ = __secret_read_frame(&mut __cout).await;\n        while let Some(msg) = rx.recv().await {{\n            match msg {{\n{arms}\n            }}\n        }}\n        drop(__cin);\n        let _ = __child.wait().await;\n    }});\n    {n}Client {{ tx }}\n}}",
-            n = name, arms = arms.join("\n")
+"#[allow(non_snake_case)]\npub fn start_{n}() -> {n}Client {{\n    let (tx, mut rx) = tokio::sync::mpsc::channel::<{n}Msg>(100);\n    tokio::spawn(async move {{\n        use tokio::io::{{AsyncReadExt, AsyncWriteExt}};\n        let __exe = std::env::current_exe().expect(\"current_exe\");\n        let __dir = __exe.parent().expect(\"exe dir\").to_path_buf();\n        let __bin = if cfg!(target_os = \"windows\") {{ \"secret_{n}.exe\" }} else {{ \"secret_{n}\" }};\n        let mut __child = match tokio::process::Command::new(__dir.join(__bin))\n            .kill_on_drop(true)\n            .stdin(std::process::Stdio::piped())\n            .stdout(std::process::Stdio::piped())\n            .spawn() {{\n            Ok(c) => c,\n            Err(e) => {{ eprintln!(\"[orchestrate] failed to spawn secret serverlet '{n}': {{}}\", e); return; }}\n        }};\n        let mut __cin = __child.stdin.take().expect(\"child stdin\");\n        let mut __cout = __child.stdout.take().expect(\"child stdout\");\n        // Handshake: the child sends HELLO with its protocol version and handler signatures.\n        let __hello = match __secret_read_frame(&mut __cout).await {{\n            Ok(Some(f)) if f.kind == ORCH_KIND_HELLO => f,\n            _ => {{ eprintln!(\"[orchestrate] secret serverlet '{n}' did not complete the handshake\"); return; }}\n        }};\n        let mut __pos = 0usize;\n        let __version = i64::wire_decode(&__hello.payload, &mut __pos).unwrap_or(0);\n        let __got: Vec<String> = OrchWire::wire_decode(&__hello.payload, &mut __pos).unwrap_or_default();\n        let __expected: Vec<String> = vec![{sigs}];\n        if __version != ORCH_WIRE_VERSION || __got != __expected {{\n            eprintln!(\"[orchestrate] secret serverlet '{n}' interface mismatch: expected protocol {{}} {{:?}}, got protocol {{}} {{:?}}\", ORCH_WIRE_VERSION, __expected, __version, __got);\n            let _ = __child.kill().await;\n            return;\n        }}\n        if __secret_write_frame(&mut __cin, ORCH_KIND_READY, 0, &[]).await.is_err() {{ return; }}\n        let mut __next_call: u32 = 0;\n        while let Some(msg) = rx.recv().await {{\n            match msg {{\n{arms}\n            }}\n        }}\n        let _ = __secret_write_frame(&mut __cin, ORCH_KIND_BYE, 0, &[]).await;\n        drop(__cin);\n        let _ = __child.wait().await;\n    }});\n    {n}Client {{ tx }}\n}}",
+            n = name, arms = arms.join("\n"), sigs = Self::handler_signatures(handlers)
         )
+    }
+
+    /// Handler signatures checked during the protocol handshake, as Rust string literals,
+    /// e.g. `"shift(Point,int)->Point".to_string()`.
+    fn handler_signatures(handlers: &[Handler]) -> String {
+        handlers.iter()
+            .map(|h| {
+                let params = h.params.iter().map(|p| p.ty.display_name()).collect::<Vec<_>>().join(",");
+                format!("{:?}.to_string()", format!("{}({})->{}", h.name, params, h.return_type.display_name()))
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     fn compile_secret_program(&mut self, name: &str, state: &[Stmt], handlers: &[Handler]) -> String {
@@ -604,21 +615,21 @@ impl Codegen {
         let mut arms = Vec::new();
         for (k, h) in handlers.iter().enumerate() {
             let mut arg_lets = Vec::new();
-            for (j, p) in h.params.iter().enumerate() {
+            for p in &h.params {
                 let ty = self.compile_type(&p.ty);
                 arg_lets.push(format!(
-                    "                        let {}: {} = __fields.get({}).map(|b| __wire_from_bytes::<{}>(b)).unwrap_or_default();",
-                    p.name, ty, j + 1, ty
+                    "                        let {}: {} = OrchWire::wire_decode(&__frame.payload, &mut __pos).ok_or_else(|| \"invalid arguments\".to_string())?;",
+                    p.name, ty
                 ));
             }
             let body = self.compile_expr(&h.body);
             let finish = if h.return_type == Type::Void {
-                "                        let _ = __handler();\n                        let _ = __frame_write(&mut __writer, &[]);".to_string()
+                "                        __handler();\n                        Ok(Vec::new())".to_string()
             } else {
-                "                        let __r = __handler();\n                        let _ = __frame_write(&mut __writer, &[__wire_to_bytes(&__r)]);".to_string()
+                "                        let __r = __handler();\n                        Ok(__wire_to_bytes(&__r))".to_string()
             };
             arms.push(format!(
-"                    {k}usize => {{\n{args}\n                        #[allow(unused_mut)]\n                        let mut __handler = || {{ {body} }};\n{finish}\n                    }}",
+"                    {k}i64 => {{\n{args}\n                        if __pos != __frame.payload.len() {{ return Err(\"trailing arguments\".to_string()); }}\n                        #[allow(unused_mut)]\n                        let mut __handler = || {{ {body} }};\n{finish}\n                    }}",
                 k = k, args = arg_lets.join("\n"), body = body, finish = finish
             ));
         }
@@ -637,12 +648,13 @@ impl Codegen {
             .collect::<String>() + &wire_struct_impls(&self.struct_defs);
 
         format!(
-"// Generated by Orchestrate Compiler — secret serverlet '{name}'\n#![allow(unused_variables)]\n#![allow(dead_code)]\n#![allow(unused_imports)]\n#![allow(unused_parens)]\n#![allow(unused_mut)]\n\n{preamble}\n{frames}\n{wire}\n{structs}\nfn main() {{\n    let __stdin = std::io::stdin();\n    let mut __reader = std::io::BufReader::new(__stdin.lock());\n    let __stdout = std::io::stdout();\n    let mut __writer = std::io::BufWriter::new(__stdout.lock());\n\n{state}\n\n    let _ = __frame_write(&mut __writer, &[b\"ready\".to_vec()]);\n\n    loop {{\n        match __frame_read(&mut __reader) {{\n            Ok(Some(__fields)) => {{\n                if __fields.is_empty() {{ continue; }}\n                let __idx: usize = __fields.get(0).map(|b| __wire_from_bytes::<i64>(b) as usize).unwrap_or(usize::MAX);\n                match __idx {{\n{arms}\n                    _ => {{}}\n                }}\n            }}\n            Ok(None) => break,\n            Err(_) => break,\n        }}\n    }}\n}}\n",
+"// Generated by Orchestrate Compiler — secret serverlet '{name}'\n#![allow(unused_variables)]\n#![allow(dead_code)]\n#![allow(unused_imports)]\n#![allow(unused_parens)]\n#![allow(unused_mut)]\n\n{preamble}\n{frames}\n{wire}\n{structs}\nfn main() {{\n    let __stdin = std::io::stdin();\n    let mut __reader = std::io::BufReader::new(__stdin.lock());\n    let __stdout = std::io::stdout();\n    let mut __writer = std::io::BufWriter::new(__stdout.lock());\n\n{state}\n\n    let mut __hello = Vec::new();\n    ORCH_WIRE_VERSION.wire_encode(&mut __hello);\n    let __signatures: Vec<String> = vec![{sigs}];\n    __signatures.wire_encode(&mut __hello);\n    if __frame_write(&mut __writer, ORCH_KIND_HELLO, 0, &__hello).is_err() {{ return; }}\n    match __frame_read(&mut __reader) {{\n        Ok(Some(f)) if f.kind == ORCH_KIND_READY && f.call_id == 0 && f.payload.is_empty() => {{}},\n        _ => return,\n    }}\n    while let Ok(Some(__frame)) = __frame_read(&mut __reader) {{\n        if __frame.kind == ORCH_KIND_BYE {{ break; }}\n        let __result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<Vec<u8>, String> {{\n            if __frame.kind != ORCH_KIND_CALL {{ return Err(\"expected CALL\".to_string()); }}\n            let mut __pos = 0usize;\n            let __idx = i64::wire_decode(&__frame.payload, &mut __pos).ok_or_else(|| \"missing handler id\".to_string())?;\n            match __idx {{\n{arms}\n                _ => Err(\"unknown handler id\".to_string()),\n            }}\n        }}));\n        let (__kind, __payload) = match __result {{\n            Ok(Ok(value)) => (ORCH_KIND_REPLY, value),\n            Ok(Err(message)) => (ORCH_KIND_ERROR, __wire_to_bytes(&message)),\n            Err(e) => (ORCH_KIND_ERROR, __wire_to_bytes(&__panic_message(&e))),\n        }};\n        if __frame_write(&mut __writer, __kind, __frame.call_id, &__payload).is_err() {{ break; }}\n    }}\n}}\n",
             name = name,
             preamble = runtime_preamble(true, true),
             frames = SECRET_CHILD_FRAMES,
             wire = super::core::WIRE_CODEC,
             structs = structs,
+            sigs = Self::handler_signatures(handlers),
             state = state_vars.join("\n"),
             arms = arms.join("\n")
         )
