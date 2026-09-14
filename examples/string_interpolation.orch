@@ -32,4 +32,6 @@ orchestrator main() {
 
     // Escaped braces
     print("Use {{ and }} to include literal braces")
+
+    stop_orch()
 }

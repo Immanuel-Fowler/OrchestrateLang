@@ -39,4 +39,6 @@ orchestrator main() {
         option::Some(v) => print("Found: {v}")
         option::None => print("Not found")
     }
+
+    stop_orch()
 }

@@ -17,15 +17,15 @@ let persistent_monitor = automatic(restart: always) {
     print("monitor crashed and will restart: " + e)
 }
 
-// A process that never restarts — runs once and stops
-let one_shot = automatic(restart: never) {
-    print("one-shot: running initialization")
-    sleep(100)
-    print("one-shot: done — will not restart")
+// A process that is not restarted if it crashes (like every automatic block, it
+// still loops normally while it is healthy)
+let no_restart_worker = automatic(restart: never) {
+    print("no-restart worker: tick")
+    sleep(1000)
 }
 
-orchestrator main {
-    start flaky_worker
-    start persistent_monitor
-    start one_shot
+orchestrator main(procs: process[flaky_worker, persistent_monitor, no_restart_worker]) {
+    // Let the workers run for a few seconds, then shut down
+    sleep(3000)
+    stop_orch()
 }

@@ -32,4 +32,6 @@ orchestrator main() {
         total = total + num
     }
     print("Total: {total}")
+
+    stop_orch()
 }
