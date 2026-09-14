@@ -1,0 +1,22 @@
+// Regression: a catch binding inside an automatic block must not be captured as an outer variable.
+
+fn risky(n: int) -> result<int> {
+    if n == 0 {
+        err("zero")
+    } else {
+        ok(n)
+    }
+}
+
+let worker = automatic(restart: never) {
+    let v = try {
+        risky(0)?
+    } catch e {
+        print("caught: " + e)
+        0 - 1
+    }
+    print("recovered with " + to_string(v))
+    stop_orch()
+}
+
+orchestrator main(procs: process[worker]) { }

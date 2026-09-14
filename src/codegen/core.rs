@@ -350,7 +350,11 @@ impl Codegen {
             ExprNode::StartProcess { target } => self.get_free_vars_expr(target, local_env, free_vars),
             ExprNode::AutomaticBlock { body, crash_handler, .. } => {
                 self.get_free_vars_expr(body, local_env, free_vars);
-                if let Some((_, handler)) = crash_handler { self.get_free_vars_expr(handler, local_env, free_vars); }
+                if let Some((err_name, handler)) = crash_handler {
+                    let mut handler_env = local_env.clone();
+                    handler_env.insert(err_name.clone());
+                    self.get_free_vars_expr(handler, &mut handler_env, free_vars);
+                }
             }
             ExprNode::TriggeredBlock { params, body, .. } => {
                 let mut inner_env = local_env.clone();
@@ -364,9 +368,11 @@ impl Codegen {
             ExprNode::ErrLiteral(inner) | ExprNode::Propagate(inner) => {
                 self.get_free_vars_expr(inner, local_env, free_vars);
             }
-            ExprNode::TryCatch { body, handler, .. } => {
+            ExprNode::TryCatch { body, err_name, handler } => {
                 self.get_free_vars_expr(body, local_env, free_vars);
-                self.get_free_vars_expr(handler, local_env, free_vars);
+                let mut handler_env = local_env.clone();
+                handler_env.insert(err_name.clone());
+                self.get_free_vars_expr(handler, &mut handler_env, free_vars);
             }
             ExprNode::Match { value, arms } => {
                 self.get_free_vars_expr(value, local_env, free_vars);

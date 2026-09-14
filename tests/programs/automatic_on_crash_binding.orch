@@ -1,0 +1,10 @@
+// Regression: the on_crash error binding must not be captured as an outer variable.
+
+let worker = automatic(restart: never) {
+    print("worker ran")
+    stop_orch()
+} on_crash e {
+    print("worker crashed: " + e)
+}
+
+orchestrator main(procs: process[worker]) { }
