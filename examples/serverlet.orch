@@ -1,4 +1,4 @@
-use module counter: "./counter_module"
+use module counter: "./modules/counter"
 
 // Automatic process: runs in a persistent loop, auto-started by the orchestrator
 let p1 = automatic {

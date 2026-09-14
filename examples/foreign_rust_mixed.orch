@@ -1,4 +1,4 @@
-use module shapes: "./foreign_rust_mixed"
+use module shapes: "./modules/foreign_rust_mixed"
 
 let worker = automatic {
     let area = shapes.triangle_area(10.0, 8.0)

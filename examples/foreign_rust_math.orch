@@ -1,4 +1,4 @@
-use module math: "./foreign_c_math"
+use module math: "./modules/foreign_rust_math"
 
 let worker = automatic {
     let area = math.circle_area(5.0)
@@ -9,9 +9,6 @@ let worker = automatic {
 
     let hyp = math.hypotenuse(3.0, 4.0)
     print("Hypotenuse (3,4): " + to_string(hyp))
-
-    let clamped = math.clamp(150, 0, 100)
-    print("Clamp(150, 0, 100): " + to_string(clamped))
 
     stop_orch()
 }

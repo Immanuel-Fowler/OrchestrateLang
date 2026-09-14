@@ -17,7 +17,7 @@
 | Type | Where the body runs | Primary property | Status |
 |---|---|---|---|
 | **Serverlet** | In-process tokio actor | Speed, simplicity (you wrote it, you trust it) | ✅ Shipped |
-| **Secret serverlet** | Separate OS process, talked to via a mirror | **Secrecy + isolation** — orchestrator never holds the code | ✅ Shipped (`SECRET_SERVERLETS.md`) |
+| **Secret serverlet** | Separate OS process, talked to via a mirror | **Secrecy + isolation** — orchestrator never holds the code | ✅ Shipped (`secret-serverlets.md`) |
 | **Sandboxed serverlet** | WASM guest (`wasmtime`) | **Containment** — hostile code genuinely can't touch the host | 📋 This doc |
 
 These solve different problems and are **not** substitutes. *Secret* hides and
@@ -30,7 +30,7 @@ once both ship independently.
 
 ## 1. The problem it solves
 
-Orchestrate is meant to compose code from anywhere — local, downloaded, or
+OrchestrateLang is meant to compose code from anywhere — local, downloaded, or
 written by third parties (modders, plugin authors, OPM packages later). The
 moment you run code you didn't write, you need a way to **contain** it: cap its
 memory, cap its runtime, and deny it access to the host unless explicitly granted.
@@ -63,7 +63,7 @@ This honesty matters and must live in the user-facing docs:
 
 ## 3. The hard architectural question (answered honestly)
 
-An Orchestrate serverlet body compiles to **Rust**. So "run the handler in a
+An OrchestrateLang serverlet body compiles to **Rust**. So "run the handler in a
 sandbox" really means: *get that Rust into a WASM guest and call it from the host.*
 There is no interpreter to drop the code into — it's compiled.
 
@@ -105,7 +105,7 @@ clock access — the guest gets compute and memory only, until grants exist.
 
 ---
 
-## 4. Proposed syntax (refined from PLANNED_FEATURES.md)
+## 4. Proposed syntax (refined from ../roadmap.md)
 
 ```orchestrate
 serverlet UntrustedPlugin sandbox(memory_limit: "64mb", timeout: "5s") {
@@ -116,7 +116,7 @@ serverlet UntrustedPlugin sandbox(memory_limit: "64mb", timeout: "5s") {
 ```
 
 - `sandbox(...)` is a modifier on the serverlet declaration, parallel to the
-  `secret` modifier (`SECRET_SERVERLETS.md`) and the `via "<runtime>"` modifier
+  `secret` modifier (`secret-serverlets.md`) and the `via "<runtime>"` modifier
   proposed for polyglot serverlets. They are conceptually siblings: each says "this
   handler body is not plain inline host Rust" — `secret` = different process,
   `sandbox` = WASM guest, `via` = different language.
@@ -130,7 +130,7 @@ serverlet UntrustedPlugin sandbox(memory_limit: "64mb", timeout: "5s") {
 ### Relationship to grants (the consent model)
 
 A sandboxed serverlet that needs *any* host capability declares it explicitly —
-the same `grant` mechanism described in `SERVERLET_FILES.md`:
+the same `grant` mechanism described in `serverlet-files.md`:
 
 ```orchestrate
 serverlet UntrustedPlugin sandbox(memory_limit: "64mb", timeout: "5s") {
@@ -235,13 +235,13 @@ two sides: the grant declares intent; the wasmtime linker enforces it.
 7. **Grants as narrow host functions.**
    `grant read/write "<path>"` → exactly one mediated host function per grant in
    the wasmtime linker; ungranted capabilities are absent from the guest. This is
-   the shared mechanism with `SERVERLET_FILES.md` grant enforcement. *Test: a guest
+   the shared mechanism with `serverlet-files.md` grant enforcement. *Test: a guest
    can read a granted path and CANNOT read a non-granted one (the host fn doesn't
    exist for it).*
 
-8. **Docs.** Update `LANGUAGE_REFERENCE.md` with the sandboxed serverlet section
+8. **Docs.** Update `../language-reference.md` with the sandboxed serverlet section
    and the precise, honest security statement from §2. Flip the
-   `PLANNED_FEATURES.md` entry to **[SHIPPED]**.
+   `../roadmap.md` entry to **[SHIPPED]**.
 
 ---
 

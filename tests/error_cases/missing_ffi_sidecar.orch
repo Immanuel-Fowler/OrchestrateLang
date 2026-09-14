@@ -1,0 +1,2 @@
+use module err2: "./modules/missing_ffi_sidecar"
+orchestrator main(procs: process) {}

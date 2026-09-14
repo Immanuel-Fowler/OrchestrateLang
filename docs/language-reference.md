@@ -1,6 +1,6 @@
-# Orchestrate Documentation
+# OrchestrateLang Documentation
 
-Orchestrate (`.orch`) is a compiled, asynchronous-first language for writing concurrent system coordinators. It compiles directly to native Rust and runs on the Tokio runtime — giving you native machine speed with zero interpreter overhead.
+OrchestrateLang (`.orch`) is a compiled, asynchronous-first language for writing concurrent system coordinators. It compiles directly to native Rust and runs on the Tokio runtime — giving you native machine speed with zero interpreter overhead.
 
 This file contains two independent guides. Jump to whichever fits your needs:
 
@@ -16,11 +16,11 @@ This file contains two independent guides. Jump to whichever fits your needs:
 
 ---
 
-## Chapter 1 · Why Orchestrate?
+## Chapter 1 · Why OrchestrateLang?
 
 Modern distributed systems require gluing together background workers, event listeners, service clients, and real-time data pipelines. In conventional languages this coordination logic becomes deeply nested async code full of channels, mutexes, and spawned tasks with no clear ownership.
 
-Orchestrate treats **concurrency as a first-class language concept**. Workers, event listeners, and service actors are declared at the language level — not assembled from library primitives.
+OrchestrateLang treats **concurrency as a first-class language concept**. Workers, event listeners, and service actors are declared at the language level — not assembled from library primitives.
 
 ### A Motivating Example
 
@@ -296,7 +296,7 @@ remove(items, 0)                  // removes the first element
 
 ## Chapter 3 · Process Blocks
 
-Process blocks are the primary concurrency primitive in Orchestrate. There are exactly two kinds. Both are always declared at the **top level** of a script, outside any function.
+Process blocks are the primary concurrency primitive in OrchestrateLang. There are exactly two kinds. Both are always declared at the **top level** of a script, outside any function.
 
 ### 3.1 Automatic Process Blocks
 
@@ -404,7 +404,7 @@ orchestrator main(procs: process[]) {
 
 ## Chapter 4 · The Orchestrator
 
-Every Orchestrate program has exactly one `orchestrator main()` — the entry point of the application.
+Every OrchestrateLang program has exactly one `orchestrator main()` — the entry point of the application.
 
 ### 4.1 Basic Form
 
@@ -708,7 +708,7 @@ All functions and tasks in the loaded files become part of the module namespace 
 
 ### 6.4 Calling Foreign Rust Functions (`load_foreign`)
 
-Orchestrate allows you to natively call functions written in Rust, C, or C++ by loading their source files directly into a module's namespace.
+OrchestrateLang allows you to natively call functions written in Rust, C, or C++ by loading their source files directly into a module's namespace.
 
 #### Foreign Rust (`load_foreign "rust"`)
 
@@ -719,7 +719,7 @@ load_foreign "rust" "./math_helpers.rs"
 
 The compiler injects the `.rs` file's contents verbatim into the generated Rust
 module, and reads a companion **`.orch_ffi` sidecar file** that declares the
-function signatures Orchestrate exposes — the same mechanism used for C/C++. The
+function signatures OrchestrateLang exposes — the same mechanism used for C/C++. The
 sidecar lives next to the `.rs` file with the same base name:
 
 ```
@@ -729,7 +729,7 @@ math/
 └── math_helpers.orch_ffi    ← required alongside the .rs file
 ```
 
-The sidecar declares each callable function in Orchestrate types:
+The sidecar declares each callable function in OrchestrateLang types:
 
 ```
 // math_helpers.orch_ffi
@@ -768,7 +768,7 @@ orchestrator main(procs: process[worker]) { }
 
 #### Foreign C (`load_foreign "c"`) and C++ (`load_foreign "cpp"`)
 
-C and C++ source files require a companion **`.orch_ffi` sidecar file** that declares the function signatures Orchestrate will expose. The sidecar lives next to the source file with the same base name:
+C and C++ source files require a companion **`.orch_ffi` sidecar file** that declares the function signatures OrchestrateLang will expose. The sidecar lives next to the source file with the same base name:
 
 ```
 math/
@@ -782,7 +782,7 @@ math/
 load_foreign "c" "./geometry.c"
 ```
 
-Each line in the `.orch_ffi` file declares one function using Orchestrate types:
+Each line in the `.orch_ffi` file declares one function using OrchestrateLang types:
 
 ```
 circle_area(radius: float) -> float
@@ -790,7 +790,7 @@ rectangle_area(w: int, h: int) -> int
 hypotenuse(a: int, b: int) -> int
 ```
 
-The compiler reads the sidecar, generates `extern "C"` declarations and safe Rust wrapper functions, and compiles the C/C++ source using `cc-rs` via a generated `build.rs`. The resulting functions are callable from Orchestrate exactly like any other module function:
+The compiler reads the sidecar, generates `extern "C"` declarations and safe Rust wrapper functions, and compiles the C/C++ source using `cc-rs` via a generated `build.rs`. The resulting functions are callable from OrchestrateLang exactly like any other module function:
 
 ```orchestrate
 let worker = automatic {
@@ -803,7 +803,7 @@ let worker = automatic {
 
 **`.orch_ffi` supported types (for C and C++):**
 
-| Orchestrate type | C/C++ type | Rust FFI type |
+| OrchestrateLang type | C/C++ type | Rust FFI type |
 | :--- | :--- | :--- |
 | `int` | `long long` / `int64_t` | `i64` |
 | `float` | `double` | `f64` |
@@ -816,7 +816,7 @@ let worker = automatic {
 
 *Note: The `string` row applies only to Rust foreign functions. C/C++ FFI signatures do not support `string` (see the C/C++ table above).*
 
-| Orchestrate | Rust |
+| OrchestrateLang | Rust |
 | :--- | :--- |
 | `int` | `i64` |
 | `float` | `f64` |
@@ -827,7 +827,7 @@ let worker = automatic {
 
 ### 6.5 Pattern A — Combined Process (Plain Functions)
 
-Use this when your module is written in Orchestrate and you want zero-overhead function calls. The module compiles directly into the parent binary.
+Use this when your module is written in OrchestrateLang and you want zero-overhead function calls. The module compiles directly into the parent binary.
 
 ```
 project/
@@ -1013,7 +1013,7 @@ spawn it on first use and shut it down when the orchestrator stops.
 - A secret serverlet runs as the **same OS user** with the **same privileges** as
   the orchestrator. It is **not** a security sandbox. Use it for code you trust and
   want decoupled or private; to *contain untrusted code*, use a sandboxed serverlet
-  (planned — see `SANDBOXED_SERVERLETS.md`).
+  (planned — see `design/sandboxed-serverlets.md`).
 
 **v1 limitations:**
 
@@ -1031,7 +1031,7 @@ spawn it on first use and shut it down when the orchestrator stops.
 
 # Part II — Internals Manual
 
-> *For contributors to the Orchestrate compiler and curious developers who want to understand what runs beneath the syntax.*
+> *For contributors to the OrchestrateLang compiler and curious developers who want to understand what runs beneath the syntax.*
 
 ---
 
@@ -1039,7 +1039,7 @@ spawn it on first use and shut it down when the orchestrator stops.
 
 ### 7.1 The Compiler Is Written in Rust
 
-The Orchestrate compiler is a Rust binary living in `src/`. It has no external runtime dependencies beyond the Rust standard library. At build time it needs `cargo` and `rustc` on `PATH` to compile generated code.
+The OrchestrateLang compiler is a Rust binary living in `src/`. It has no external runtime dependencies beyond the Rust standard library. At build time it needs `cargo` and `rustc` on `PATH` to compile generated code.
 
 ### 7.2 Compiler Pipeline
 
@@ -1406,7 +1406,7 @@ This guarantees the `REGISTRY_UPDATE_ORCHESTRATOR` global exists even if the use
 
 ### 10.5 Cross-Process Isolation
 
-Event registries are `static` globals — they live in the compiled binary's memory space. Two separately compiled Orchestrate programs running as different OS processes have completely isolated registries. Triggering an event in one program has no effect on the other. To communicate across process boundaries, use a Serverlet as an IPC bridge.
+Event registries are `static` globals — they live in the compiled binary's memory space. Two separately compiled OrchestrateLang programs running as different OS processes have completely isolated registries. Triggering an event in one program has no effect on the other. To communicate across process boundaries, use a Serverlet as an IPC bridge.
 
 ---
 

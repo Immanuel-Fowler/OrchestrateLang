@@ -1,4 +1,4 @@
-use module counter: "./counter_module"
+use module counter: "../../examples/modules/counter"
 
 orchestrator main() {
     let service = start counter.CounterService()

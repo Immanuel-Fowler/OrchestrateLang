@@ -1,16 +1,16 @@
-# Orchestrate Language Support
+# OrchestrateLang for VS Code
 
-Provides syntax highlighting, snippets, and bracket matching for the [Orchestrate](https://github.com/Immanuel-Fowler/OrchestrateLang) (`.orch`) programming language.
+Syntax highlighting, snippets, and bracket matching for [OrchestrateLang](https://github.com/Immanuel-Fowler/OrchestrateLang) (`.orch`).
 
 ## Features
-- Full syntax highlighting for all Orchestrate keywords, types, and operators
+- Syntax highlighting for OrchestrateLang keywords, types, and operators
 - Bracket matching and auto-closing pairs
-- 14 helpful snippets for common constructs (`auto`, `orch`, `fn`, `task`, `trig`, etc.)
+- 14 snippets for common constructs (`auto`, `orch`, `fn`, `task`, `trig`, etc.)
 
 ## Example
 
 ```orchestrate
-use module counter: "./counter_module"
+use module counter: "./modules/counter"
 
 let worker = automatic {
     let service = start counter.CounterService()
@@ -27,21 +27,21 @@ orchestrator main(procs: process[worker]) { }
 
 ## Installation
 
-### Local development install
+### Package and install
 ```bash
 # Install vsce if you don't have it
 npm install -g @vscode/vsce
 
 # Package the extension
-cd orchestrate-vscode
+cd editors/vscode
 vsce package
 
 # Install it
-code --install-extension orchestrate-lang-0.1.0.vsix
+code --install-extension orchestrate-lang-0.2.0.vsix
 ```
 
 ### Without packaging (development mode)
-1. Copy the extension folder to:
+1. Copy the `editors/vscode` folder to:
    - Windows: `%USERPROFILE%\.vscode\extensions\`
    - Mac/Linux: `~/.vscode/extensions/`
 2. Restart VS Code

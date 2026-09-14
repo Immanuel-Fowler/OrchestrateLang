@@ -34,11 +34,11 @@ fn assert_compilation_fails(file: &str, expected_msg: &str) {
 
 #[test]
 fn test_error_cases() {
-    assert_compilation_fails("err_test.orch", "is not supported currently");
-    assert_compilation_fails("err_test2.orch", "no sidecar file found");
-    assert_compilation_fails("test_type_errors.orch", "Type Error");
-    assert_compilation_fails("test_type_mismatch.orch", "Type Error");
-    assert_compilation_fails("test_type_mismatch.orch", "mismatch");
-    assert_compilation_fails("test_undefined_var.orch", "Type Error");
-    assert_compilation_fails("test_undefined_var.orch", "undefined variable");
+    assert_compilation_fails("unsupported_foreign_language.orch", "is not supported currently");
+    assert_compilation_fails("missing_ffi_sidecar.orch", "no sidecar file found");
+    assert_compilation_fails("type_errors.orch", "Type Error");
+    assert_compilation_fails("type_mismatch.orch", "Type Error");
+    assert_compilation_fails("type_mismatch.orch", "mismatch");
+    assert_compilation_fails("undefined_variable.orch", "Type Error");
+    assert_compilation_fails("undefined_variable.orch", "undefined variable");
 }

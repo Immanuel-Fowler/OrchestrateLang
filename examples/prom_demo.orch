@@ -1,6 +1,6 @@
 // PROM Demonstration
 // To run this example, you must first register the counter module in your PROM registry:
-//   orchestrate prom add counter ./examples/counter_module
+//   orchestrate prom add counter ./examples/modules/counter
 // Then you can run this file:
 //   orchestrate run examples/prom_demo.orch
 

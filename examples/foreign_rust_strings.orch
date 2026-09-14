@@ -1,4 +1,4 @@
-use module strings: "./foreign_rust_strings"
+use module strings: "./modules/foreign_rust_strings"
 
 let worker = automatic {
     let reversed = strings.reverse_string("Orchestrate")

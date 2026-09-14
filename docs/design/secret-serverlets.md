@@ -6,7 +6,7 @@
 > lexer/parser (`secret` contextual modifier), codegen (mirror + standalone child
 > program), and driver (child binaries written to `.orch_cache/src/bin/` and copied
 > next to built binaries). Covered by snapshot + runtime tests. Next up: sandboxed
-> serverlets (`SANDBOXED_SERVERLETS.md`).
+> serverlets (`sandboxed-serverlets.md`).
 
 ---
 
@@ -16,7 +16,7 @@
 |---|---|---|---|
 | **Serverlet** | In-process tokio actor | Speed, simplicity (you wrote it, you trust it) | ✅ Shipped |
 | **Secret serverlet** | Separate OS process, talked to via a mirror | **Secrecy + isolation** — orchestrator never holds the code | ✅ Shipped (this doc) |
-| **Sandboxed serverlet** | WASM guest (`wasmtime`) | **Containment** — hostile code genuinely can't touch the host | 📋 `SANDBOXED_SERVERLETS.md` |
+| **Sandboxed serverlet** | WASM guest (`wasmtime`) | **Containment** — hostile code genuinely can't touch the host | 📋 `sandboxed-serverlets.md` |
 
 They solve different problems and are **not** substitutes:
 
@@ -30,7 +30,7 @@ They solve different problems and are **not** substitutes:
 
 ## 1. The problem it solves
 
-Orchestrate's distribution vision (`SERVERLET_FILES.md`) is: a software author
+OrchestrateLang's distribution vision (`serverlet-files.md`) is: a software author
 ships a prebuilt serverlet, and a third party interacts with it through a declared
 contract **without seeing the internals.** A normal serverlet can't do that — it
 compiles inline into the orchestrator's own binary, so its logic is *in* the
@@ -78,7 +78,7 @@ thing yourself, *you* obviously still see the code — the secrecy benefit is a
 immediately-useful wins are crash isolation and decoupling). Full
 secrecy-in-distribution — shipping a prebuilt secret serverlet binary + interface
 manifest that a *different* person's orchestrator consumes — lands when the
-serverlet-file format does (`SERVERLET_FILES.md`, syntax still open). The two
+serverlet-file format does (`serverlet-files.md`, syntax still open). The two
 features are designed to meet there.
 
 ---
@@ -201,7 +201,7 @@ serverlet PaymentProcessor secret {
 
 Consuming a *prebuilt, third-party* secret serverlet (binary + interface manifest,
 no source) depends on the serverlet-file format, which is **not finalized**
-(`SERVERLET_FILES.md`). v1 targets the **authoring/mechanism** side; the consuming
+(`serverlet-files.md`). v1 targets the **authoring/mechanism** side; the consuming
 syntax lands with serverlet-files.
 
 ---
@@ -239,7 +239,7 @@ syntax lands with serverlet-files.
    `void` returns all round-trip. Unsupported types emit a clear `compile_error!`
    in both the mirror and the child.
 
-6. ✅ **Docs.** Secret serverlet section added to `LANGUAGE_REFERENCE.md` with the
+6. ✅ **Docs.** Secret serverlet section added to `../language-reference.md` with the
    §2 honesty statement.
 
 ---

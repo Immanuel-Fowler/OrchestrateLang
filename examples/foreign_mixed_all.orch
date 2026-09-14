@@ -1,4 +1,4 @@
-use module mixed: "./foreign_mixed_all"
+use module mixed: "./modules/foreign_mixed_all"
 
 let worker = automatic {
     let sq = mixed.square(7.0)

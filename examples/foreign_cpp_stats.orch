@@ -1,4 +1,4 @@
-use module stats: "./foreign_cpp_stats"
+use module stats: "./modules/foreign_cpp_stats"
 
 let worker = automatic {
     let avg = stats.average(10.0, 20.0, 30.0)

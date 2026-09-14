@@ -1,2 +1,0 @@
-use module err: "./err_dir1"
-orchestrator main(procs: process) {}

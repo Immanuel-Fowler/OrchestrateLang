@@ -2,13 +2,13 @@
   "name": "orchestrate-lang",
   "displayName": "OrchestrateLang",
   "description": "Syntax highlighting and language support for OrchestrateLang (.orch)",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "orchestrate",
   "engines": { "vscode": "^1.75.0" },
   "categories": ["Programming Languages"],
   "repository": {
     "type": "git",
-    "url": "https://github.com/Immanuel-Fowler/orchestrate-lang"
+    "url": "https://github.com/Immanuel-Fowler/OrchestrateLang"
   },
   "contributes": {
     "languages": [
@@ -16,7 +16,11 @@
         "id": "orchestrate",
         "aliases": ["OrchestrateLang", "orchestrate"],
         "extensions": [".orch"],
-        "configuration": "./language-configuration.json"
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/orch-light.svg",
+          "dark": "./icons/orch-dark.svg"
+        }
       }
     ],
     "grammars": [
@@ -24,6 +28,12 @@
         "language": "orchestrate",
         "scopeName": "source.orch",
         "path": "./syntaxes/orchestrate.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "orchestrate",
+        "path": "./snippets/orchestrate.json"
       }
     ]
   }

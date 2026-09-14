@@ -5,7 +5,7 @@
 > enforcement as the load-bearing wall). What is **not** finalized: the concrete
 > **syntax of the serverlet file itself** — the `serverlet ... via ... { grant ... }`
 > shape in §3 is a sketch, not a decision. Lock that syntax last, *after*
-> sandboxed serverlets ship (see `SANDBOXED_SERVERLETS.md`), so the file format can
+> sandboxed serverlets ship (see `sandboxed-serverlets.md`), so the file format can
 > account for `sandbox(...)` from the start instead of being retrofitted.
 >
 > This doc captures the agreed-on model, the concrete steps to build it, and *why*
@@ -16,7 +16,7 @@
 
 ## 1. The vision in one paragraph
 
-Orchestrate exists to build background apps and services that coordinate scripts
+OrchestrateLang exists to build background apps and services that coordinate scripts
 running in **separate runtimes** with a deliberate polyglot approach — without
 Docker images or bespoke connectors. The end state: a software author ships an
 app, and a third party (modder, solo dev, hacker) drops a **prebuilt serverlet**
@@ -31,7 +31,7 @@ understand the host app's internals to extend it.
 Important framing so this document isn't misread: **a module can interface with
 other languages without being a serverlet at all.** There are two distinct
 polyglot paths, and they serve different needs (this mirrors
-`PLANNED_FEATURES.md` 1a vs 1b):
+`../roadmap.md` 1a vs 1b):
 
 | | `load_foreign` (shipped) | Serverlet |
 |---|---|---|
@@ -176,7 +176,7 @@ The serverlet manifest (section 3) — "a declaration of an interface contract,
 separate from the implementation" — is *exactly* the pattern the FFI sidecar
 already establishes. Replacing the old brittle line-scanner with a real sidecar
 parser (`src/ffi_rust.rs` → `register_rust_ffi_from_sidecar`) was the first
-working instance of "Orchestrate reads a declared signature contract and registers
+working instance of "OrchestrateLang reads a declared signature contract and registers
 it without parsing the implementation." The serverlet manifest generalizes this:
 the `via "rust"` / `via "python"` runtime tag plus the public-handler list is the
 same idea — a declared contract the compiler trusts, with the body implemented by
@@ -234,7 +234,7 @@ This is not a flaw in the design; it is the **load-bearing wall** of it. Design
 implication: build the `grant` *syntax* with enforcement in mind from day one,
 even if the enforcement layer ships later, so the declaration never promises
 something the runtime doesn't keep. This is also the natural bridge to the
-`axiom.orch` governance model in `PLANNED_FEATURES.md` — both are "the
+`axiom.orch` governance model in `../roadmap.md` — both are "the
 orchestrator checks a declared policy before performing an action," one for file
 capabilities, one for LLM tool calls.
 
@@ -272,7 +272,7 @@ previous one is green.
    declaration so the contract is expressible; enforcement is step 6.*
 
 5. **Polyglot dispatch for one non-native runtime (Python via subprocess+JSON).**
-   This is `PLANNED_FEATURES.md` item 4 and the first real test of `via`. For
+   This is `../roadmap.md` item 4 and the first real test of `via`. For
    `via "python"`, codegen emits subprocess spawn + stdin/stdout JSON marshaling
    instead of an inline Rust handler body. Lowest-risk polyglot path (no embedded
    interpreter, no FFI). *First proof that a **stateful** serverlet body can run in
@@ -286,7 +286,7 @@ previous one is green.
    explicit allowlist; no conditional policy yet.
 
 7. **(Later) `.srvlt` extension & the hot-reload pipedream.**
-   Only after 1–6. Per `PLANNED_FEATURES.md`, true hot-swap of a native-compiled
+   Only after 1–6. Per `../roadmap.md`, true hot-swap of a native-compiled
    serverlet requires dynamic linking (`dlopen` a per-serverlet `.so`/`.dll`) and
    message-enum stability constraints — a substantial architectural shift, kept as
    a pipedream until the rest is solid.

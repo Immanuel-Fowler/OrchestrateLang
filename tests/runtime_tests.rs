@@ -28,7 +28,7 @@ fn run_orch(test_name: &str, source: &str) -> String {
         "Program '{}' failed:\nstdout: {}\nstderr: {}", test_name, raw_stdout, stderr);
     // Filter out orchestrate's own progress lines so we only see program output.
     raw_stdout.lines()
-        .filter(|l| !l.starts_with("[Orchestrate]"))
+        .filter(|l| !l.starts_with("[orchestrate]"))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -247,4 +247,26 @@ orchestrator main() {
     let lines: Vec<&str> = stdout.trim().lines().collect();
     assert_eq!(lines[0], "3");
     assert_eq!(lines[1], "true");
+}
+
+#[test]
+fn runtime_regression_programs() {
+    // Every program in tests/programs/ must compile and exit successfully.
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/programs");
+    let mut programs: Vec<PathBuf> = fs::read_dir(&dir).unwrap()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().map_or(false, |ext| ext == "orch"))
+        .collect();
+    programs.sort();
+    assert!(!programs.is_empty(), "no programs found in {:?}", dir);
+
+    for program in programs {
+        let out = Command::new(orchestrate_bin())
+            .args(["run", program.to_str().unwrap()])
+            .output()
+            .expect("failed to run orchestrate");
+        assert!(out.status.success(),
+            "{:?} failed:\nstdout: {}\nstderr: {}", program,
+            String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    }
 }

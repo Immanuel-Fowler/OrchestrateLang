@@ -2,7 +2,7 @@ use std::env;
 use orchestrate_lib::{driver, prom};
 
 fn print_help() {
-    println!("Orchestrate Language Compiler v{}", env!("CARGO_PKG_VERSION"));
+    println!("OrchestrateLang compiler v{}", env!("CARGO_PKG_VERSION"));
     println!();
     println!("USAGE:");
     println!("  orchestrate <command> [options]");
@@ -29,7 +29,7 @@ fn print_help() {
 }
 
 fn print_short_usage() {
-    println!("Orchestrate Language Compiler");
+    println!("OrchestrateLang compiler");
     println!("Run 'orchestrate --help' for usage.");
 }
 

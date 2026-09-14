@@ -1,14 +1,14 @@
-# Orchestrate — Planned Features
+# OrchestrateLang — Planned Features
 
-This document outlines planned features for the Orchestrate language and ecosystem, what problem each one solves, and a rough sketch of how it would work.
+This document outlines planned features for the OrchestrateLang language and ecosystem, what problem each one solves, and a rough sketch of how it would work.
 
-> **Key:** Features marked **[SHIPPED]** are fully implemented and documented in `LANGUAGE_REFERENCE.md`.
+> **Key:** Features marked **[SHIPPED]** are fully implemented and documented in `language-reference.md`.
 
 ---
 
 ## 1. Polyglot Modules (Two Forms)
 
-**Problem it solves:** Right now, modules must be written in Orchestrate. Real orchestration work often needs to call into existing Python (ML/data), C/C++ (perf-critical or legacy code), or other Rust crates.
+**Problem it solves:** Right now, modules must be written in OrchestrateLang. Real orchestration work often needs to call into existing Python (ML/data), C/C++ (perf-critical or legacy code), or other Rust crates.
 
 There are two distinct ways this could show up in the language, and they serve different needs:
 
@@ -21,7 +21,7 @@ Proposed syntax direction:
 ```orchestrate
 serverlet PyScorer via "python" {
     on score(input: string) -> float {
-        // dispatched to a Python function/process instead of compiled Orchestrate
+        // dispatched to a Python function/process instead of compiled OrchestrateLang
     }
 }
 ```
@@ -32,7 +32,7 @@ serverlet PyScorer via "python" {
 
 ### 1b. Loaded Foreign Modules (direct function-call style, stateless) — **[SHIPPED for Rust, C, C++]**
 
-A second, simpler module type: a `module.orch` that directly loads a Rust, C/C++, or Python source/library, where the **only interactable code from Orchestrate's side is the functions exposed by that loaded module** — no serverlet, no actor, no message passing. This is the "Combined Process" pattern (see Module System, Pattern A) extended to non-Orchestrate languages.
+A second, simpler module type: a `module.orch` that directly loads a Rust, C/C++, or Python source/library, where the **only interactable code from OrchestrateLang's side is the functions exposed by that loaded module** — no serverlet, no actor, no message passing. This is the "Combined Process" pattern (see Module System, Pattern A) extended to non-OrchestrateLang languages.
 
 **Implemented syntax:**
 
@@ -44,16 +44,16 @@ load_foreign "cpp"  "./stats.cpp"       // requires stats.orch_ffi sidecar
 ```
 
 - **Rust**: fully implemented. The `.rs` file's `pub fn`s are injected verbatim into the generated module; type signatures are auto-scanned and registered into the typechecker.
-- **C/C++**: fully implemented via `cc-rs` for compilation and `.orch_ffi` sidecar files that declare the function signatures Orchestrate exposes to callers. Functions compile to `unsafe extern "C"` wrappers with safe Rust signatures.
+- **C/C++**: fully implemented via `cc-rs` for compilation and `.orch_ffi` sidecar files that declare the function signatures OrchestrateLang exposes to callers. Functions compile to `unsafe extern "C"` wrappers with safe Rust signatures.
 - **Python**: not yet implemented — trickiest for a direct-call model since Python isn't natively callable from Rust without an embedded interpreter.
 
-See `LANGUAGE_REFERENCE.md` §6.4 and §6.5 for full documentation.
+See `language-reference.md` §6.4 and §6.5 for full documentation.
 
 ---
 
 ## 2. Sandboxed Serverlets (Wrap, Don't Build)
 
-**Problem it solves:** Running untrusted or semi-trusted code (plugins, user-submitted logic, downloaded modules) safely, without Orchestrate needing to invent its own sandboxing/security model.
+**Problem it solves:** Running untrusted or semi-trusted code (plugins, user-submitted logic, downloaded modules) safely, without OrchestrateLang needing to invent its own sandboxing/security model.
 
 **Core principle:** Wrap existing, audited sandbox technology (e.g. `wasmtime` for WASM) — do not build a custom sandbox. Security guarantees are "as good as the wrapped tech," not better, and docs should be precise about what is/isn't isolated (e.g., compute/memory sandboxing vs. any host functions you expose).
 
@@ -73,7 +73,7 @@ serverlet UntrustedPlugin sandbox(memory_limit: "64mb", timeout: "5s") {
 - User writes one line of config; compiler generates the correct integration glue (likely the single biggest codegen feature in the language so far — bigger than typechecker or current codegen work combined).
 - If/when non-WASM runtimes (e.g. Firecracker microVMs) are added later, `runtime` can become an optional param defaulting to `"wasm"` without breaking existing sandboxed serverlets.
 
-**Connects to Feature 1:** Sandboxed serverlets, polyglot serverlets (1a), and loaded foreign modules (1b) are all variations on the same underlying theme — *handler/function bodies implemented by something other than native compiled Orchestrate code, with the compiler generating the integration glue.* Keeping the syntax for these conceptually related (even if the keywords differ — `via`, `sandbox`, `load_foreign`) keeps the language coherent rather than feature-creeped.
+**Connects to Feature 1:** Sandboxed serverlets, polyglot serverlets (1a), and loaded foreign modules (1b) are all variations on the same underlying theme — *handler/function bodies implemented by something other than native compiled OrchestrateLang code, with the compiler generating the integration glue.* Keeping the syntax for these conceptually related (even if the keywords differ — `via`, `sandbox`, `load_foreign`) keeps the language coherent rather than feature-creeped.
 
 **Connects to Feature 4 (OPM):** If a downloaded third-party module can optionally run as a sandboxed serverlet, that's a concrete security story for the package ecosystem: "untrusted third-party modules can be isolated at the language level."
 
@@ -89,7 +89,7 @@ orchestrate prom add <name> <path>
 orchestrate prom list
 orchestrate prom remove <name>
 ```
-The compiler resolves bare (non-path) module names against the local registry automatically. See `LANGUAGE_REFERENCE.md` §6.2 for full documentation.
+The compiler resolves bare (non-path) module names against the local registry automatically. See `language-reference.md` §6.2 for full documentation.
 
 **Design question to resolve:** Is PROM purely personal/local config (as the name implies), or does it need a per-project mode for reproducibility (so someone cloning the repo doesn't get a confusing "module not found")? If purely personal, document clearly that PROM entries are machine-local and not part of the shared project.
 
@@ -121,7 +121,7 @@ A possible overall narrative for the ecosystem:
 - **Polyglot serverlets** — compose modules written in other languages (Python, C/C++, Rust).
 - **Sandboxed serverlets** — isolate modules (especially downloaded/untrusted ones) using existing, audited sandbox tech.
 
-Together: *"Orchestrate lets you compose modules from anywhere — local, downloaded, or written in other languages — reference them simply, and isolate the ones you don't fully trust."*
+Together: *"OrchestrateLang lets you compose modules from anywhere — local, downloaded, or written in other languages — reference them simply, and isolate the ones you don't fully trust."*
 
 ---
 
@@ -130,7 +130,7 @@ Together: *"Orchestrate lets you compose modules from anywhere — local, downlo
 Given the combined scope of these four features, recommend picking **one end-to-end story** and finishing it well before layering on the next, rather than having several features half-built simultaneously:
 
 1. ~~**PROM** first — smallest, self-contained, validates registry plumbing.~~ **[SHIPPED]**
-2. ~~**Loaded foreign Rust module** (1b, Rust only) — validates the "non-Orchestrate module" pattern with the lowest possible risk (no FFI, no embedded interpreter).~~ **[SHIPPED]**
+2. ~~**Loaded foreign Rust module** (1b, Rust only) — validates the "non-OrchestrateLang module" pattern with the lowest possible risk (no FFI, no embedded interpreter).~~ **[SHIPPED]**
 3. ~~**Loaded foreign C/C++ module** (1b, C and C++) — via `.orch_ffi` sidecar and `cc-rs`.~~ **[SHIPPED]**
 4. **Basic polyglot serverlet** (1a, Python via subprocess+JSON) — validates the actor-style "non-native serverlet body" pattern.
 5. **OPM (git-based, no hosted index)** — builds on PROM's name→location mapping.
@@ -152,7 +152,7 @@ Far-fetched / exploratory ideas — not on the roadmap, no commitment to build, 
 
 **Why it's a pipedream (not a near-term feature):**
 
-- Orchestrate compiles to native Rust — there's no running interpreter to swap code into. "Hot reload" for compiled code generally means either (a) dynamic linking (`dlopen`/shared libraries, recompiling and reloading a `.so`/`.dll` at runtime) or (b) re-running the whole compile-and-relaunch cycle, which isn't really "live."
+- OrchestrateLang compiles to native Rust — there's no running interpreter to swap code into. "Hot reload" for compiled code generally means either (a) dynamic linking (`dlopen`/shared libraries, recompiling and reloading a `.so`/`.dll` at runtime) or (b) re-running the whole compile-and-relaunch cycle, which isn't really "live."
 - If the serverlet's *message enum* (its `on handler(...)` signatures) changes during a live edit, every other part of the program that calls it via the generated `*Client` would need to handle a mismatched interface — either gracefully erroring or requiring the signature to stay frozen across live edits (which limits what "live editing" can actually mean).
 - State migration: if a serverlet has accumulated state (e.g. the `CounterService` example), reloading its code raises the question of what happens to that state — reset it, attempt to migrate it, or only allow live-editing of *stateless* serverlets.
 - This edges into territory that's its own deep area (Erlang/OTP hot code swapping, hot module replacement in JS bundlers) — each of which exists *because* their runtimes were designed around it from day one. Bolting it onto a "transpile once, run as a native binary" model is a fundamentally different (and harder) problem.
@@ -161,11 +161,11 @@ Far-fetched / exploratory ideas — not on the roadmap, no commitment to build, 
 
 ### Native LLM-as-Orchestrator + `axiom.orch` Governance Files
 
-**The idea:** Load an open-weights LLM directly into an Orchestrate program, where the model has access to all the modules the orchestrator has — effectively, the LLM becomes a tool-calling agent with the orchestrator's module functions *as* its tools, natively, without a separate agent framework.
+**The idea:** Load an open-weights LLM directly into an OrchestrateLang program, where the model has access to all the modules the orchestrator has — effectively, the LLM becomes a tool-calling agent with the orchestrator's module functions *as* its tools, natively, without a separate agent framework.
 
 This naturally implies a second piece: **`axiom.orch`** — a file (or section within the main orchestrator script) that defines, per module, (1) what the module *does* (a description for the LLM, used to generate tool schemas) and (2) **runtime-enforced policy** — what the LLM is and isn't allowed to call, under what conditions, regardless of what the model itself decides to do. Axioms at the main-script level establish global policy/constraints across all modules the LLM has access to.
 
-**Why it's appealing:** This is "agentic tool-calling with governance" as a *language-level* concept rather than a framework bolted onto Python (LangChain/etc. style). Orchestrate already has a module system with clear function boundaries (serverlets, loaded modules) — those boundaries are a natural fit for "tools an LLM can call," and `axiom.orch` would be a declarative, auditable policy layer the *orchestrator itself* enforces, rather than instructions hoping the model complies.
+**Why it's appealing:** This is "agentic tool-calling with governance" as a *language-level* concept rather than a framework bolted onto Python (LangChain/etc. style). OrchestrateLang already has a module system with clear function boundaries (serverlets, loaded modules) — those boundaries are a natural fit for "tools an LLM can call," and `axiom.orch` would be a declarative, auditable policy layer the *orchestrator itself* enforces, rather than instructions hoping the model complies.
 
 **Restructured model — axioms as enforcement, not instruction:**
 
@@ -218,13 +218,13 @@ axiom global {
 }
 ```
 
-- `describe` blocks generate the tool/function schema exposed to the LLM (auto-derivable from the module's existing AST function signatures — genuinely tractable, since Orchestrate already has this information).
+- `describe` blocks generate the tool/function schema exposed to the LLM (auto-derivable from the module's existing AST function signatures — genuinely tractable, since OrchestrateLang already has this information).
 - `axiom` blocks compile into **runtime checks** the orchestrator runs against every proposed tool call *before* dispatch — an allow/deny/conditional policy engine, not prompt text. A denied call never executes; the LLM receives a structured "denied by policy" result and continues the loop, but no side effect occurred.
 - Axioms at the main-script level (`axiom global { ... }`) apply across the whole session/agent loop — e.g. call budgets, default-deny for undescribed modules, etc.
 
 **Why it's still a pipedream (not a near-term feature):**
 
-- **Open-weights model loading is a heavy runtime dependency.** Running an LLM locally means bundling/managing model weights (gigabytes), an inference runtime (e.g. llama.cpp/ggml-style, or candle for a Rust-native option), and hardware considerations (CPU vs GPU, memory requirements far beyond anything else in the language). This is a different order of magnitude from anything else in Orchestrate — it turns "lightweight native binary" into "ships with or downloads a multi-GB model and an inference engine."
+- **Open-weights model loading is a heavy runtime dependency.** Running an LLM locally means bundling/managing model weights (gigabytes), an inference runtime (e.g. llama.cpp/ggml-style, or candle for a Rust-native option), and hardware considerations (CPU vs GPU, memory requirements far beyond anything else in the language). This is a different order of magnitude from anything else in OrchestrateLang — it turns "lightweight native binary" into "ships with or downloads a multi-GB model and an inference engine."
 - **The policy engine itself is non-trivial.** Even "allow/deny per function" is straightforward, but conditional policies (`where rows_affected < 100`) require the orchestrator to inspect *proposed arguments* against arbitrary expressions before dispatch — essentially a small expression evaluator operating on the LLM's proposed call, separate from (but reusing pieces of) the existing compiler/interpreter machinery.
 - **Tool-calling protocol**: the agent loop (propose → check → execute/deny → return → continue) needs to be built into the runtime, including handling the LLM's response format, retries, and the "denied" feedback path in a way the model can productively use (e.g., the model should be able to learn "that's not allowed" and try a different approach, not just loop forever retrying the same denied call).
 - **This connects to sandboxing**: even with runtime-enforced axioms, running LLM-callable modules as sandboxed serverlets adds defense-in-depth — "the orchestrator won't dispatch disallowed calls, AND the calls that *are* dispatched run in a sandbox" covers both "wrong call attempted" and "allowed call has unexpected side effects" failure modes.

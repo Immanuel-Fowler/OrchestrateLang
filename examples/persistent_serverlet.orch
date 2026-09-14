@@ -1,4 +1,4 @@
-use module counter: "./counter_module"
+use module counter: "./modules/counter"
 
 // This example proves serverlet state persists across loop iterations.
 //

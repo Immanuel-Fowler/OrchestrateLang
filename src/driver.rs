@@ -104,7 +104,7 @@ fn build_sandbox_guest(cache_dir: &Path, name: &str, lib_src: &str) -> Result<()
     fs::write(crate_dir.join("src/lib.rs"), lib_src)
         .map_err(|e| format!("Failed to write sandbox guest lib.rs: {}", e))?;
 
-    println!("[Orchestrate] Compiling sandbox guest '{}' to wasm32-wasip1...", name);
+    println!("[orchestrate] Compiling sandbox guest '{}' to wasm32-wasip1...", name);
     let output = Command::new("cargo")
         .args(["build", "--release", "--target", "wasm32-wasip1", "-q"])
         .current_dir(&crate_dir)
@@ -125,7 +125,7 @@ fn build_sandbox_guest(cache_dir: &Path, name: &str, lib_src: &str) -> Result<()
     if !wasm_path.exists() {
         return Err(format!("Sandbox guest '{}' compiled but no .wasm artifact was found at {:?}", name, wasm_path));
     }
-    println!("[Orchestrate] Sandbox guest '{}' compiled: {:?}", name, wasm_path);
+    println!("[orchestrate] Sandbox guest '{}' compiled: {:?}", name, wasm_path);
     Ok(())
 }
 
@@ -377,14 +377,14 @@ tokio = { version = "1.35", features = ["full"] }
 }
 
 pub fn run_build(input_file: &str, output_binary: Option<&str>) -> Result<(), String> {
-    println!("[Orchestrate] Parsing and compiling '{}'...", input_file);
+    println!("[orchestrate] Parsing and compiling '{}'...", input_file);
     let cache_dir = prepare_cache_dir(Path::new(input_file))?;
     let rust_code = compile_main_file_and_modules(input_file, &cache_dir)?;
     
     fs::write(cache_dir.join("src/main.rs"), rust_code)
         .map_err(|e| format!("Failed to write generated Rust file: {}", e))?;
 
-    println!("[Orchestrate] Building release binary with Cargo...");
+    println!("[orchestrate] Building release binary with Cargo...");
 
     let output = Command::new("cargo")
         .arg("build")
@@ -437,19 +437,19 @@ pub fn run_build(input_file: &str, output_binary: Option<&str>) -> Result<(), St
         }
     }
 
-    println!("[Orchestrate] Successfully built binary: {}", exe_name);
+    println!("[orchestrate] Successfully built binary: {}", exe_name);
     Ok(())
 }
 
 pub fn run_run(input_file: &str) -> Result<(), String> {
-    println!("[Orchestrate] Parsing and compiling '{}'...", input_file);
+    println!("[orchestrate] Parsing and compiling '{}'...", input_file);
     let cache_dir = prepare_cache_dir(Path::new(input_file))?;
     let rust_code = compile_main_file_and_modules(input_file, &cache_dir)?;
 
     fs::write(cache_dir.join("src/main.rs"), rust_code)
         .map_err(|e| format!("Failed to write generated Rust file: {}", e))?;
 
-    println!("[Orchestrate] Building Rust binary (this may take a few seconds on first run)...");
+    println!("[orchestrate] Building Rust binary (this may take a few seconds on first run)...");
 
     let output = Command::new("cargo")
         .arg("build")
@@ -465,7 +465,7 @@ pub fn run_run(input_file: &str) -> Result<(), String> {
         return Err("Cargo compilation failed".to_string());
     }
 
-    println!("[Orchestrate] Running program...");
+    println!("[orchestrate] Running program...");
 
     let mut target_exe = "orch_generated".to_string();
     if cfg!(target_os = "windows") {
@@ -530,6 +530,6 @@ pub fn run_check(input_file: &str) -> Result<(), String> {
         format!("Type Error: {}", lines.join("\n"))
     })?;
 
-    println!("[Orchestrate] {} — no type errors found", input_file);
+    println!("[orchestrate] {} — no type errors found", input_file);
     Ok(())
 }

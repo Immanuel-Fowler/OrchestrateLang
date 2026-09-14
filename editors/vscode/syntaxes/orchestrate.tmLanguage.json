@@ -33,8 +33,12 @@
           "match": "\\\\."
         },
         {
+          "name": "constant.character.escape.orch",
+          "match": "\\{\\{|\\}\\}"
+        },
+        {
           "name": "punctuation.definition.template-expression.orch",
-          "match": "\\$\\{[^}]*\\}"
+          "match": "\\{[^}]*\\}"
         }
       ]
     },
@@ -59,7 +63,7 @@
 
     "keyword-declaration": {
       "name": "keyword.declaration.orch",
-      "match": "\\b(let|fn|task|process|orchestrator|serverlet|struct|enum|on|module|use|load|start|trigger)\\b"
+      "match": "\\b(let|fn|task|process|orchestrator|serverlet|struct|enum|on|on_start|on_stop|on_crash|module|use|load|load_foreign|start|trigger)\\b"
     },
 
     "keyword-concurrency": {

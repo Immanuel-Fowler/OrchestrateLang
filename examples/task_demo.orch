@@ -1,4 +1,4 @@
-use module tasks: "./task_module"
+use module tasks: "./modules/tasks"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Triggered Block — listens for high-priority alerts fired by the worker.

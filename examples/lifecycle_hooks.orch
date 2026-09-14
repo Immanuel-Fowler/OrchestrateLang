@@ -1,3 +1,6 @@
+// lifecycle_hooks.orch — on_start runs at boot; on_stop runs when you press Ctrl+C.
+// This example keeps running until interrupted, so it does not call stop_orch().
+
 orchestrator main() {
     on_start {
         let arr = [1, 2, 3];

@@ -1,17 +1,17 @@
-# Orchestrate
+# OrchestrateLang
 
 > **A compiled, asynchronous orchestration language that transpiles to native Rust.**
 
-Orchestrate (`.orch`) is a purpose-built programming language for writing **concurrent system coordinators** — programs that manage multiple background workers, respond to events, and communicate with external processes, all in a clean and readable syntax. Orchestrate scripts compile directly to Rust source code and are executed via the Tokio async runtime, producing **native machine-speed binaries** with no interpreter overhead.
+OrchestrateLang (`.orch`) is a purpose-built programming language for writing **concurrent system coordinators** — programs that manage multiple background workers, respond to events, and communicate with external processes, all in a clean and readable syntax. OrchestrateLang scripts compile directly to Rust source code and are executed via the Tokio async runtime, producing **native machine-speed binaries** with no interpreter overhead.
 
 ---
 
 ## Getting Started (For Beginners)
 
-If you're new to programming or command-line tools, don't worry! Follow these steps to get Orchestrate running on your computer.
+If you're new to programming or command-line tools, don't worry! Follow these steps to get OrchestrateLang running on your computer.
 
 ### Step 1: Install Rust (The Engine)
-Orchestrate runs on top of a language called Rust. You need to install Rust first.
+OrchestrateLang runs on top of a language called Rust. You need to install Rust first.
 - **Windows:** Download and run the [Rust Installer for Windows (rustup-init.exe)](https://win.rustup.rs/). 
   > *If it asks to install Visual Studio Build Tools, say yes, and make sure "Desktop development with C++" is checked.*
 - **Mac / Linux:** Open your "Terminal" app, paste the following command, and press Enter:
@@ -21,16 +21,16 @@ Orchestrate runs on top of a language called Rust. You need to install Rust firs
 
 *Note: After installing Rust, you must close and reopen your Terminal/Command Prompt for the changes to take effect.*
 
-### Step 2: Download Orchestrate
-Next, you'll download the Orchestrate code. In your Terminal or Command Prompt, run:
+### Step 2: Download OrchestrateLang
+Next, you'll download the OrchestrateLang code. In your Terminal or Command Prompt, run:
 ```bash
-git clone https://github.com/YOUR_USERNAME/OrchestrateLang
+git clone https://github.com/Immanuel-Fowler/OrchestrateLang
 cd OrchestrateLang
 ```
 *(If you get an error that `git` is not recognized, you'll need to [install Git](https://git-scm.com/downloads) first).*
 
 ### Step 3: Install the Compiler
-Now, tell Rust to build and install the Orchestrate tool. Run this command:
+Now, tell Rust to build and install the OrchestrateLang tool. Run this command:
 ```bash
 cargo install --path .
 ```
@@ -52,20 +52,30 @@ orchestrate run examples/hello.orch
 
 The `examples/` folder contains more ready-to-run programs:
 ```bash
-orchestrate run examples/pipeline.orch                # Pipeline operator demo
-orchestrate run examples/multi_process.orch           # Multiple concurrent workers
-orchestrate run examples/async_parallel.orch          # Parallel task execution
-orchestrate run examples/test_serverlet.orch          # Serverlet actor model
-orchestrate run examples/persistent_serverlet_test.orch  # Stateful actor across iterations
-orchestrate run examples/task_demo.orch               # Full demo with modules and events
-orchestrate run examples/test_parallel_capture_combo.orch # Parallel execution with outer variable capture
+orchestrate run examples/pipeline.orch              # Pipeline operator
+orchestrate run examples/multi_process.orch         # Multiple concurrent workers
+orchestrate run examples/async_parallel.orch        # Parallel task execution
+orchestrate run examples/task_demo.orch             # Modules, tasks, and events together
+orchestrate run examples/serverlet.orch             # Serverlet actor model
+orchestrate run examples/persistent_serverlet.orch  # Serverlet state across loop iterations
+orchestrate run examples/resilient_serverlet.orch   # Recovering from handler panics with on_crash
+orchestrate run examples/secret_serverlet.orch      # Serverlet running in a separate process
+orchestrate run examples/supervised_process.orch    # Restart policies for automatic blocks
+orchestrate run examples/for_loops.orch             # for loops and ranges
+orchestrate run examples/closures.orch              # Closures with map, filter, reduce
+orchestrate run examples/enums.orch                 # Enums and match
+orchestrate run examples/error_handling.orch        # result, option, try/catch, and ?
+orchestrate run examples/generics.orch              # Generic functions
+orchestrate run examples/string_interpolation.orch  # "Hello, {name}!"
+orchestrate run examples/foreign_rust_math.orch     # Calling Rust from a module
+orchestrate run examples/foreign_c_math.orch        # Calling C from a module
 ```
 
 ---
 
-## Why Orchestrate?
+## Why OrchestrateLang?
 
-Modern distributed systems require gluing together background workers, event listeners, service clients, database connectors, and real-time pipelines. In conventional languages this coordination logic becomes deeply nested async code littered with channels, mutexes, Arc clones, and task handles. Orchestrate treats **concurrency as a first-class language concept** — the syntax itself models workers, events, and service actors directly.
+Modern distributed systems require gluing together background workers, event listeners, service clients, database connectors, and real-time pipelines. In conventional languages this coordination logic becomes deeply nested async code littered with channels, mutexes, Arc clones, and task handles. OrchestrateLang treats **concurrency as a first-class language concept** — the syntax itself models workers, events, and service actors directly.
 
 ```orchestrate
 let monitor = automatic {
@@ -94,7 +104,7 @@ This 14-line program starts a persistent polling loop, defines an event listener
 
 ### Compiler
 
-The Orchestrate **compiler is itself written in Rust** and lives entirely in the `src/` directory. It is a classic single-pass pipeline:
+The OrchestrateLang **compiler is itself written in Rust** and lives entirely in the `src/` directory. It is a classic single-pass pipeline:
 
 | Stage | File | Responsibility |
 | :--- | :--- | :--- |
@@ -102,12 +112,14 @@ The Orchestrate **compiler is itself written in Rust** and lives entirely in the
 | **Parser** | `src/parser.rs` | Recursive-descent Pratt parser that builds a typed AST |
 | **AST** | `src/ast.rs` | Enum-based Abstract Syntax Tree node definitions |
 | **Typechecker** | `src/typechecker.rs` | Single-pass type inference and checking. Runs before codegen — catches type mismatches in `let` statements, binary operations, and function calls. Module and serverlet signatures are registered first so cross-module return types are correctly inferred. |
-| **Code Generator** | `src/codegen.rs` | Traverses the AST and emits valid Rust source code as a `String` |
-| **Driver** | `src/main.rs` | CLI entry point; coordinates module resolution, `load` merging, C/C++ FFI compilation via `cc-rs`, and invokes `cargo` |
+| **Code Generator** | `src/codegen/` | Traverses the AST and emits valid Rust source code as a `String` (`core.rs`, `stmt.rs`, `expr.rs`) |
+| **Driver** | `src/driver.rs` | Coordinates module resolution, `load` merging, C/C++ FFI compilation via `cc-rs`, sandbox guest builds, and invokes `cargo` |
+| **CLI** | `src/main.rs` | The `orchestrate` command: `run`, `build`, `check`, and `prom` |
+| **Language server** | `src/lsp_main.rs` | The `orchestrate-lsp` binary: hover type information for editors |
 
 ### Runtime
 
-Orchestrate has **no custom runtime VM**. Generated Rust code is compiled by Cargo and executed directly on:
+OrchestrateLang has **no custom runtime VM**. Generated Rust code is compiled by Cargo and executed directly on:
 
 - **[Tokio](https://tokio.rs/)** — Rust's industry-standard async runtime. All process blocks, serverlet actors, and event channels run as Tokio tasks.
 - **[Cargo](https://doc.rust-lang.org/cargo/)** — Used internally to compile and link generated Rust files into native binaries.
@@ -116,7 +128,7 @@ Orchestrate has **no custom runtime VM**. Generated Rust code is compiled by Car
 ### Dependency Graph
 
 ```
-Orchestrate Compiler (Rust binary)
+OrchestrateLang Compiler (Rust binary)
     │
     ├── Lexer  ─── produces ──→  Token Stream
     ├── Parser ─── consumes ──→  Token Stream, produces ──→ AST
@@ -164,7 +176,7 @@ orchestrate run main.orch
 
 ### Expression-Oriented
 
-Orchestrate is fully **expression-oriented**. Blocks, `if` expressions, and pipelines all return values. There are no statement/expression splits — everything evaluates to something.
+OrchestrateLang is fully **expression-oriented**. Blocks, `if` expressions, and pipelines all return values. There are no statement/expression splits — everything evaluates to something.
 
 ```orchestrate
 let result = if score > 100 { "Pass" } else { "Fail" }
@@ -172,7 +184,7 @@ let result = if score > 100 { "Pass" } else { "Fail" }
 
 ### Static Type System
 
-Orchestrate is **statically typed**. All variables and parameters carry a type at compile time. Types are inferred from context or explicitly annotated:
+OrchestrateLang is **statically typed**. All variables and parameters carry a type at compile time. Types are inferred from context or explicitly annotated:
 
 | Type | Description | Rust Equivalent |
 | :--- | :--- | :--- |
@@ -286,7 +298,7 @@ Array literals (`[expr, expr, ...]`) compile to Rust `vec![...]`. They are prima
 
 ## Process Blocks
 
-Process blocks are **the core concurrency primitive** of Orchestrate. There are two kinds.
+Process blocks are **the core concurrency primitive** of OrchestrateLang. There are two kinds.
 
 ### Automatic Process Blocks
 
@@ -359,7 +371,7 @@ orchestrator main(procs: process[alpha, beta]) {
 
 ## The Orchestrator
 
-The `orchestrator main()` declaration is the **entry point** of every Orchestrate program. It compiles to a Rust `#[tokio::main]` async function that:
+The `orchestrator main()` declaration is the **entry point** of every OrchestrateLang program. It compiles to a Rust `#[tokio::main]` async function that:
 
 - Sets up all event registries (`OnceLock<Mutex<Vec<Sender<T>>>>`)
 - Initializes and auto-registers all top-level triggered blocks
@@ -428,7 +440,7 @@ Or by using **PROM** (the Personal Registry for Orchestrator Modules), which all
 ```orchestrate
 use module alias: "short_name"
 ```
-*(See `LANGUAGE_REFERENCE.md` for full details on registering modules with `orchestrate prom add`)*
+*(See `docs/language-reference.md` for full details on registering modules with `orchestrate prom add`)*
 
 ### Combined Process (No Serverlet)
 
@@ -469,7 +481,7 @@ load_foreign "cpp"  "./stats.cpp"      // requires stats.orch_ffi sidecar
 - **Rust:** `pub fn`s are injected verbatim; signatures are auto-scanned for the typechecker.
 - **C/C++:** a `.orch_ffi` sidecar file declares function signatures; the compiler generates `extern "C"` bindings and compiles the source via `cc-rs`.
 
-See [`LANGUAGE_REFERENCE.md §6.4`](LANGUAGE_REFERENCE.md) for the full sidecar format and type mappings.
+See [`docs/language-reference.md §6.4`](docs/language-reference.md) for the full sidecar format and type mappings.
 
 ### Separate Process (Serverlet)
 
@@ -512,7 +524,11 @@ orchestrator main(procs: process[]) { }
 ## Documentation
 
 - **[`README.md`](README.md)** — this file; overview, syntax reference, and architecture
-- **[`LANGUAGE_REFERENCE.md`](LANGUAGE_REFERENCE.md)** — complete language specification including all generated Rust patterns, the event system internals, serverlet actor model, and operator precedence
+- **[`docs/language-reference.md`](docs/language-reference.md)** — complete language specification including all generated Rust patterns, the event system internals, serverlet actor model, and operator precedence
+- **[`docs/roadmap.md`](docs/roadmap.md)** — planned features and their status
+- **[`docs/design/`](docs/design/)** — design docs for secret serverlets, sandboxed serverlets, and serverlet files
+- **[`CHANGELOG.md`](CHANGELOG.md)** — what changed in each release
+- **[`CONTRIBUTING.md`](CONTRIBUTING.md)** — naming, commit, branch, and release conventions
 
 ---
 
@@ -520,7 +536,7 @@ orchestrator main(procs: process[]) { }
 
 ## Cross-Process Event Isolation
 
-Event registries are **process-local** — each compiled binary has its own isolated `OnceLock` singletons. Two separately compiled Orchestrate programs running as different OS processes cannot directly trigger each other's events. To communicate across process boundaries, use a Serverlet as an IPC bridge.
+Event registries are **process-local** — each compiled binary has its own isolated `OnceLock` singletons. Two separately compiled OrchestrateLang programs running as different OS processes cannot directly trigger each other's events. To communicate across process boundaries, use a Serverlet as an IPC bridge.
 
 ---
 
@@ -532,7 +548,7 @@ Event registries are **process-local** — each compiled binary has its own isol
 | **No hidden runtime** | Generated Rust compiles to native code; execution is fully transparent |
 | **Zero-boilerplate async** | Tokio task spawning, channel wiring, and `Arc` management are compiler-generated |
 | **Separation of concerns** | Automatic blocks own looping logic; triggered blocks own reaction logic; the orchestrator owns lifecycle |
-| **Interoperability** | Serverlets decouple Orchestrate from external technology stacks at a well-defined message boundary |
+| **Interoperability** | Serverlets decouple OrchestrateLang from external technology stacks at a well-defined message boundary |
 | **Predictable performance** | All types resolve at compile time; no garbage collector; no interpreter overhead |
 
 ---

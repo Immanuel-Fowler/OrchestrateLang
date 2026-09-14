@@ -223,9 +223,9 @@ let _ = reply_rx.await;  // fire-and-forget, don't panic if channel closed
 
 ### Documentation to Update
 
-- **`Documentation/LANGUAGE_REFERENCE.md`** — Add a "Error Handling" section covering `result<T>`, `option<T>`, `some()`, `none`, `ok()`, `err()`, `?` operator, and `try/catch` block. Add syntax grammar for all new forms.
+- **`Documentation/../language-reference.md`** — Add a "Error Handling" section covering `result<T>`, `option<T>`, `some()`, `none`, `ok()`, `err()`, `?` operator, and `try/catch` block. Add syntax grammar for all new forms.
 - **`Documentation/README.md`** — Add error handling to the "Language Overview" and "Syntax Reference" sections. Update the "Type System" table.
-- **`VS Code extension/`** — Add `result`, `option`, `some`, `none`, `ok`, `err`, `try`, `catch` to syntax highlighting grammar. Add snippets for `try/catch` block and `result<T>` return type.
+- **`editors/vscode/`** — Add `result`, `option`, `some`, `none`, `ok`, `err`, `try`, `catch` to syntax highlighting grammar. Add snippets for `try/catch` block and `result<T>` return type.
 
 ---
 
@@ -513,9 +513,9 @@ match s {
 
 ### Documentation to Update
 
-- **`Documentation/LANGUAGE_REFERENCE.md`** — Add "Enums and Sum Types" section: `enum` syntax, variant literal syntax, `match` expression, exhaustiveness rules. Update the "Type System" section with the fixed typing rules for assignment and if-else. Update the "Operators" section with `=` assignment type rules.
+- **`Documentation/../language-reference.md`** — Add "Enums and Sum Types" section: `enum` syntax, variant literal syntax, `match` expression, exhaustiveness rules. Update the "Type System" section with the fixed typing rules for assignment and if-else. Update the "Operators" section with `=` assignment type rules.
 - **`Documentation/README.md`** — Add enums to the "Language Overview" and include a short motivating example in the design philosophy section.
-- **`VS Code extension/`** — Add `enum`, `match` as keywords. Add snippet for `enum` definition and `match` block. Update syntax highlighting to recognize `EnumName::Variant` patterns.
+- **`editors/vscode/`** — Add `enum`, `match` as keywords. Add snippet for `enum` definition and `match` block. Update syntax highlighting to recognize `EnumName::Variant` patterns.
 
 ---
 
@@ -533,7 +533,7 @@ match s {
 
 ### Why This Is Blocking
 
-When the Orchestrate typechecker misses an error (which happens today for silent `Void` fallbacks, assignment mismatches, and branch mismatches), the user sees a `cargo` error in `.orch_cache/src/main.rs` at a line number they did not write. They have no way to trace that back to their `.orch` source without manually reading the generated Rust. `ORCH_SHOW_GENERATED=1` dumps the entire generated file but provides no mapping. This is the worst possible debugging experience for a compiled language.
+When the OrchestrateLang typechecker misses an error (which happens today for silent `Void` fallbacks, assignment mismatches, and branch mismatches), the user sees a `cargo` error in `.orch_cache/src/main.rs` at a line number they did not write. They have no way to trace that back to their `.orch` source without manually reading the generated Rust. `ORCH_SHOW_GENERATED=1` dumps the entire generated file but provides no mapping. This is the worst possible debugging experience for a compiled language.
 
 ---
 
@@ -656,7 +656,7 @@ Add `ORCH_DEBUG=1` as an env var that enables verbose logging of each compilatio
 - Typechecker scope depth
 - Codegen output line count
 
-#### Step 5 — Improve Error Location in Orchestrate-Level Errors
+#### Step 5 — Improve Error Location in OrchestrateLang-Level Errors
 
 The `TypeChecker` already records `stmt.span.line` and `stmt.span.col` in error messages (e.g. `"line {}, col {}:"`). Ensure these are printed with the filename so the user can click-navigate in their editor:
 
@@ -699,7 +699,7 @@ This allows editors with terminal integration (VS Code, JetBrains) to make error
 
 #### New Integration Test
 
-Add a test in `tests/error_cases_test.rs` that:
+Add a test in `tests/error_case_tests.rs` that:
 1. Compiles a program with a deliberate type error
 2. Captures the error output
 3. Asserts the error message contains `line N:` pointing to the correct `.orch` line
@@ -710,8 +710,8 @@ Add a test in `tests/error_cases_test.rs` that:
 ### Documentation to Update
 
 - **`Documentation/README.md`** — Add a "Debugging" section describing `ORCH_SHOW_GENERATED=1`, `ORCH_DEBUG=1`, and `--show-generated`. Explain how to read error messages (format: `filename.orch:line:col: message`).
-- **`Documentation/LANGUAGE_REFERENCE.md`** — Add an "Error Messages" section documenting the error output format and common error messages.
-- **`VS Code extension/`** — Add a problem matcher configuration so VS Code can parse Orchestrate error output and create clickable error links in the Problems panel. The pattern should match `filename.orch:line:col: error: message`.
+- **`Documentation/../language-reference.md`** — Add an "Error Messages" section documenting the error output format and common error messages.
+- **`editors/vscode/`** — Add a problem matcher configuration so VS Code can parse OrchestrateLang error output and create clickable error links in the Problems panel. The pattern should match `filename.orch:line:col: error: message`.
 
 ---
 
@@ -1001,9 +1001,9 @@ tokio::spawn(async move {
 
 ### Documentation to Update
 
-- **`Documentation/LANGUAGE_REFERENCE.md`** — Rewrite the "Process Blocks" section entirely. Document restart policies, `on_crash` handler, backoff behavior, and what "supervised" means in concrete terms. Add a table: "What happens when an automatic block panics?" with Before/After the fix.
+- **`Documentation/../language-reference.md`** — Rewrite the "Process Blocks" section entirely. Document restart policies, `on_crash` handler, backoff behavior, and what "supervised" means in concrete terms. Add a table: "What happens when an automatic block panics?" with Before/After the fix.
 - **`Documentation/README.md`** — Update the "Design Philosophy" section. The claim "Automatic process blocks never die silently" should become true with this implementation. Add a supervision guarantees table.
-- **`Documentation/SERVERLET_FILES.md`** — Add a "Fault Tolerance" subsection documenting `on_crash` handlers in serverlets and the `catch_unwind` guarantee. Clarify that state is preserved across handler panics (the state variables live outside the dispatch loop).
+- **`Documentation/../design/serverlet-files.md`** — Add a "Fault Tolerance" subsection documenting `on_crash` handlers in serverlets and the `catch_unwind` guarantee. Clarify that state is preserved across handler panics (the state variables live outside the dispatch loop).
 
 ---
 
