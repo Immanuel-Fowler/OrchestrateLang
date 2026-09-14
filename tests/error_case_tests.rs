@@ -41,4 +41,6 @@ fn test_error_cases() {
     assert_compilation_fails("type_mismatch.orch", "mismatch");
     assert_compilation_fails("undefined_variable.orch", "Type Error");
     assert_compilation_fails("undefined_variable.orch", "undefined variable");
+    assert_compilation_fails("index_not_int.orch", "Type Error");
+    assert_compilation_fails("index_not_int.orch", "array index must be int");
 }

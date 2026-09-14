@@ -18,13 +18,21 @@ impl Codegen {
                     crate::ast::UnaryOp::Neg => format!("(-{})", operand_str),
                 }
             }
+            ExprNode::Index { object, index } => {
+                format!("{}[({}) as usize].clone()", self.compile_expr(object), self.compile_expr(index))
+            }
             ExprNode::Binary { op, lhs, rhs } => {
                 let lhs_str = self.compile_expr(lhs);
                 let rhs_str = self.compile_expr(rhs);
                 if *op == BinaryOp::Add {
                     format!("OrchAdd::orch_add({}, {})", lhs_str, rhs_str)
                 } else if *op == BinaryOp::Assign {
-                    format!("{} = {}", lhs_str, rhs_str)
+                    // Assigning into an element needs a place expression, not a clone.
+                    let place = match &lhs.node {
+                        ExprNode::Index { object, index } => format!("{}[({}) as usize]", self.compile_expr(object), self.compile_expr(index)),
+                        _ => lhs_str,
+                    };
+                    format!("{} = {}", place, rhs_str)
                 } else {
                     let op_str = match op {
                         BinaryOp::Sub => "-",

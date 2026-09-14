@@ -159,6 +159,28 @@ orchestrator main() {
 }
 
 #[test]
+fn runtime_array_indexing() {
+    let src = r#"
+orchestrator main() {
+    let nums = [10, 20, 30]
+    let words = ["a", "b", "c"]
+    let grid = [[1, 2], [3, 4]]
+    let i = 2
+    print(to_string(nums[0] + nums[i]))
+    nums[1] = 99
+    print(to_string(nums[1]))
+    print(words[length(words) - 1])
+    print(to_string(grid[1][0]))
+    print(to_string(-nums[0]))
+    stop_orch()
+}
+"#;
+    let stdout = run_orch("array_indexing", src);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines, vec!["40", "99", "c", "3", "-10"]);
+}
+
+#[test]
 fn runtime_sandbox_guest_compiles_to_wasm() {
     // Step 2: a sandboxed serverlet's handler logic must compile to a wasm32-wasip1
     // artifact. (Host integration via wasmtime is step 3; for now the serverlet

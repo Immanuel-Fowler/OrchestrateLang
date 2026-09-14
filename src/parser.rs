@@ -635,6 +635,9 @@ impl Parser {
             TokenKind::Lt | TokenKind::Gt | TokenKind::LtEq | TokenKind::GtEq => Precedence::Comparison,
             TokenKind::Plus | TokenKind::Minus => Precedence::Sum,
             TokenKind::Star | TokenKind::Slash | TokenKind::Percent => Precedence::Product,
+            // `[` indexes only on the same line, so a line starting with an array literal
+            // is not parsed as an index into the previous line.
+            TokenKind::LBracket if self.pos > 0 && self.tokens[self.pos - 1].line == self.peek().line => Precedence::Call,
             TokenKind::LParen | TokenKind::Dot => Precedence::Call,
             _ => Precedence::Lowest,
         }
@@ -1049,6 +1052,12 @@ impl Parser {
                 self.advance();
                 let rhs = self.parse_expression(Precedence::Assign)?;
                 Ok(ExprNode::Binary { op: BinaryOp::Assign, lhs: Box::new(lhs), rhs: Box::new(rhs) })
+            }
+            TokenKind::LBracket => {
+                self.advance();
+                let index = self.parse_expression(Precedence::Lowest)?;
+                self.consume(TokenKind::RBracket, "Expected ']' after index")?;
+                Ok(ExprNode::Index { object: Box::new(lhs), index: Box::new(index) })
             }
             TokenKind::LParen => {
                 self.advance();

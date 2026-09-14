@@ -249,6 +249,10 @@ impl Codegen {
             ExprNode::Unary { operand, .. } => {
                 self.scan_events_in_expr(operand);
             }
+            ExprNode::Index { object, index } => {
+                self.scan_events_in_expr(object);
+                self.scan_events_in_expr(index);
+            }
             ExprNode::Binary { lhs, rhs, .. } => {
                 self.scan_events_in_expr(lhs);
                 self.scan_events_in_expr(rhs);
@@ -326,6 +330,10 @@ impl Codegen {
             }
             ExprNode::Unary { operand, .. } => {
                 self.get_free_vars_expr(operand, local_env, free_vars);
+            }
+            ExprNode::Index { object, index } => {
+                self.get_free_vars_expr(object, local_env, free_vars);
+                self.get_free_vars_expr(index, local_env, free_vars);
             }
             ExprNode::Binary { lhs, rhs, .. } => {
                 self.get_free_vars_expr(lhs, local_env, free_vars);

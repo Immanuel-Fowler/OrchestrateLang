@@ -11,6 +11,9 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ### Added
 - Unary minus (`-x`, `-1.5`) and the `%` operator.
+- Array indexing: `items[i]` reads an element and `items[i] = x` replaces one. The index
+  must be an `int`, an out-of-range index panics, and `[` only indexes when it is on the
+  same line as the value before it.
 
 ## [0.1.0] - 2026-09-14
 

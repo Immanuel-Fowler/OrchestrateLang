@@ -210,6 +210,10 @@ pub enum ExprNode {
         object: Box<Expr>,
         field: String,
     },
+    Index {
+        object: Box<Expr>,
+        index: Box<Expr>,
+    },
     // Error handling
     NoneLiteral,
     SomeLiteral(Box<Expr>),

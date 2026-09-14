@@ -420,6 +420,23 @@ impl TypeChecker {
                     )),
                 }
             }
+            ExprNode::Index { object, index } => {
+                let obj_ty = self.infer_expr(object)?;
+                let idx_ty = self.infer_expr(index)?;
+                if !self.types_compatible(&Type::Int, &idx_ty) {
+                    return Err(format!(
+                        "line {}, col {}: array index must be int, got {}",
+                        expr.span.line, expr.span.col, idx_ty.display_name()
+                    ));
+                }
+                match obj_ty {
+                    Type::Array(inner, _) => Ok(*inner),
+                    other => Err(format!(
+                        "line {}, col {}: cannot index a value of type {}",
+                        expr.span.line, expr.span.col, other.display_name()
+                    )),
+                }
+            }
             ExprNode::Binary { op, lhs, rhs } => {
                 let lhs_ty = self.infer_expr(lhs)?;
                 let rhs_ty = self.infer_expr(rhs)?;
@@ -434,6 +451,13 @@ impl TypeChecker {
                                     rhs_ty.display_name(), name, lhs_declared_ty.display_name()
                                 ));
                             }
+                        }
+                    } else if let ExprNode::Index { .. } = &lhs.node {
+                        if !self.types_compatible(&lhs_ty, &rhs_ty) {
+                            return Err(format!(
+                                "line {}, col {}: cannot assign {} to an array element of type {}",
+                                expr.span.line, expr.span.col, rhs_ty.display_name(), lhs_ty.display_name()
+                            ));
                         }
                     }
                     return Ok(Type::Void);
