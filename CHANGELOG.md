@@ -14,6 +14,8 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 - Array indexing: `items[i]` reads an element and `items[i] = x` replaces one. The index
   must be an `int`, an out-of-range index panics, and `[` only indexes when it is on the
   same line as the value before it.
+- Secret serverlet handlers can take and return arrays and structs declared in the same
+  file. Values cross the process boundary in a binary encoding.
 
 ## [0.1.0] - 2026-09-14
 

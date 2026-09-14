@@ -72,18 +72,17 @@ fn stop_orch() {{
 {process_ref}"#, print_macro = print_macro, process_ref = process_ref)
 }
 
-pub const SECRET_MIRROR_HELPERS: &str = r#"async fn __secret_write_frame<W: tokio::io::AsyncWriteExt + Unpin>(w: &mut W, fields: &[String]) -> std::io::Result<()> {
+pub const SECRET_MIRROR_HELPERS: &str = r#"async fn __secret_write_frame<W: tokio::io::AsyncWriteExt + Unpin>(w: &mut W, fields: &[Vec<u8>]) -> std::io::Result<()> {
     w.write_all(&(fields.len() as u32).to_le_bytes()).await?;
     for f in fields {
-        let b = f.as_bytes();
-        w.write_all(&(b.len() as u32).to_le_bytes()).await?;
-        w.write_all(b).await?;
+        w.write_all(&(f.len() as u32).to_le_bytes()).await?;
+        w.write_all(f).await?;
     }
     w.flush().await?;
     Ok(())
 }
 
-async fn __secret_read_frame<R: tokio::io::AsyncReadExt + Unpin>(r: &mut R) -> std::io::Result<Option<Vec<String>>> {
+async fn __secret_read_frame<R: tokio::io::AsyncReadExt + Unpin>(r: &mut R) -> std::io::Result<Option<Vec<Vec<u8>>>> {
     let mut n_buf = [0u8; 4];
     match r.read_exact(&mut n_buf).await {
         Ok(_) => {}
@@ -98,14 +97,14 @@ async fn __secret_read_frame<R: tokio::io::AsyncReadExt + Unpin>(r: &mut R) -> s
         let len = u32::from_le_bytes(len_buf) as usize;
         let mut buf = vec![0u8; len];
         r.read_exact(&mut buf).await?;
-        fields.push(String::from_utf8_lossy(&buf).into_owned());
+        fields.push(buf);
     }
     Ok(Some(fields))
 }
 
 "#;
 
-pub const SECRET_CHILD_FRAMES: &str = r#"fn __frame_read<R: std::io::Read>(r: &mut R) -> std::io::Result<Option<Vec<String>>> {
+pub const SECRET_CHILD_FRAMES: &str = r#"fn __frame_read<R: std::io::Read>(r: &mut R) -> std::io::Result<Option<Vec<Vec<u8>>>> {
     let mut n_buf = [0u8; 4];
     match r.read_exact(&mut n_buf) {
         Ok(_) => {}
@@ -120,20 +119,90 @@ pub const SECRET_CHILD_FRAMES: &str = r#"fn __frame_read<R: std::io::Read>(r: &m
         let len = u32::from_le_bytes(len_buf) as usize;
         let mut buf = vec![0u8; len];
         r.read_exact(&mut buf)?;
-        fields.push(String::from_utf8_lossy(&buf).into_owned());
+        fields.push(buf);
     }
     Ok(Some(fields))
 }
 
-fn __frame_write<W: std::io::Write>(w: &mut W, fields: &[String]) -> std::io::Result<()> {
+fn __frame_write<W: std::io::Write>(w: &mut W, fields: &[Vec<u8>]) -> std::io::Result<()> {
     w.write_all(&(fields.len() as u32).to_le_bytes())?;
     for f in fields {
-        let b = f.as_bytes();
-        w.write_all(&(b.len() as u32).to_le_bytes())?;
-        w.write_all(b)?;
+        w.write_all(&(f.len() as u32).to_le_bytes())?;
+        w.write_all(f)?;
     }
     w.flush()?;
     Ok(())
+}
+
+"#;
+
+/// Binary value encoding shared by both ends of a serverlet wire: int and float as 8 bytes
+/// little-endian, bool as 1 byte, string as a u32 length + UTF-8, arrays as a u32 count +
+/// elements, and structs as their fields in declaration order (impls generated per struct).
+pub const WIRE_CODEC: &str = r#"trait OrchWire: Sized {
+    fn wire_encode(&self, out: &mut Vec<u8>);
+    fn wire_decode(buf: &[u8], pos: &mut usize) -> Option<Self>;
+}
+
+fn __wire_take<'a>(buf: &'a [u8], pos: &mut usize, n: usize) -> Option<&'a [u8]> {
+    let end = pos.checked_add(n)?;
+    let bytes = buf.get(*pos..end)?;
+    *pos = end;
+    Some(bytes)
+}
+
+fn __wire_len(buf: &[u8], pos: &mut usize) -> Option<usize> {
+    Some(u32::from_le_bytes(__wire_take(buf, pos, 4)?.try_into().ok()?) as usize)
+}
+
+impl OrchWire for i64 {
+    fn wire_encode(&self, out: &mut Vec<u8>) { out.extend_from_slice(&self.to_le_bytes()); }
+    fn wire_decode(buf: &[u8], pos: &mut usize) -> Option<Self> { Some(i64::from_le_bytes(__wire_take(buf, pos, 8)?.try_into().ok()?)) }
+}
+
+impl OrchWire for f64 {
+    fn wire_encode(&self, out: &mut Vec<u8>) { out.extend_from_slice(&self.to_le_bytes()); }
+    fn wire_decode(buf: &[u8], pos: &mut usize) -> Option<Self> { Some(f64::from_le_bytes(__wire_take(buf, pos, 8)?.try_into().ok()?)) }
+}
+
+impl OrchWire for bool {
+    fn wire_encode(&self, out: &mut Vec<u8>) { out.push(*self as u8); }
+    fn wire_decode(buf: &[u8], pos: &mut usize) -> Option<Self> { Some(__wire_take(buf, pos, 1)?[0] != 0) }
+}
+
+impl OrchWire for String {
+    fn wire_encode(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&(self.len() as u32).to_le_bytes());
+        out.extend_from_slice(self.as_bytes());
+    }
+    fn wire_decode(buf: &[u8], pos: &mut usize) -> Option<Self> {
+        let len = __wire_len(buf, pos)?;
+        String::from_utf8(__wire_take(buf, pos, len)?.to_vec()).ok()
+    }
+}
+
+impl<T: OrchWire> OrchWire for Vec<T> {
+    fn wire_encode(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&(self.len() as u32).to_le_bytes());
+        for item in self { item.wire_encode(out); }
+    }
+    fn wire_decode(buf: &[u8], pos: &mut usize) -> Option<Self> {
+        let count = __wire_len(buf, pos)?;
+        let mut items = Vec::with_capacity(count.min(4096));
+        for _ in 0..count { items.push(T::wire_decode(buf, pos)?); }
+        Some(items)
+    }
+}
+
+fn __wire_to_bytes<T: OrchWire>(value: &T) -> Vec<u8> {
+    let mut out = Vec::new();
+    value.wire_encode(&mut out);
+    out
+}
+
+fn __wire_from_bytes<T: OrchWire + Default>(bytes: &[u8]) -> T {
+    let mut pos = 0;
+    T::wire_decode(bytes, &mut pos).unwrap_or_default()
 }
 
 "#;
@@ -166,6 +235,8 @@ pub struct Codegen {
     /// The driver writes each as a sub-crate and compiles it to wasm32-wasip1.
     pub sandbox_programs: Vec<(String, String)>,
     pub has_secret: bool,
+    /// Struct definitions in the file being generated, used by the serverlet wire codec.
+    pub struct_defs: Vec<(String, Vec<(String, Type)>)>,
 }
 
 impl Codegen {
@@ -181,6 +252,7 @@ impl Codegen {
             secret_programs: Vec::new(),
             has_secret: false,
             sandbox_programs: Vec::new(),
+            struct_defs: Vec::new(),
         }
     }
 
@@ -513,6 +585,12 @@ impl Codegen {
 
         if self.has_secret {
             code.push_str(SECRET_MIRROR_HELPERS);
+            code.push_str(WIRE_CODEC);
+            self.struct_defs = stmts.iter().filter_map(|s| match &s.node {
+                StmtNode::StructDef { name, fields } => Some((name.clone(), fields.clone())),
+                _ => None,
+            }).collect();
+            code.push_str(&super::stmt::wire_struct_impls(&self.struct_defs));
         }
 
         let mut global_stmts = Vec::new();

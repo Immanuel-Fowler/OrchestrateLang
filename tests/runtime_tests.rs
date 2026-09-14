@@ -181,6 +181,46 @@ orchestrator main() {
 }
 
 #[test]
+fn runtime_secret_serverlet_structs_and_arrays() {
+    let src = r#"
+struct Point {
+    x: int,
+    y: float,
+}
+serverlet Geo secret {
+    let total = 0
+    on shift(p: Point, dx: int) -> Point {
+        total = total + dx
+        return Point { x: p.x + dx, y: p.y * 2.0 }
+    }
+    on sum(values: int[]) -> int {
+        let s = 0
+        for v in values {
+            s = s + v
+        }
+        return s
+    }
+    on names() -> string[] {
+        return ["a", "b"]
+    }
+}
+orchestrator main() {
+    let g = start Geo()
+    let q = g.shift(Point { x: 1, y: 1.5 }, 4)
+    print(to_string(q.x))
+    print(to_string(q.y))
+    print(to_string(g.sum([1, 2, 3])))
+    let ns = g.names()
+    print(ns[1])
+    stop_orch()
+}
+"#;
+    let stdout = run_orch("secret_structs_arrays", src);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines, vec!["5", "3", "6", "b"]);
+}
+
+#[test]
 fn runtime_sandbox_guest_compiles_to_wasm() {
     // Step 2: a sandboxed serverlet's handler logic must compile to a wasm32-wasip1
     // artifact. (Host integration via wasmtime is step 3; for now the serverlet

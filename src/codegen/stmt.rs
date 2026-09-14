@@ -546,7 +546,7 @@ impl Codegen {
     }
 
     fn compile_secret_mirror(&mut self, name: &str, handlers: &[Handler]) -> String {
-        if let Some(reason) = secret_unsupported_reason(handlers) {
+        if let Some(reason) = wire_unsupported_reason(handlers, &self.struct_defs) {
             return format!("compile_error!(\"secret serverlet '{}': {}\");\n", name, reason);
         }
 
@@ -560,29 +560,20 @@ impl Codegen {
                 format!("{}, reply_to", param_names.join(", "))
             };
 
-            let mut req_fields = vec![format!("\"{}\".to_string()", k)];
+            // Field 0 is the handler index; each argument follows in the wire encoding.
+            let mut req_fields = vec![format!("__wire_to_bytes(&{}i64)", k)];
             for p in &h.params {
-                let enc = match p.ty {
-                    Type::Str => p.name.clone(),
-                    Type::Float => format!("format!(\"{{:?}}\", {})", p.name),
-                    _ => format!("{}.to_string()", p.name),
-                };
-                req_fields.push(enc);
+                req_fields.push(format!("__wire_to_bytes(&{})", p.name));
             }
 
             let decode = if h.return_type == Type::Void {
                 "()".to_string()
             } else {
-                match h.return_type {
-                    Type::Str => "__f.get(0).cloned().unwrap_or_default()".to_string(),
-                    Type::Float => "__f.get(0).and_then(|s| s.parse::<f64>().ok()).unwrap_or_default()".to_string(),
-                    Type::Bool => "__f.get(0).and_then(|s| s.parse::<bool>().ok()).unwrap_or_default()".to_string(),
-                    _ => "__f.get(0).and_then(|s| s.parse::<i64>().ok()).unwrap_or_default()".to_string(),
-                }
+                format!("__f.get(0).map(|b| __wire_from_bytes::<{}>(b)).unwrap_or_default()", self.compile_type(&h.return_type))
             };
 
             arms.push(format!(
-"                {n}Msg::{v} {{ {b} }} => {{\n                    let __req: Vec<String> = vec![{req}];\n                    if __secret_write_frame(&mut __cin, &__req).await.is_err() {{\n                        eprintln!(\"[orchestrate] secret serverlet '{n}' is not reachable\");\n                        let _ = reply_to.send(Default::default());\n                        continue;\n                    }}\n                    match __secret_read_frame(&mut __cout).await {{\n                        Ok(Some(__f)) => {{ let _ = reply_to.send({dec}); }}\n                        _ => {{ eprintln!(\"[orchestrate] secret serverlet '{n}' exited unexpectedly\"); let _ = reply_to.send(Default::default()); }}\n                    }}\n                }}",
+"                {n}Msg::{v} {{ {b} }} => {{\n                    let __req: Vec<Vec<u8>> = vec![{req}];\n                    if __secret_write_frame(&mut __cin, &__req).await.is_err() {{\n                        eprintln!(\"[orchestrate] secret serverlet '{n}' is not reachable\");\n                        let _ = reply_to.send(Default::default());\n                        continue;\n                    }}\n                    match __secret_read_frame(&mut __cout).await {{\n                        Ok(Some(__f)) => {{ let _ = reply_to.send({dec}); }}\n                        _ => {{ eprintln!(\"[orchestrate] secret serverlet '{n}' exited unexpectedly\"); let _ = reply_to.send(Default::default()); }}\n                    }}\n                }}",
                 n = name, v = variant, b = binding, req = req_fields.join(", "), dec = decode
             ));
         }
@@ -594,7 +585,7 @@ impl Codegen {
     }
 
     fn compile_secret_program(&mut self, name: &str, state: &[Stmt], handlers: &[Handler]) -> String {
-        if let Some(reason) = secret_unsupported_reason(handlers) {
+        if let Some(reason) = wire_unsupported_reason(handlers, &self.struct_defs) {
             return format!("compile_error!(\"secret serverlet '{}': {}\");\n", name, reason);
         }
 
@@ -614,26 +605,17 @@ impl Codegen {
         for (k, h) in handlers.iter().enumerate() {
             let mut arg_lets = Vec::new();
             for (j, p) in h.params.iter().enumerate() {
-                let idx = j + 1;
-                let decode = match p.ty {
-                    Type::Str => format!("__fields[{}].clone()", idx),
-                    Type::Int => format!("__fields[{}].parse::<i64>().unwrap_or_default()", idx),
-                    Type::Float => format!("__fields[{}].parse::<f64>().unwrap_or_default()", idx),
-                    Type::Bool => format!("__fields[{}].parse::<bool>().unwrap_or_default()", idx),
-                    _ => "Default::default()".to_string(),
-                };
-                arg_lets.push(format!("                        let {}: {} = {};", p.name, self.compile_type(&p.ty), decode));
+                let ty = self.compile_type(&p.ty);
+                arg_lets.push(format!(
+                    "                        let {}: {} = __fields.get({}).map(|b| __wire_from_bytes::<{}>(b)).unwrap_or_default();",
+                    p.name, ty, j + 1, ty
+                ));
             }
             let body = self.compile_expr(&h.body);
             let finish = if h.return_type == Type::Void {
                 "                        let _ = __handler();\n                        let _ = __frame_write(&mut __writer, &[]);".to_string()
             } else {
-                let enc = match h.return_type {
-                    Type::Float => "format!(\"{:?}\", __r)".to_string(),
-                    Type::Str => "__r".to_string(),
-                    _ => "__r.to_string()".to_string(),
-                };
-                format!("                        let __r = __handler();\n                        let _ = __frame_write(&mut __writer, &[{}]);", enc)
+                "                        let __r = __handler();\n                        let _ = __frame_write(&mut __writer, &[__wire_to_bytes(&__r)]);".to_string()
             };
             arms.push(format!(
 "                    {k}usize => {{\n{args}\n                        #[allow(unused_mut)]\n                        let mut __handler = || {{ {body} }};\n{finish}\n                    }}",
@@ -641,11 +623,26 @@ impl Codegen {
             ));
         }
 
+        // The child is its own program, so it needs the struct definitions (and wire impls)
+        // its handlers can use.
+        let structs = self.struct_defs.iter()
+            .filter(|(sname, _)| wire_supported(&Type::Named(sname.clone()), &self.struct_defs, 0))
+            .map(|(sname, fields)| {
+                let fields_str = fields.iter()
+                    .map(|(fname, fty)| format!("    pub {}: {},", fname, self.compile_type(fty)))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!("#[derive(Clone, Debug, Default)]\npub struct {} {{\n{}\n}}\n", sname, fields_str)
+            })
+            .collect::<String>() + &wire_struct_impls(&self.struct_defs);
+
         format!(
-"// Generated by Orchestrate Compiler — secret serverlet '{name}'\n#![allow(unused_variables)]\n#![allow(dead_code)]\n#![allow(unused_imports)]\n#![allow(unused_parens)]\n#![allow(unused_mut)]\n\n{preamble}\n{frames}\nfn main() {{\n    let __stdin = std::io::stdin();\n    let mut __reader = std::io::BufReader::new(__stdin.lock());\n    let __stdout = std::io::stdout();\n    let mut __writer = std::io::BufWriter::new(__stdout.lock());\n\n{state}\n\n    let _ = __frame_write(&mut __writer, &[\"ready\".to_string()]);\n\n    loop {{\n        match __frame_read(&mut __reader) {{\n            Ok(Some(__fields)) => {{\n                if __fields.is_empty() {{ continue; }}\n                let __idx: usize = __fields[0].parse().unwrap_or(usize::MAX);\n                match __idx {{\n{arms}\n                    _ => {{}}\n                }}\n            }}\n            Ok(None) => break,\n            Err(_) => break,\n        }}\n    }}\n}}\n",
+"// Generated by Orchestrate Compiler — secret serverlet '{name}'\n#![allow(unused_variables)]\n#![allow(dead_code)]\n#![allow(unused_imports)]\n#![allow(unused_parens)]\n#![allow(unused_mut)]\n\n{preamble}\n{frames}\n{wire}\n{structs}\nfn main() {{\n    let __stdin = std::io::stdin();\n    let mut __reader = std::io::BufReader::new(__stdin.lock());\n    let __stdout = std::io::stdout();\n    let mut __writer = std::io::BufWriter::new(__stdout.lock());\n\n{state}\n\n    let _ = __frame_write(&mut __writer, &[b\"ready\".to_vec()]);\n\n    loop {{\n        match __frame_read(&mut __reader) {{\n            Ok(Some(__fields)) => {{\n                if __fields.is_empty() {{ continue; }}\n                let __idx: usize = __fields.get(0).map(|b| __wire_from_bytes::<i64>(b) as usize).unwrap_or(usize::MAX);\n                match __idx {{\n{arms}\n                    _ => {{}}\n                }}\n            }}\n            Ok(None) => break,\n            Err(_) => break,\n        }}\n    }}\n}}\n",
             name = name,
             preamble = runtime_preamble(true, true),
             frames = SECRET_CHILD_FRAMES,
+            wire = super::core::WIRE_CODEC,
+            structs = structs,
             state = state_vars.join("\n"),
             arms = arms.join("\n")
         )
@@ -701,6 +698,60 @@ impl Codegen {
             exports = exports.join("\n\n")
         )
     }
+}
+
+type StructDefs = [(String, Vec<(String, Type)>)];
+
+/// Returns Some(reason) if a handler uses a type the serverlet wire codec can't carry:
+/// int, float, bool, string, arrays of carryable types, and structs declared in the same
+/// file whose fields are carryable. Returns may also be void.
+pub(crate) fn wire_unsupported_reason(handlers: &[Handler], structs: &StructDefs) -> Option<String> {
+    for h in handlers {
+        for p in &h.params {
+            if !wire_supported(&p.ty, structs, 0) {
+                return Some(format!(
+                    "handler '{}' parameter '{}' uses an unsupported type; secret serverlets support int, float, bool, string, arrays, and structs declared in the same file",
+                    h.name, p.name
+                ));
+            }
+        }
+        if h.return_type != Type::Void && !wire_supported(&h.return_type, structs, 0) {
+            return Some(format!(
+                "handler '{}' uses an unsupported return type; secret serverlets support int, float, bool, string, arrays, structs declared in the same file, and void",
+                h.name
+            ));
+        }
+    }
+    None
+}
+
+fn wire_supported(ty: &Type, structs: &StructDefs, depth: usize) -> bool {
+    if depth > 32 {
+        return false; // recursive struct definitions can't be encoded
+    }
+    match ty {
+        Type::Int | Type::Float | Type::Str | Type::Bool => true,
+        Type::Array(inner, _) => wire_supported(inner, structs, depth + 1),
+        Type::Named(name) => structs.iter()
+            .find(|(n, _)| n == name)
+            .map_or(false, |(_, fields)| fields.iter().all(|(_, fty)| wire_supported(fty, structs, depth + 1))),
+        _ => false,
+    }
+}
+
+/// `OrchWire` impls for every struct in the file that can cross a serverlet wire.
+pub(crate) fn wire_struct_impls(structs: &StructDefs) -> String {
+    structs.iter()
+        .filter(|(name, _)| wire_supported(&Type::Named(name.clone()), structs, 0))
+        .map(|(name, fields)| {
+            let enc = fields.iter().map(|(f, _)| format!("self.{}.wire_encode(out);", f)).collect::<Vec<_>>().join(" ");
+            let dec = fields.iter().map(|(f, _)| format!("{}: OrchWire::wire_decode(buf, pos)?", f)).collect::<Vec<_>>().join(", ");
+            format!(
+                "impl OrchWire for {name} {{\n    fn wire_encode(&self, out: &mut Vec<u8>) {{ {enc} }}\n    fn wire_decode(buf: &[u8], pos: &mut usize) -> Option<Self> {{ Some({name} {{ {dec} }}) }}\n}}\n",
+                name = name, enc = enc, dec = dec
+            )
+        })
+        .collect()
 }
 
 fn secret_unsupported_reason(handlers: &[Handler]) -> Option<String> {
