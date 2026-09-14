@@ -11,6 +11,7 @@ fn print_help() {
     println!("  run <file.orch>              Compile and run a program immediately");
     println!("  build <file.orch>            Compile to a standalone binary");
     println!("  build <file.orch> -o <out>   Specify the output binary name");
+    println!("  build --lib <file.orch> -o <dir>   Generate a host-linkable Rust crate");
     println!("  check <file.orch>            Type-check only — no compilation (fast)");
     println!();
     println!("  prom add <name> <path>       Register a module path under a short name");
@@ -56,16 +57,26 @@ fn main() {
                 eprintln!("Usage: orchestrate build <file.orch> [-o <output>]");
                 std::process::exit(1);
             }
-            let input = &args[2];
+            let mut input = None;
             let mut out = None;
-            if args.len() >= 5 && args[3] == "-o" {
-                out = Some(args[4].as_str());
+            let mut library = false;
+            let mut options = args[2..].iter();
+            while let Some(arg) = options.next() {
+                match arg.as_str() {
+                    "--lib" => library = true,
+                    "-o" => out = options.next().map(String::as_str),
+                    value if !value.starts_with('-') && input.is_none() => input = Some(value),
+                    _ => { eprintln!("Unknown build argument: {}", arg); std::process::exit(1); }
+                }
             }
-            if let Err(e) = driver::run_build(input, out) {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
+            let result = match input {
+                Some(input) if library => driver::run_build_library(input, out),
+                Some(input) => driver::run_build(input, out),
+                None => Err("build requires an input file".into()),
+            };
+            if let Err(e) = result { eprintln!("Error: {}", e); std::process::exit(1); }
         }
+
         "check" => {
             if args.len() < 3 {
                 eprintln!("Usage: orchestrate check <file.orch>");

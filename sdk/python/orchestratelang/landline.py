@@ -4,6 +4,7 @@ import inspect
 import struct
 import sys
 import typing
+from types import SimpleNamespace
 
 
 class Serverlet:
@@ -156,9 +157,18 @@ def serve(serverlet_class):
         text = f"{name}({','.join(_type_name(t) for t in args)})->{_type_name(result)}"
         methods.append((name, args, result, text))
     _write_frame(writer, 1, 0, _encode(int, 1) + _encode(list[str], [m[3] for m in methods]))
-    if _read_frame(reader) != (2, 0, b""):
+    ready = _read_frame(reader)
+    if ready is None or ready[:2] != (2, 0):
         return
-    instance = serverlet_class()
+    granted = _Reader(ready[2])
+    signatures = granted.value(list[str]) if ready[2] else []
+    granted.finish()
+    host = _Host(reader, writer, signatures, vars(sys.modules[serverlet_class.__module__]))
+    # Install before __init__ so constructors can retain the proxy. Calls are allowed
+    # only while handling a CALL; the parent is not reading during idle startup.
+    instance = serverlet_class.__new__(serverlet_class)
+    instance.host = host
+    instance.__init__()
     while True:
         frame = _read_frame(reader)
         if frame is None or frame == (8, 0, b""):
@@ -174,9 +184,61 @@ def serve(serverlet_class):
             name, types, result_type, _ = methods[index]
             args = [data.value(ty) for ty in types]
             data.finish()
-            result = getattr(instance, name)(*args)
+            host._active = True
+            try:
+                result = getattr(instance, name)(*args)
+            finally:
+                host._active = False
             encoded = _encode(result_type, result)
         except Exception as error:
             _write_frame(writer, 5, call_id, _encode(str, f"{type(error).__name__}: {error}"))
         else:
             _write_frame(writer, 4, call_id, encoded)
+
+
+def _host_type(name, namespace):
+    if name.endswith("[]"):
+        return list[_host_type(name[:-2], namespace)]
+    primitives = {"int": int, "float": float, "bool": bool, "string": str, "void": type(None)}
+    if name in primitives:
+        return primitives[name]
+    ty = namespace.get(name)
+    _type_name(ty)
+    return ty
+
+
+class _Host:
+    def __init__(self, reader, writer, signatures, namespace):
+        self._reader, self._writer = reader, writer
+        self._next_id = 0
+        self._active = False
+        for index, signature in enumerate(signatures):
+            name, tail = signature.split("(", 1)
+            args, result = tail.split(")->", 1)
+            group, method = name.split(".", 1)
+            if group.startswith("_") or method.startswith("_"):
+                raise ValueError("host names must not start with underscore")
+            types = [_host_type(t, namespace) for t in args.split(",")] if args else []
+            result_type = _host_type(result, namespace)
+            if not hasattr(self, group):
+                setattr(self, group, SimpleNamespace())
+            def invoke(*values, _index=index, _types=types, _result=result_type):
+                if not self._active:
+                    raise RuntimeError("host calls require an active serverlet handler")
+                if len(values) != len(_types):
+                    raise TypeError("wrong host argument count")
+                payload = _encode(int, _index) + b"".join(_encode(t, v) for t, v in zip(_types, values))
+                self._next_id = (self._next_id + 1) & 0xffffffff
+                _write_frame(self._writer, 6, self._next_id, payload)
+                reply = _read_frame(self._reader)
+                if reply is None or reply[:2] != (7, self._next_id):
+                    raise RuntimeError("invalid HOST_REPLY")
+                data = _Reader(reply[2])
+                if not data.value(bool):
+                    error = data.value(str)
+                    data.finish()
+                    raise RuntimeError(error)
+                value = None if _result is type(None) else data.value(_result)
+                data.finish()
+                return value
+            setattr(getattr(self, group), method, invoke)

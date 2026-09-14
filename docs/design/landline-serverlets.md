@@ -1,7 +1,7 @@
 # Landline Serverlets — Design & Build Plan
 
-> Status: **🚧 IN PROGRESS — build steps 1–5 implemented for Python pipes. Host integration and other runtimes remain planned.** The [Python SDK guide](../../sdk/python/README.md) describes the implemented subset;
-> later syntax, host callbacks, and embedded runtimes below remain proposals. What *is* settled: a serverlet's handler bodies can be written in
+> Status: **🚧 IN PROGRESS — build steps 1–7 implemented: Python pipes, Rust library mode, and host callbacks. Tick policies and other runtimes remain planned.** The [Python SDK guide](../../sdk/python/README.md) describes the implemented subset;
+> the [library guide](../library-mode.md) describes host integration. Timing policies and embedded runtimes below remain proposals. What *is* settled: a serverlet's handler bodies can be written in
 > another language and run behind a **landline** (a connection with no sockets);
 > OrchestrateLang can build as a Rust library that a host application links; and the
 > design has to serve both event-driven and high-frequency calls.
@@ -227,6 +227,11 @@ Rule of thumb:
 
 ## 6. Library mode
 
+Implemented API and packaging: [library-mode.md](../library-mode.md). The sketch below
+is the longer-term direction; current `start` returns a Result, `tick(dt)` and
+`shutdown()` are async, and batching/budgets are not implemented yet. Assets are
+embedded and extracted per instance rather than copied beside the host binary.
+
 Today `orchestrate build` produces a program that owns `main` (`#[tokio::main]`) and
 `stop_orch()` calls `std::process::exit`. A host application — a game engine, a
 simulation, a desktop app — owns its own main loop, so:
@@ -283,8 +288,8 @@ simulation, a desktop app — owns its own main loop, so:
 
 Frame: `[u32 length][u8 kind][u32 call_id][payload]`, little-endian. Length
 covers the kind, call ID, and payload (not the length prefix). Implemented kind IDs
-are HELLO=1, READY=2, CALL=3, REPLY=4, ERROR=5, BYE=8; 6, 7, and 9 are reserved
-for HOST_CALL, HOST_REPLY, and TICK.
+are HELLO=1, READY=2, CALL=3, REPLY=4, ERROR=5, HOST_CALL=6, HOST_REPLY=7,
+BYE=8; TICK=9 remains reserved.
 
 For secret serverlets, HELLO uses call ID 0 and encodes an i64 version followed by
 an array of signature strings such as `echo(int)->int`, in declaration order.
@@ -309,7 +314,13 @@ Values: `int` as i64, `float` as f64, `bool` as u8, `string` as u32 length + UTF
 arrays as u32 count + elements, and structs as fields in declaration order.
 
 Secret serverlets currently log handler errors and return the return type’s default value;
-state mutations before a panic persist. Host-call and tick kinds remain reserved.
+state mutations before a panic persist. TICK remains reserved.
+
+For Python host integration, READY carries an array of granted signatures such as
+`world.record(int)->int` (an empty payload remains valid for no grants). HOST_CALL
+contains an i64 index into that grant list followed by typed arguments. HOST_REPLY
+echoes the host call ID and contains a bool success flag, then the return value on
+success or a string on failure. Host call IDs are independent of CALL IDs.
 
 A foreign exception becomes an `ERROR` reply that the caller receives as an error. A
 dead process triggers `on_crash` and the serverlet's restart policy.
@@ -334,8 +345,8 @@ feature.
 
 **v0.3.0 — host integration**
 
-6. **Library mode** (`build --lib`, `start` / `tick` / `shutdown`, `on_tick`).
-7. **Host API + grants** (`host` blocks, `grant call`, `HOST_CALL` frames).
+6. **[IMPLEMENTED] Library mode** (`build --lib`, `start` / `tick` / `shutdown`, `on_tick`).
+7. **[IMPLEMENTED] Host API + grants** (`host` blocks, `grant call`, `HOST_CALL` frames).
 8. **Tick batching, budgets, and late-result policy.**
 9. **Benchmark harness** — round-trip latency, including the slow tail, per runtime and
    payload size.

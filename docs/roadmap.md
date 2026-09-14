@@ -137,7 +137,7 @@ Given the combined scope of these four features, recommend picking **one end-to-
 1. ~~**PROM** first — smallest, self-contained, validates registry plumbing.~~ **[SHIPPED]**
 2. ~~**Loaded foreign Rust module** (1b, Rust only) — validates the "non-OrchestrateLang module" pattern with the lowest possible risk (no FFI, no embedded interpreter).~~ **[SHIPPED]**
 3. ~~**Loaded foreign C/C++ module** (1b, C and C++) — via `.orch_ffi` sidecar and `cc-rs`.~~ **[SHIPPED]**
-4. **Landline serverlets** — [build plan](design/landline-serverlets.md): Python pipe landlines are implemented, including prerequisites, protocol v1, declarations, SDK, and portable bundles (steps 1–5). Next: library mode and host integration (steps 6–9). This supersedes the subprocess+JSON sketch.
+4. **Landline serverlets** — [build plan](design/landline-serverlets.md): Python pipe landlines are implemented, including prerequisites, protocol v1, declarations, SDK, and portable bundles (steps 1–5). Library mode and host callbacks are also implemented (steps 6–7); next are tick batching/budgets and benchmarks (steps 8–9). This supersedes the subprocess+JSON sketch.
 5. **OPM (git-based, no hosted index)** — builds on PROM's name→location mapping.
 6. **Sandboxed serverlets (wasmtime)** — largest single feature; benefits from #4's pattern and gives OPM a security story.
 

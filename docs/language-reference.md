@@ -1065,6 +1065,24 @@ shutdown, and limitations, and [the example](../examples/python_landline.orch).
 
 ---
 
+## Rust Library Mode and Host Functions
+
+`orchestrate build --lib main.orch -o generated/scripts` emits a Rust crate with a
+`Host` trait and `start`, `Scripts::ready`, `tick`, `stop_requested`, and `shutdown`.
+`on_tick(dt: float) { ... }` runs when the Rust host awaits a tick. In library mode,
+`stop_orch()` sets an instance-local flag; it never exits the host process.
+
+Declare callback signatures in `host world { fn record(n: int) -> int }` and grant
+individual landlines access with `grant call world.record`. Python handlers invoke
+`self.host.world.record(n)`. Ungranted IDs are rejected before dispatch. Rust trait
+methods are named `world_record` and return `Result<T, String>`.
+
+See [library-mode.md](library-mode.md) for lifecycle ordering, async APIs, packaging,
+errors, instance isolation, and limitations. Host declarations and `on_tick` require
+library builds; timing budgets and tick batching remain planned.
+
+---
+
 # Part II — Internals Manual
 
 > *For contributors to the OrchestrateLang compiler and curious developers who want to understand what runs beneath the syntax.*

@@ -9,6 +9,7 @@ pub struct TypeChecker {
     pub struct_defs: HashMap<String, Vec<(String, Type)>>,
     pub enum_defs: HashMap<String, Vec<EnumVariant>>,
     current_return_type: Option<Type>,
+    host_groups: HashSet<String>,
     pub type_map: HashMap<(usize, usize), Type>,  // (line, col) → inferred type
 }
 
@@ -22,6 +23,7 @@ impl TypeChecker {
             struct_defs: HashMap::new(),
             enum_defs: HashMap::new(),
             current_return_type: None,
+            host_groups: HashSet::new(),
             type_map: HashMap::new(),
         };
 
@@ -42,6 +44,17 @@ impl TypeChecker {
     }
 
     pub fn type_check(&mut self, stmts: &[Stmt]) -> Result<(), String> {
+        for stmt in stmts {
+            if let StmtNode::Host { name, functions } = &stmt.node {
+                if !self.host_groups.insert(name.clone()) { return Err(format!("Duplicate host group '{}'", name)); }
+                for f in functions {
+                    let key = format!("{}::{}", name, f.name);
+                    if self.functions.insert(key, (f.params.iter().map(|p| p.ty.clone()).collect(), f.return_type.clone())).is_some() {
+                        return Err(format!("Duplicate host function '{}.{}'", name, f.name));
+                    }
+                }
+            }
+        }
         // First pass: register all top-level declarations for forward references
         for stmt in stmts {
             match &stmt.node {
@@ -322,7 +335,13 @@ impl TypeChecker {
             StmtNode::Break | StmtNode::Continue => {}
             StmtNode::UseModule { .. } | StmtNode::Load { .. } | StmtNode::LoadForeign { .. } |
             StmtNode::StructDef { .. } | StmtNode::EnumDef { .. } => {}
-            StmtNode::Serverlet { state, handlers, crash_handler, landline, .. } => {
+            StmtNode::Serverlet { state, handlers, crash_handler, landline, grants, .. } => {
+                let mut seen = HashSet::new();
+                for grant in grants {
+                    if !seen.insert(grant) || !self.functions.contains_key(&grant.replace(".", "::")) || !self.host_groups.contains(grant.split('.').next().unwrap()) {
+                        return Err(format!("Unknown or duplicate host grant '{}'", grant));
+                    }
+                }
                 if landline.is_some() {
                     let structs = self.struct_defs.iter().map(|(n, f)| (n.clone(), f.clone())).collect::<Vec<_>>();
                     if let Some(reason) = crate::codegen::stmt::wire_unsupported_reason(handlers, &structs) {
@@ -354,6 +373,16 @@ impl TypeChecker {
                     self.infer_expr(handler_body)?;
                     self.pop_env();
                 }
+                self.pop_env();
+            }
+            StmtNode::Host { functions, .. } => {
+                let structs = self.struct_defs.iter().map(|(n,f)| (n.clone(),f.clone())).collect::<Vec<_>>();
+                if let Some(reason) = crate::codegen::stmt::wire_unsupported_reason(functions, &structs) { return Err(reason); }
+            }
+            StmtNode::OnTick { param, body } => {
+                self.push_env();
+                self.define_var(param.clone(), Type::Float);
+                self.infer_expr(body)?;
                 self.pop_env();
             }
             StmtNode::OnStart(expr) | StmtNode::OnStop(expr) => {
@@ -724,8 +753,14 @@ impl TypeChecker {
                             expr.span.line, expr.span.col, module_local_name, function, expected_args.len(), args.len()
                         ));
                     }
+                    if self.host_groups.contains(module_local_name) {
+                        for (expected, actual) in expected_args.iter().zip(&arg_types) {
+                            if !self.types_compatible(expected, actual) { return Err(format!("Host argument type mismatch for {}.{}", module_local_name, function)); }
+                        }
+                    }
                     return Ok(ret_ty);
                 }
+                if self.host_groups.contains(module_local_name) { return Err(format!("Unknown host function {}.{}", module_local_name, function)); }
 
                 let suffix = format!("::{}", function);
                 let mut found_ret = None;

@@ -1,0 +1,14 @@
+host world {
+    fn record(value: int) -> int
+}
+
+serverlet Counter via python(source: "counter.py") {
+    grant call world.record
+    on tick() -> int
+}
+
+let counter = start Counter()
+on_start { print("scripts started") }
+on_tick(dt: float) { print(to_string(counter.tick())) }
+on_stop { print("scripts stopped") }
+orchestrator main() {}

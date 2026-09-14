@@ -100,7 +100,7 @@ const ORCH_KIND_READY: u8 = 2;
 const ORCH_KIND_CALL: u8 = 3;
 const ORCH_KIND_REPLY: u8 = 4;
 const ORCH_KIND_ERROR: u8 = 5;
-// 6 = HOST_CALL, 7 = HOST_REPLY, and 9 = TICK are reserved for landline serverlets.
+// 6 = HOST_CALL and 7 = HOST_REPLY carry landline host callbacks; 9 = TICK is reserved.
 const ORCH_KIND_BYE: u8 = 8;
 
 struct OrchFrame {

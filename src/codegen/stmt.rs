@@ -32,6 +32,7 @@ impl Codegen {
             StmtNode::Break => "break".to_string(),
             StmtNode::Continue => "continue".to_string(),
             StmtNode::Expr(expr) => self.compile_expr(expr),
+            StmtNode::Host { .. } | StmtNode::OnTick { .. } => String::new(),
             StmtNode::OnStart(expr) => {
                 let inner = self.compile_expr(expr);
                 format!("// OnStart\n{}", inner)
@@ -116,6 +117,7 @@ impl Codegen {
                     let mut exec_code = Vec::new();
                     let local_stmts = self.local_stmts.clone();
                     for s in &local_stmts {
+                        if self.library && matches!(&s.node, StmtNode::OnStart(_) | StmtNode::OnStop(_) | StmtNode::OnTick { .. }) { continue; }
                         let mut compiled = self.compile_stmt(s);
 
                         let mut is_auto_let = false;
@@ -128,7 +130,7 @@ impl Codegen {
                         }
 
                         if let StmtNode::Expr(crate::ast::Spanned { node: ExprNode::TriggeredBlock { .. }, .. }) = &s.node {
-                            compiled = format!("({});", compiled);
+                            compiled = if self.library { format!("({})();", compiled) } else { format!("({});", compiled) };
                         } else if !compiled.ends_with(';') && !compiled.ends_with('}') {
                             compiled.push(';');
                         }
@@ -284,6 +286,9 @@ impl Codegen {
                         }
                     }
 
+                    if self.library {
+                        return self.library_entry(&helper_fn, &decl_body_str, &exec_body_str, &args_str);
+                    }
                     let mut main_body = String::new();
                     if !decl_body_str.is_empty() {
                         main_body.push_str(&decl_body_str);
@@ -409,7 +414,7 @@ impl Codegen {
                 format!("mod {};", local_name)
             }
             StmtNode::Load { .. } | StmtNode::LoadForeign { .. } => "".to_string(),
-            StmtNode::Serverlet { name, state, handlers, secret, crash_handler, sandbox, landline } => {
+            StmtNode::Serverlet { name, state, handlers, secret, crash_handler, sandbox, landline, grants } => {
                 // Sandboxed serverlet: stash a WASM guest crate (compiled by the
                 // driver). The orchestrator still runs the serverlet in-process for
                 // now — host integration is step 3 — and the driver warns about it.
@@ -464,7 +469,7 @@ impl Codegen {
                 );
 
                 if landline.is_some() {
-                    let start_fn = self.compile_python_mirror(name, handlers, crash_handler);
+                    let start_fn = self.compile_python_mirror(name, handlers, crash_handler, grants);
                     return format!("{}\n\n{}\n\n{}", msg_enum, client_struct, start_fn);
                 }
 
@@ -515,7 +520,13 @@ impl Codegen {
                 }
 
                 if *secret {
-                    let start_fn = self.compile_secret_mirror(name, handlers);
+                    let mut start_fn = self.compile_secret_mirror(name, handlers);
+                    if self.library {
+                        start_fn = start_fn.replace("tokio::spawn(", "__ORCH_LINE_SPAWN(")
+                            .replace("let __dir = __exe.parent().expect(\"exe dir\").to_path_buf();", "let __dir = crate::__orch_context().assets.clone();")
+                            .replace("__secret_read_frame(", "crate::__orch_read_frame(")
+                            .replace("rx.recv().await", "crate::__orch_recv(&mut rx).await");
+                    }
                     let child_program = self.compile_secret_program(name, state, handlers);
                     self.secret_programs.push((format!("secret_{}", name), child_program));
                     return format!("{}\n\n{}\n\n{}", msg_enum, client_struct, start_fn);

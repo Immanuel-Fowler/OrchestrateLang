@@ -179,6 +179,9 @@ impl Codegen {
             ExprNode::ModuleCall { module_local_name, function, args } => {
                 let args_str = args.iter().map(|a| self.compile_expr(a)).collect::<Vec<String>>().join(", ");
 
+                if self.library && self.host_functions.iter().any(|(g, h)| g == module_local_name && h.name == *function) {
+                    return format!("crate::__orch_context().host.{}({}).unwrap_or_else(|error| {{ eprintln!(\"[orchestrate] host call failed: {{}}\", error); Default::default() }})", Self::host_method(module_local_name, function), args_str);
+                }
                 if self.modules.contains(module_local_name) {
                     let full_name = format!("{}::{}", module_local_name, function);
                     if self.tasks.contains(&full_name) && !self.in_parallel {

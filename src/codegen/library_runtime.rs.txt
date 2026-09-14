@@ -1,0 +1,163 @@
+pub trait Host: Send + Sync + 'static {
+@HOST_METHODS@
+}
+
+struct OrchContext {
+    host: std::sync::Arc<dyn Host>,
+    stop_requested: std::sync::atomic::AtomicBool,
+    closing: tokio::sync::watch::Sender<bool>,
+    shutdown: tokio::sync::watch::Sender<bool>,
+    tasks: std::sync::Mutex<Vec<(tokio::task::AbortHandle, bool)>>,
+    active: std::sync::atomic::AtomicUsize,
+    idle: tokio::sync::Notify,
+    assets: std::path::PathBuf,
+@EVENT_FIELDS@
+}
+tokio::task_local! { static ORCH_CONTEXT: std::sync::Arc<OrchContext>; }
+fn __orch_context() -> std::sync::Arc<OrchContext> { ORCH_CONTEXT.with(Clone::clone) }
+fn stop_orch() { __orch_context().stop_requested.store(true, std::sync::atomic::Ordering::Release); }
+
+struct OrchTaskGuard(std::sync::Arc<OrchContext>);
+impl Drop for OrchTaskGuard {
+    fn drop(&mut self) {
+        self.0.active.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        self.0.idle.notify_one();
+    }
+}
+fn __orch_spawn<F>(future: F) -> tokio::task::JoinHandle<F::Output>
+where F: std::future::Future + Send + 'static, F::Output: Send + 'static {
+    __orch_spawn_kind(future, false)
+}
+fn __orch_spawn_line<F>(future: F) -> tokio::task::JoinHandle<F::Output>
+where F: std::future::Future + Send + 'static, F::Output: Send + 'static {
+    __orch_spawn_kind(future, true)
+}
+fn __orch_spawn_kind<F>(future: F, line: bool) -> tokio::task::JoinHandle<F::Output>
+where F: std::future::Future + Send + 'static, F::Output: Send + 'static {
+    let context = __orch_context();
+    context.active.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    let guard = OrchTaskGuard(context.clone());
+    let task = tokio::spawn(ORCH_CONTEXT.scope(context.clone(), async move {
+        let _guard = guard;
+        future.await
+    }));
+    let mut tasks = context.tasks.lock().unwrap();
+    tasks.retain(|(task, _)| !task.is_finished());
+    if *context.closing.borrow() { task.abort(); }
+    tasks.push((task.abort_handle(), line));
+    task
+}
+async fn __orch_recv<T>(rx: &mut tokio::sync::mpsc::Receiver<T>) -> Option<T> {
+    let context = __orch_context();
+    let mut closing = context.closing.subscribe();
+    if *closing.borrow() { return None; }
+    tokio::select! { biased; _ = closing.changed() => None, value = rx.recv() => value }
+}
+async fn __orch_read_frame<R: tokio::io::AsyncReadExt + Unpin>(reader: &mut R) -> std::io::Result<Option<OrchFrame>> {
+    let context = __orch_context();
+    let mut closing = context.closing.subscribe();
+    if *closing.borrow() { return Ok(None); }
+    tokio::select! { biased; _ = closing.changed() => Ok(None), result = __secret_read_frame(reader) => result }
+}
+impl OrchContext {
+    async fn cleanup(&self) {
+        self.closing.send_replace(true);
+        for (task, line) in self.tasks.lock().unwrap().iter() { if !line { task.abort(); } }
+        let drained = async {
+            loop {
+                let notified = self.idle.notified();
+                if self.active.load(std::sync::atomic::Ordering::Acquire) == 0 { break; }
+                notified.await;
+            }
+        };
+        if tokio::time::timeout(std::time::Duration::from_secs(3), drained).await.is_err() {
+            for (task, _) in self.tasks.lock().unwrap().iter() { task.abort(); }
+            while self.active.load(std::sync::atomic::Ordering::Acquire) != 0 { self.idle.notified().await; }
+        }
+        let _ = std::fs::remove_dir_all(&self.assets);
+    }
+}
+
+enum OrchCommand {
+    Tick(f64, tokio::sync::oneshot::Sender<()>),
+    Shutdown,
+}
+pub struct Scripts {
+    commands: tokio::sync::mpsc::UnboundedSender<OrchCommand>,
+    ready: Option<tokio::sync::oneshot::Receiver<()>>,
+    supervisor: Option<tokio::task::JoinHandle<Result<(), String>>>,
+    context: std::sync::Arc<OrchContext>,
+}
+impl Scripts {
+    /// Wait until top-level state and on_start have initialized.
+    pub async fn ready(&mut self) -> Result<(), String> {
+        if let Some(ready) = self.ready.take() {
+            ready.await.map_err(|_| "library startup task failed".to_string())?;
+        }
+        Ok(())
+    }
+    /// Run every on_tick hook once, in declaration order. Tick batching and per-call
+    /// budgets are not yet provided.
+    pub async fn tick(&mut self, dt: f64) -> Result<(), String> {
+        self.ready().await?;
+        if self.stop_requested() { return Err("orchestration requested stop".into()); }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.commands.send(OrchCommand::Tick(dt, tx)).map_err(|_| "library is stopped")?;
+        rx.await.map_err(|_| "tick task failed".into())
+    }
+    pub fn stop_requested(&self) -> bool {
+        self.context.stop_requested.load(std::sync::atomic::Ordering::Acquire)
+    }
+    /// Run on_stop, close sidecars, and await owned task cleanup. Does not stop Tokio.
+    pub async fn shutdown(mut self) -> Result<(), String> {
+        self.context.shutdown.send_replace(true);
+        let _ = self.commands.send(OrchCommand::Shutdown);
+        self.supervisor.take().unwrap().await.map_err(|e| e.to_string())?
+    }
+}
+impl Drop for Scripts {
+    fn drop(&mut self) { self.context.shutdown.send_replace(true); let _ = self.commands.send(OrchCommand::Shutdown); }
+}
+
+pub fn start(runtime: &tokio::runtime::Handle, host: impl Host) -> Result<Scripts, String> {
+    static NEXT_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let assets = loop {
+        let id = NEXT_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("orch_library_{}_{}", std::process::id(), id));
+        match std::fs::create_dir(&path) {
+            Ok(()) => break path,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    };
+    for (name, contents) in ORCH_ASSETS {
+        let path = assets.join(name);
+        let result = std::fs::create_dir_all(path.parent().unwrap()).and_then(|_| std::fs::write(&path, contents));
+        if let Err(e) = result { let _ = std::fs::remove_dir_all(&assets); return Err(e.to_string()); }
+        #[cfg(unix)]
+        if name.starts_with("secret_") {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)) {
+                let _ = std::fs::remove_dir_all(&assets); return Err(e.to_string());
+            }
+        }
+    }
+    let (closing, _) = tokio::sync::watch::channel(false);
+    let (shutdown, _) = tokio::sync::watch::channel(false);
+    let context = std::sync::Arc::new(OrchContext {
+        host: std::sync::Arc::new(host), stop_requested: false.into(), closing, shutdown,
+        tasks: Default::default(), active: 0.into(), idle: tokio::sync::Notify::new(), assets,
+@EVENT_INIT@
+    });
+    let (commands, rx) = tokio::sync::mpsc::unbounded_channel();
+    let (ready_tx, ready) = tokio::sync::oneshot::channel();
+    let coordinator = runtime.spawn(ORCH_CONTEXT.scope(context.clone(), __orch_entry(rx, ready_tx)));
+    let cleanup_context = context.clone();
+    let supervisor = runtime.spawn(async move {
+        let result = coordinator.await.map_err(|e| e.to_string());
+        cleanup_context.cleanup().await;
+        result
+    });
+    Ok(Scripts { commands, ready: Some(ready), supervisor: Some(supervisor), context })
+}
+include!("assets.rs");

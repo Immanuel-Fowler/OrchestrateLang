@@ -97,7 +97,23 @@ impl Parser {
     fn parse_statement(&mut self) -> Result<Stmt, String> {
         let start_tok = self.peek().clone();
         let span = Span::new(start_tok.line, start_tok.col);
-        let node = if self.match_token(TokenKind::Use) {
+        let node = if matches!(&self.peek().kind, TokenKind::Identifier(s) if s == "host") {
+            self.advance();
+            let name = self.parse_ident("host group")?;
+            self.consume(TokenKind::LBrace, "Expected '{' after host group")?;
+            let mut functions = Vec::new();
+            while self.match_token(TokenKind::Fn) { functions.push(self.parse_handler(true)?); }
+            self.consume(TokenKind::RBrace, "Expected '}' after host functions")?;
+            StmtNode::Host { name, functions }
+        } else if matches!(&self.peek().kind, TokenKind::Identifier(s) if s == "on_tick") {
+            self.advance();
+            self.consume(TokenKind::LParen, "Expected '(' after on_tick")?;
+            let param = self.parse_ident("tick parameter")?;
+            self.consume(TokenKind::Colon, "Expected ':' after tick parameter")?;
+            if self.parse_type()? != Type::Float { return Err("on_tick parameter must be float".into()); }
+            self.consume(TokenKind::RParen, "Expected ')' after tick parameter")?;
+            StmtNode::OnTick { param, body: self.parse_block()? }
+        } else if self.match_token(TokenKind::Use) {
             self.parse_use_statement()?
         } else if self.match_token(TokenKind::Load) {
             self.parse_load_statement()?
@@ -183,6 +199,13 @@ impl Parser {
         Ok(StmtNode::LoadForeign { language, path })
     }
 
+    fn parse_ident(&mut self, what: &str) -> Result<String, String> {
+        match self.advance().kind.clone() {
+            TokenKind::Identifier(name) => Ok(name),
+            _ => Err(format!("Expected identifier for {}", what)),
+        }
+    }
+
     fn parse_serverlet_statement(&mut self) -> Result<StmtNode, String> {
         let tok_ident = self.advance().clone();
         let name = match &tok_ident.kind {
@@ -232,9 +255,19 @@ impl Parser {
         self.consume(TokenKind::LBrace, "Expected '{' to start serverlet body")?;
         let mut state = Vec::new();
         let mut handlers = Vec::new();
+        let mut grants = Vec::new();
         let mut crash_handler: Option<(String, Box<Expr>)> = None;
         while self.peek().kind != TokenKind::RBrace && self.peek().kind != TokenKind::EOF {
-            if self.match_token(TokenKind::Let) {
+            if matches!(&self.peek().kind, TokenKind::Identifier(s) if s == "grant") {
+                self.advance();
+                if landline.is_none() { return Err("grant requires a landline serverlet".into()); }
+                if self.parse_ident("call")? != "call" { return Err("Expected 'grant call'".into()); }
+                let group = self.parse_ident("host group")?;
+                self.consume(TokenKind::Dot, "Expected '.' in host grant")?;
+                let function = self.parse_ident("host function")?;
+                grants.push(format!("{}.{}", group, function));
+                let _ = self.match_token(TokenKind::Semicolon);
+            } else if self.match_token(TokenKind::Let) {
                 if landline.is_some() { return Err("Landline state belongs in the Python implementation".into()); }
                 let start_tok = self.peek().clone();
                 let span = Span::new(start_tok.line, start_tok.col);
@@ -257,7 +290,7 @@ impl Parser {
             }
         }
         self.consume(TokenKind::RBrace, "Expected '}' to end serverlet body")?;
-        Ok(StmtNode::Serverlet { name, state, handlers, secret, crash_handler, sandbox, landline })
+        Ok(StmtNode::Serverlet { name, state, handlers, secret, crash_handler, sandbox, landline, grants })
     }
 
     fn parse_sandbox_config(&mut self) -> Result<crate::ast::SandboxConfig, String> {

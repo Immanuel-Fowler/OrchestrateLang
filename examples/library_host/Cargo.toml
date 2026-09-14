@@ -1,0 +1,9 @@
+[package]
+name = "library_host_example"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+scripts = { path = "generated/scripts" }
+tokio = { version = "1.35", features = ["full"] }

@@ -69,4 +69,8 @@ There is no configurable restart policy yet.
 Dropping all client handles sends BYE and allows two seconds for shutdown before
 terminating the child. `stop_orch()` still exits the whole orchestrator immediately.
 Pipe landlines run as the same OS user; they provide no sandbox containment.
-Host callbacks, library mode, tick budgets, and embedded runtimes are later work.
+Library mode and granted host callbacks are documented in [library-mode.md](../../docs/library-mode.md). Tick budgets and embedded runtimes remain later work.
+
+In library mode, a handler may call `self.host.group.function(...)` for functions
+listed in its `.orch` `grant call` declarations. Host errors raise `RuntimeError`.
+Calls require an active handler; constructors cannot call back into the host.

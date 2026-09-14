@@ -230,3 +230,14 @@ orchestrator main() {
 "#;
     assert_snapshot("python_landline", &compile_to_rust(source));
 }
+
+#[test]
+fn snapshot_library_lifecycle() {
+    let source = "on_start { print(\"start\") } on_tick(dt: float) { stop_orch() } on_stop { print(\"stop\") }";
+    let mut parser = parser::Parser::new(lexer::Lexer::new(source).tokenize().unwrap());
+    let ast = parser.parse().unwrap();
+    typechecker::TypeChecker::new().type_check(&ast).unwrap();
+    let mut generator = codegen::Codegen::new(std::collections::HashSet::new());
+    generator.library = true;
+    assert_snapshot("library_lifecycle", &generator.generate(&ast, true));
+}
