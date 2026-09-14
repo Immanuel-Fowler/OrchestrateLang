@@ -214,3 +214,19 @@ orchestrator main() {
 "#;
     assert_snapshot("sandbox_guest", &compile_sandbox_guest(src));
 }
+
+
+#[test]
+fn snapshot_python_landline() {
+    let source = r#"
+serverlet Counter via python(source: "counter.py") {
+    on add(n: int) -> int
+}
+orchestrator main() {
+    let c = start Counter()
+    print(to_string(c.add(2)))
+    stop_orch()
+}
+"#;
+    assert_snapshot("python_landline", &compile_to_rust(source));
+}

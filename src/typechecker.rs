@@ -322,7 +322,17 @@ impl TypeChecker {
             StmtNode::Break | StmtNode::Continue => {}
             StmtNode::UseModule { .. } | StmtNode::Load { .. } | StmtNode::LoadForeign { .. } |
             StmtNode::StructDef { .. } | StmtNode::EnumDef { .. } => {}
-            StmtNode::Serverlet { state, handlers, crash_handler, .. } => {
+            StmtNode::Serverlet { state, handlers, crash_handler, landline, .. } => {
+                if landline.is_some() {
+                    let structs = self.struct_defs.iter().map(|(n, f)| (n.clone(), f.clone())).collect::<Vec<_>>();
+                    if let Some(reason) = crate::codegen::stmt::wire_unsupported_reason(handlers, &structs) {
+                        return Err(reason.replace("secret serverlets", "landline serverlets"));
+                    }
+                    let mut names = std::collections::HashSet::new();
+                    for h in handlers {
+                        if !names.insert(&h.name) { return Err(format!("Duplicate landline handler '{}'", h.name)); }
+                    }
+                }
                 self.push_env();
                 for s in state {
                     self.check_stmt(s)?;

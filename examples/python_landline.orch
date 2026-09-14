@@ -1,0 +1,11 @@
+// Run with Python 3.10+ installed, or set ORCH_PYTHON to its executable.
+serverlet Counter via python(source: "./python/counter.py") {
+    on add(amount: int) -> int
+}
+
+orchestrator main() {
+    let counter = start Counter()
+    print(to_string(counter.add(3)))
+    print(to_string(counter.add(4)))
+    stop_orch()
+}

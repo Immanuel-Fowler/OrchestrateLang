@@ -1032,6 +1032,39 @@ spawn it on first use and shut it down when the orchestrator stops.
 ---
 ---
 
+## Python Landline Serverlets
+
+A landline declares handlers whose implementations run in a long-lived Python process:
+
+```orchestrate
+serverlet Counter via python(source: "./counter.py", line: "pipe") {
+    on add(n: int) -> int
+}
+```
+
+`line: "pipe"` is optional and is the only supported transport. Handler declarations
+have no bodies; state lives in Python. Callers use `start Counter()` and
+`counter.add(...)` as with other serverlets. `secret` and `sandbox` cannot be combined
+with `via`. The compiler rejects unsupported wire types and duplicate handlers.
+
+Python 3.10+ is required (`python3`, or the executable specified by `ORCH_PYTHON`).
+Implement annotated synchronous methods using the bundled `orchestratelang.landline`
+SDK. The startup handshake checks protocol version and ordered handler signatures.
+The SDK supports primitive values, lists, and dataclasses matching same-file structs.
+
+Exceptions log errors and return default values while preserving process state.
+A process failure during a call invokes `on_crash`, returns a default without replaying
+the failed call, and restarts with fresh state. Startup failures close the client and
+log a diagnostic. There are no per-call budgets or configurable restart policies yet.
+
+`source` is relative to its declaring file. Builds copy the declared source and SDK
+into `landline_<Name>/` beside the binary; distribute that directory too. External
+Python dependencies must be installed separately. These processes are not sandboxed.
+See the [Python SDK guide](../sdk/python/README.md) for exact type mappings, packaging,
+shutdown, and limitations, and [the example](../examples/python_landline.orch).
+
+---
+
 # Part II — Internals Manual
 
 > *For contributors to the OrchestrateLang compiler and curious developers who want to understand what runs beneath the syntax.*

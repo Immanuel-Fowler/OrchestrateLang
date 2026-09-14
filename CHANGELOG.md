@@ -10,6 +10,10 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 ## [Unreleased]
 
 ### Added
+- Python pipe landlines: `via python(source: "...")` declarations, a bundled typed
+  Python SDK, interface checks, persistent state, exception replies, `on_crash`
+  recovery after transport failure, and source/SDK bundles beside built binaries.
+  Python 3.10+ is required; `ORCH_PYTHON` selects the executable.
 - Unary minus (`-x`, `-1.5`) and the `%` operator.
 - Array indexing: `items[i]` reads an element and `items[i] = x` replaces one. The index
   must be an `int`, an out-of-range index panics, and `[` only indexes when it is on the

@@ -1,0 +1,54 @@
+#[allow(non_snake_case)]
+pub fn start_@NAME@() -> @NAME@Client {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<@NAME@Msg>(100);
+    tokio::spawn(async move {
+        let exe = std::env::current_exe().expect("current_exe");
+        let directory = exe.parent().expect("exe directory").join("landline_@NAME@");
+        let mut __next_call = 0u32;
+        'restart: loop {
+            let python = std::env::var_os("ORCH_PYTHON").unwrap_or_else(|| "python3".into());
+            let mut __child = match tokio::process::Command::new(python)
+                .arg("-u").arg(directory.join("main.py"))
+                .kill_on_drop(true)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped()).spawn() {
+                Ok(child) => child,
+                Err(e) => { eprintln!("[orchestrate] cannot start Python landline '@NAME@': {}", e); return; }
+            };
+            let mut __cin = __child.stdin.take().expect("child stdin");
+            let mut __cout = __child.stdout.take().expect("child stdout");
+            let handshake = async {
+                let hello = __secret_read_frame(&mut __cout).await.map_err(|e| e.to_string())?.ok_or("process exited before HELLO")?;
+                if hello.kind != ORCH_KIND_HELLO || hello.call_id != 0 { return Err("expected HELLO".into()); }
+                let mut pos = 0;
+                let version = i64::wire_decode(&hello.payload, &mut pos).ok_or("invalid protocol version")?;
+                let signatures = Vec::<String>::wire_decode(&hello.payload, &mut pos).ok_or("invalid handler signatures")?;
+                let expected: Vec<String> = vec![@SIGNATURES@];
+                if version != ORCH_WIRE_VERSION || signatures != expected || pos != hello.payload.len() {
+                    return Err(format!("interface mismatch: expected protocol {} {:?}, got protocol {} {:?}", ORCH_WIRE_VERSION, expected, version, signatures));
+                }
+                __secret_write_frame(&mut __cin, ORCH_KIND_READY, 0, &[]).await.map_err(|e| e.to_string())
+            };
+            match tokio::time::timeout(std::time::Duration::from_secs(10), handshake).await {
+                Ok(Ok(())) => {},
+                result => {
+                    eprintln!("[orchestrate] landline '@NAME@' startup failed: {:?}", result);
+                    let _ = __child.kill().await;
+                    return;
+                }
+            }
+            while let Some(msg) = rx.recv().await {
+                match msg {
+                    @ARMS@
+                }
+            }
+            let _ = __secret_write_frame(&mut __cin, ORCH_KIND_BYE, 0, &[]).await;
+            drop(__cin);
+            if tokio::time::timeout(std::time::Duration::from_secs(2), __child.wait()).await.is_err() {
+                let _ = __child.kill().await;
+            }
+            break;
+        }
+    });
+    @NAME@Client { tx }
+}

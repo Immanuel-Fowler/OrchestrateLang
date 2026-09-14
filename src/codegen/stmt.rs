@@ -409,7 +409,7 @@ impl Codegen {
                 format!("mod {};", local_name)
             }
             StmtNode::Load { .. } | StmtNode::LoadForeign { .. } => "".to_string(),
-            StmtNode::Serverlet { name, state, handlers, secret, crash_handler, sandbox } => {
+            StmtNode::Serverlet { name, state, handlers, secret, crash_handler, sandbox, landline } => {
                 // Sandboxed serverlet: stash a WASM guest crate (compiled by the
                 // driver). The orchestrator still runs the serverlet in-process for
                 // now — host integration is step 3 — and the driver warns about it.
@@ -462,6 +462,11 @@ impl Codegen {
                     "#[derive(Clone, Debug)]\npub struct {}Client {{\n    tx: tokio::sync::mpsc::Sender<{}Msg>,\n}}\n\nimpl {}Client {{\n{}\n}}",
                     name, name, name, client_methods.join("\n\n")
                 );
+
+                if landline.is_some() {
+                    let start_fn = self.compile_python_mirror(name, handlers, crash_handler);
+                    return format!("{}\n\n{}\n\n{}", msg_enum, client_struct, start_fn);
+                }
 
                 // Build match arms with catch_unwind for panic safety
                 let mut match_arms = Vec::new();

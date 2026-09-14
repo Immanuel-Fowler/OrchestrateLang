@@ -197,19 +197,52 @@ impl Parser {
         if let TokenKind::Identifier(kw) = &self.peek().kind {
             if kw == "sandbox" { self.advance(); sandbox = Some(self.parse_sandbox_config()?); }
         }
+        let mut landline = None;
+        if matches!(&self.peek().kind, TokenKind::Identifier(kw) if kw == "via") {
+            self.advance();
+            if secret || sandbox.is_some() { return Err("via cannot be combined with secret or sandbox".into()); }
+            let runtime = self.advance().clone();
+            if !matches!(&runtime.kind, TokenKind::Identifier(s) if s == "python") {
+                return Err("Only the python landline runtime is supported".into());
+            }
+            self.consume(TokenKind::LParen, "Expected '(' after python")?;
+            let mut source = None;
+            let mut keys = std::collections::HashSet::new();
+            while self.peek().kind != TokenKind::RParen {
+                let key = match self.advance().kind.clone() {
+                    TokenKind::Identifier(s) => s,
+                    _ => return Err("Expected landline config key".into()),
+                };
+                if !keys.insert(key.clone()) { return Err(format!("Duplicate landline config key '{}'", key)); }
+                self.consume(TokenKind::Colon, "Expected ':' after landline config key")?;
+                let value = match self.advance().kind.clone() {
+                    TokenKind::Str(s) => s,
+                    _ => return Err("Expected string landline config value".into()),
+                };
+                match key.as_str() {
+                    "source" if !value.is_empty() => source = Some(value),
+                    "line" if value == "pipe" => {},
+                    _ => return Err(format!("Unsupported landline config '{}': '{}' (expected source or line: \"pipe\")", key, value)),
+                }
+                if !self.match_token(TokenKind::Comma) { break; }
+            }
+            self.consume(TokenKind::RParen, "Expected ')' after landline config")?;
+            landline = Some(crate::ast::LandlineConfig { source: source.ok_or("Python landline requires source")? });
+        }
         self.consume(TokenKind::LBrace, "Expected '{' to start serverlet body")?;
         let mut state = Vec::new();
         let mut handlers = Vec::new();
         let mut crash_handler: Option<(String, Box<Expr>)> = None;
         while self.peek().kind != TokenKind::RBrace && self.peek().kind != TokenKind::EOF {
             if self.match_token(TokenKind::Let) {
+                if landline.is_some() { return Err("Landline state belongs in the Python implementation".into()); }
                 let start_tok = self.peek().clone();
                 let span = Span::new(start_tok.line, start_tok.col);
                 let node = self.parse_let_statement()?;
                 state.push(Spanned { node, span });
                 let _ = self.match_token(TokenKind::Semicolon);
             } else if self.match_token(TokenKind::On) {
-                handlers.push(self.parse_handler()?);
+                handlers.push(self.parse_handler(landline.is_some())?);
             } else if self.match_token(TokenKind::OnCrash) {
                 let err_tok = self.advance().clone();
                 let err_name = match &err_tok.kind {
@@ -224,7 +257,7 @@ impl Parser {
             }
         }
         self.consume(TokenKind::RBrace, "Expected '}' to end serverlet body")?;
-        Ok(StmtNode::Serverlet { name, state, handlers, secret, crash_handler, sandbox })
+        Ok(StmtNode::Serverlet { name, state, handlers, secret, crash_handler, sandbox, landline })
     }
 
     fn parse_sandbox_config(&mut self) -> Result<crate::ast::SandboxConfig, String> {
@@ -255,7 +288,7 @@ impl Parser {
         Ok(crate::ast::SandboxConfig { memory_limit, timeout })
     }
 
-    fn parse_handler(&mut self) -> Result<Handler, String> {
+    fn parse_handler(&mut self, foreign: bool) -> Result<Handler, String> {
         let tok = self.advance().clone();
         let name = match &tok.kind {
             TokenKind::Identifier(s) => s.clone(),
@@ -266,7 +299,11 @@ impl Parser {
         self.consume(TokenKind::RParen, "Expected ')' after parameters")?;
         let mut return_type = Type::Void;
         if self.match_token(TokenKind::Arrow) { return_type = self.parse_type()?; }
-        let body = self.parse_block()?;
+        let body = if foreign {
+            if self.peek().kind == TokenKind::LBrace { return Err("Landline handlers must not have bodies".into()); }
+            let _ = self.match_token(TokenKind::Semicolon);
+            Spanned { node: ExprNode::Block(Vec::new()), span: Span::new(tok.line, tok.col) }
+        } else { self.parse_block()? };
         Ok(Handler { name, params, return_type, body })
     }
 

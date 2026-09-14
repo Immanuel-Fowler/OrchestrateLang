@@ -1,7 +1,7 @@
 # Landline Serverlets — Design & Build Plan
 
-> Status: **🚧 IN PROGRESS — build steps 1–3 implemented; landline syntax and SDKs remain planned.** Syntax, protocol details, and SDK names
-> below are proposals. What *is* settled: a serverlet's handler bodies can be written in
+> Status: **🚧 IN PROGRESS — build steps 1–5 implemented for Python pipes. Host integration and other runtimes remain planned.** The [Python SDK guide](../../sdk/python/README.md) describes the implemented subset;
+> later syntax, host callbacks, and embedded runtimes below remain proposals. What *is* settled: a serverlet's handler bodies can be written in
 > another language and run behind a **landline** (a connection with no sockets);
 > OrchestrateLang can build as a Rust library that a host application links; and the
 > design has to serve both event-driven and high-frequency calls.
@@ -20,7 +20,7 @@
 | **Serverlet** | In-process tokio actor, written in OrchestrateLang | Speed, simplicity | ✅ Shipped |
 | **Secret serverlet** | Separate OS process, written in OrchestrateLang | Secrecy + crash isolation | ✅ Shipped ([secret-serverlets.md](secret-serverlets.md)) |
 | **Sandboxed serverlet** | WASM guest (`wasmtime`) | Containment of hostile code | 🚧 Steps 1–2 of 8 ([sandboxed-serverlets.md](sandboxed-serverlets.md)) |
-| **Landline serverlet** | A foreign runtime — Python, TypeScript, C#, C++ — over a pipe or embedded in-process | **Polyglot handler bodies** | 📋 This doc |
+| **Landline serverlet** | A foreign runtime — Python, TypeScript, C#, C++ — over a pipe or embedded in-process | **Polyglot handler bodies** | ✅ Python pipe; other runtimes planned |
 
 A landline serverlet is the actor-style polyglot path from
 [roadmap.md](../roadmap.md) §1a. It keeps the serverlet contract — callers use the same
@@ -328,8 +328,8 @@ feature.
 2. **[IMPLEMENTED] Structs and arrays over the serverlet wire**, on secret serverlets first, where
    both ends are generated Rust and easy to test.
 3. **[IMPLEMENTED] Protocol v1** with the handshake and interface check; secret serverlets move to it.
-4. **`via python(source: ...)` with body-less handlers** — parser, typechecker, codegen.
-5. **Python SDK + first pipe landline end to end.** *Runtime test: a Python serverlet
+4. **[IMPLEMENTED] `via python(source: ...)` with body-less handlers** — parser, typechecker, codegen.
+5. **[IMPLEMENTED] Python SDK + first pipe landline end to end.** *Runtime test: a Python serverlet
    keeps state across calls, and a renamed handler fails at startup.*
 
 **v0.3.0 — host integration**
@@ -356,6 +356,14 @@ feature.
 ---
 
 ## 9. Definition of done (v0.2.0 slice)
+
+Implemented: Python pipe declarations, typed values, state, signature checking,
+exception replies, process restart after a failed call, portable source/SDK bundles,
+and snapshot/runtime tests. CI installs Python 3.10. The initial restart behavior is
+fixed: invoke `on_crash`, return a default for the failed call without replaying it,
+and restart for subsequent calls. Configurable restart policies remain future work.
+See the [SDK guide](../../sdk/python/README.md) for current limits.
+
 
 - `serverlet X via python(source: "...") { on h(...) -> T }` compiles; callers use
   the unchanged `XClient`.

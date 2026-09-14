@@ -103,6 +103,11 @@ pub struct SandboxConfig {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct LandlineConfig {
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Handler {
     pub name: String,
     pub params: Vec<Param>,
@@ -316,6 +321,7 @@ pub enum StmtNode {
         secret: bool,
         crash_handler: Option<(String, Box<Expr>)>,
         sandbox: Option<SandboxConfig>,
+        landline: Option<LandlineConfig>,
     },
     OnStart(Expr),
     OnStop(Expr),

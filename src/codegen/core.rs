@@ -551,7 +551,7 @@ impl Codegen {
         self.scan_events(stmts);
 
         for stmt in stmts {
-            if let StmtNode::Serverlet { secret: true, .. } = &stmt.node {
+            if matches!(&stmt.node, StmtNode::Serverlet { secret: true, .. } | StmtNode::Serverlet { landline: Some(_), .. }) {
                 self.has_secret = true;
             }
         }

@@ -31,7 +31,8 @@ pub fn compile_module(dir_path: &Path) -> Result<Vec<ast::Stmt>, String> {
     let mut lexer = lexer::Lexer::new(&source);
     let tokens = lexer.tokenize()?;
     let mut parser = parser::Parser::new(tokens);
-    let raw_stmts = parser.parse()?;
+    let mut raw_stmts = parser.parse()?;
+    resolve_landline_sources(&mut raw_stmts, dir_path)?;
     
     let mut merged_stmts = Vec::new();
     for stmt in raw_stmts {
@@ -53,7 +54,8 @@ pub fn resolve_load_recursive(path_str: &str, dir_path: &Path) -> Result<Vec<ast
     let mut sub_lexer = lexer::Lexer::new(&sub_source);
     let sub_tokens = sub_lexer.tokenize()?;
     let mut sub_parser = parser::Parser::new(sub_tokens);
-    let sub_stmts = sub_parser.parse()?;
+    let mut sub_stmts = sub_parser.parse()?;
+    resolve_landline_sources(&mut sub_stmts, sub_file.parent().unwrap_or(dir_path))?;
     
     let mut merged = Vec::new();
     for stmt in sub_stmts {
@@ -141,7 +143,8 @@ pub fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Resu
     let tokens = lexer.tokenize()?;
 
     let mut parser = parser::Parser::new(tokens);
-    let ast = parser.parse()?;
+    let mut ast = parser.parse()?;
+    resolve_landline_sources(&mut ast, input_path.parent().unwrap_or(Path::new(".")))?;
 
     warn_sandbox_serverlets(&ast);
 
@@ -234,6 +237,12 @@ pub fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Resu
         format!("Type Error: {}", lines.join("\n"))
     })?;
 
+    let bundle_dir = cache_dir.join("landlines");
+    if bundle_dir.exists() { fs::remove_dir_all(&bundle_dir).map_err(|e| e.to_string())?; }
+    stage_landlines(&ast, &bundle_dir)?;
+    for (_, stmts, _) in &modules_data {
+        stage_landlines(stmts, &bundle_dir)?;
+    }
     let mut all_secret_programs: Vec<(String, String)> = Vec::new();
     let mut all_sandbox_programs: Vec<(String, String)> = Vec::new();
 
@@ -437,6 +446,7 @@ pub fn run_build(input_file: &str, output_binary: Option<&str>) -> Result<(), St
         }
     }
 
+    copy_landlines(&cache_dir.join("landlines"), &dest_dir)?;
     println!("[orchestrate] Successfully built binary: {}", exe_name);
     Ok(())
 }
@@ -473,6 +483,7 @@ pub fn run_run(input_file: &str) -> Result<(), String> {
     }
     let exe_path = cache_dir.join("target/debug").join(target_exe);
 
+    copy_landlines(&cache_dir.join("landlines"), &cache_dir.join("target/debug"))?;
     let mut child = Command::new(exe_path)
         .spawn()
         .map_err(|e| format!("Failed to execute generated binary: {}", e))?;
@@ -496,7 +507,8 @@ pub fn run_check(input_file: &str) -> Result<(), String> {
     let tokens = lexer.tokenize()?;
 
     let mut parser = parser::Parser::new(tokens);
-    let ast = parser.parse()?;
+    let mut ast = parser.parse()?;
+    resolve_landline_sources(&mut ast, input_path.parent().unwrap_or(Path::new(".")))?;
 
     let mut type_checker = typechecker::TypeChecker::new();
 
@@ -531,5 +543,50 @@ pub fn run_check(input_file: &str) -> Result<(), String> {
     })?;
 
     println!("[orchestrate] {} — no type errors found", input_file);
+    Ok(())
+}
+
+
+/// Resolve relative to the declaring file, including declarations loaded by modules.
+fn resolve_landline_sources(stmts: &mut [ast::Stmt], directory: &Path) -> Result<(), String> {
+    for stmt in stmts {
+        if let ast::StmtNode::Serverlet { landline: Some(config), .. } = &mut stmt.node {
+            let path = directory.join(&config.source).canonicalize()
+                .map_err(|e| format!("Cannot resolve Python source '{}': {}", config.source, e))?;
+            if !path.is_file() { return Err(format!("Python source is not a file: {}", path.display())); }
+            config.source = path.to_str().ok_or("Python source path must be UTF-8")?.to_string();
+        }
+    }
+    Ok(())
+}
+
+fn stage_landlines(stmts: &[ast::Stmt], destination: &Path) -> Result<(), String> {
+    for stmt in stmts {
+        if let ast::StmtNode::Serverlet { name, landline: Some(config), .. } = &stmt.node {
+            let directory = destination.join(format!("landline_{}", name));
+            if directory.exists() { return Err(format!("Landline serverlet names must be unique: '{}'", name)); }
+            let sdk = directory.join("orchestratelang");
+            fs::create_dir_all(&sdk).map_err(|e| e.to_string())?;
+            fs::copy(&config.source, directory.join("implementation.py")).map_err(|e| e.to_string())?;
+            fs::write(directory.join("main.py"), "import os, runpy, sys\nsys.stdout = sys.stderr\nrunpy.run_path(os.path.join(os.path.dirname(__file__), 'implementation.py'), run_name='__main__')\n").map_err(|e| e.to_string())?;
+            fs::write(sdk.join("__init__.py"), include_str!("../sdk/python/orchestratelang/__init__.py")).map_err(|e| e.to_string())?;
+            fs::write(sdk.join("landline.py"), include_str!("../sdk/python/orchestratelang/landline.py")).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn copy_landlines(source: &Path, destination: &Path) -> Result<(), String> {
+    if !source.exists() { return Ok(()); }
+    fs::create_dir_all(destination).map_err(|e| e.to_string())?;
+    for entry in fs::read_dir(source).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let target = destination.join(entry.file_name());
+        if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+            copy_landlines(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), target).map_err(|e| e.to_string())?;
+        }
+    }
     Ok(())
 }
