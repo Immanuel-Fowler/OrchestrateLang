@@ -1,10 +1,14 @@
 # Sandboxed Serverlets — Design & Build Plan
 
-> Status: **design document — implementation not started.** Ships *after* the
-> secret serverlet (`SECRET_SERVERLETS.md`) and *before* finalizing serverlet-file
-> syntax (`SERVERLET_FILES.md`). Goal: run untrusted or semi-trusted serverlet
-> logic with enforced memory and time limits, by wrapping audited sandbox
-> technology (`wasmtime`) — not by building a sandbox ourselves.
+> Status: **🚧 IN PROGRESS — steps 1–2 of 8 shipped.** The `sandbox(...)` syntax
+> parses and validates (step 1), and each sandboxed serverlet's handler logic is
+> now codegen'd into a standalone WASM guest crate that the driver compiles to a
+> `wasm32-wasip1` `.wasm` artifact (step 2). The serverlet still runs **in-process**
+> and the compiler warns loudly that containment is not yet active — the `.wasm` is
+> built but not yet loaded. The heavy lift — running the guest under `wasmtime` with
+> memory/time limits (steps 3–7) — is next. Goal: run untrusted or semi-trusted
+> serverlet logic with enforced limits by wrapping audited sandbox technology
+> (`wasmtime`), not by building a sandbox ourselves.
 
 ---
 
@@ -182,22 +186,30 @@ two sides: the grant declares intent; the wasmtime linker enforces it.
 > `XMsg` / `XClient` codegen this builds on already exists in
 > `src/codegen/stmt.rs`.
 
-1. **Parse `sandbox(...)` — syntax only, no behavior change.**
-   Lexer: `sandbox` contextual keyword. AST: add
-   `sandbox: Option<SandboxConfig>` to `StmtNode::Serverlet` where
-   `SandboxConfig { memory_limit: String, timeout: String }`. Parser: accept
-   `sandbox(memory_limit: "..", timeout: "..")` after the serverlet name.
-   Typechecker: validate the config keys/values are string literals. Codegen:
-   ignore the field for now — a sandboxed serverlet still compiles as a normal
-   serverlet. *Lands the surface syntax; nothing runs in wasm yet. Add a snapshot
-   test proving the AST/codegen are unchanged in behavior.*
+1. ✅ **Parse `sandbox(...)` — syntax only, no behavior change. (DONE)**
+   `sandbox` is a contextual keyword (no reserved word added). AST:
+   `sandbox: Option<SandboxConfig>` on `StmtNode::Serverlet` with
+   `SandboxConfig { memory_limit: String, timeout: String }` (`src/ast.rs`).
+   Parser: `parse_sandbox_config` accepts `sandbox(memory_limit: "..", timeout: "..")`
+   after the serverlet name, rejecting unknown keys (`src/parser.rs`). Codegen
+   currently ignores the field — the serverlet runs **in-process**. To avoid a false
+   sense of safety, the driver emits a **loud warning** that containment is not yet
+   active (`warn_sandbox_serverlets` in `src/driver.rs`). Covered by
+   `test_parser_sandbox_serverlet`. *The `wasm32-wasip1` target is installed and
+   ready for step 2.*
 
-2. **Guest crate codegen (no host integration yet).**
-   For a sandboxed serverlet, emit a standalone Rust crate under
-   `.orch_cache/sandbox_<name>/` whose lib exports one function per handler,
-   bodies = the existing handler codegen, targeting `wasm32-wasip1`. Drive
-   `cargo build --target wasm32-wasip1` from the driver. *Verifiable in isolation:
-   assert the `.wasm` artifact is produced. Primitives only.*
+2. ✅ **Guest crate codegen (no host integration yet). (DONE)**
+   `Codegen::compile_sandbox_guest` (`src/codegen/stmt.rs`) emits a standalone
+   crate `lib.rs` exporting one `#[no_mangle] pub extern "C" fn` per handler, using
+   a leaner preamble (`runtime_preamble(stderr=true, process_ref=false)` — no tokio
+   dependency in the guest). The driver's `build_sandbox_guest` (`src/driver.rs`)
+   writes the sub-crate (`cdylib`) under `.orch_cache/sandbox_<name>/` and runs
+   `cargo build --release --target wasm32-wasip1`, verifying the `.wasm` is produced.
+   Covered by `snapshot_sandbox_guest` and `runtime_sandbox_guest_compiles_to_wasm`
+   (which asserts the artifact exists and the no-isolation warning fires).
+   *Scaffold note:* the guest re-initializes state per call for now; cross-call
+   persistence and actually loading the `.wasm` are step 3. Primitives only
+   (non-primitive handler types emit a clear `compile_error!`).
 
 3. **Host-side wasmtime wiring for primitive handlers.**
    Add `wasmtime` to the generated `Cargo.toml` (only when a sandboxed serverlet

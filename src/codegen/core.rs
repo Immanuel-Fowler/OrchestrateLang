@@ -1,8 +1,13 @@
 use crate::ast::{ExprNode, StmtNode, Expr, Stmt, StringPart, Type};
 use std::collections::HashSet;
 
-pub fn runtime_preamble(print_to_stderr: bool) -> String {
+pub fn runtime_preamble(print_to_stderr: bool, include_process_ref: bool) -> String {
     let print_macro = if print_to_stderr { "eprintln!" } else { "println!" };
+    let process_ref = if include_process_ref {
+        "type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send + Sync + 'static>;\n\n"
+    } else {
+        ""
+    };
     format!(r#"trait OrchAdd<RHS = Self> {{
     type Output;
     fn orch_add(self, rhs: RHS) -> Self::Output;
@@ -64,9 +69,7 @@ fn stop_orch() {{
     std::process::exit(0);
 }}
 
-type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send + Sync + 'static>;
-
-"#, print_macro = print_macro)
+{process_ref}"#, print_macro = print_macro, process_ref = process_ref)
 }
 
 pub const SECRET_MIRROR_HELPERS: &str = r#"async fn __secret_write_frame<W: tokio::io::AsyncWriteExt + Unpin>(w: &mut W, fields: &[String]) -> std::io::Result<()> {
@@ -159,6 +162,9 @@ pub struct Codegen {
     pub events: std::collections::HashMap<String, Vec<Type>>,
     pub local_stmts: Vec<Stmt>,
     pub secret_programs: Vec<(String, String)>,
+    /// WASM guest crates for sandboxed serverlets: (serverlet_name, lib_rs_source).
+    /// The driver writes each as a sub-crate and compiles it to wasm32-wasip1.
+    pub sandbox_programs: Vec<(String, String)>,
     pub has_secret: bool,
 }
 
@@ -174,6 +180,7 @@ impl Codegen {
             local_stmts: Vec::new(),
             secret_programs: Vec::new(),
             has_secret: false,
+            sandbox_programs: Vec::new(),
         }
     }
 
@@ -482,7 +489,7 @@ impl Codegen {
             }
         }
 
-        code.push_str(&runtime_preamble(false));
+        code.push_str(&runtime_preamble(false, true));
 
         if self.has_secret {
             code.push_str(SECRET_MIRROR_HELPERS);

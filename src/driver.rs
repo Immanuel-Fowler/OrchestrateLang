@@ -72,6 +72,63 @@ pub enum ForeignSource {
     Cpp(PathBuf),
 }
 
+/// Warn loudly for any `sandbox(...)` serverlet: parsing/validation is in place,
+/// but WASM containment is not yet implemented, so the serverlet currently runs
+/// in-process WITHOUT isolation. Surfacing this prevents a false sense of safety.
+fn warn_sandbox_serverlets(stmts: &[ast::Stmt]) {
+    for stmt in stmts {
+        if let ast::StmtNode::Serverlet { name, sandbox: Some(_), .. } = &stmt.node {
+            eprintln!(
+                "[orchestrate] warning: serverlet '{}' is declared `sandbox(...)`, but WASM containment is not yet implemented. It currently runs IN-PROCESS WITHOUT ISOLATION. Do not rely on it to contain untrusted code.",
+                name
+            );
+        }
+    }
+}
+
+/// Write a sandboxed serverlet's WASM guest crate under `.orch_cache/sandbox_<name>/`
+/// and compile it to `wasm32-wasip1`. Step 2: this proves the guest builds to a
+/// `.wasm` artifact. The artifact is not yet loaded by the orchestrator (step 3).
+fn build_sandbox_guest(cache_dir: &Path, name: &str, lib_src: &str) -> Result<(), String> {
+    let crate_name = format!("sandbox_{}", name);
+    let crate_dir = cache_dir.join(&crate_name);
+    fs::create_dir_all(crate_dir.join("src"))
+        .map_err(|e| format!("Failed to create sandbox guest crate dir: {}", e))?;
+
+    let cargo_toml = format!(
+        "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\n",
+        crate_name
+    );
+    fs::write(crate_dir.join("Cargo.toml"), cargo_toml)
+        .map_err(|e| format!("Failed to write sandbox guest Cargo.toml: {}", e))?;
+    fs::write(crate_dir.join("src/lib.rs"), lib_src)
+        .map_err(|e| format!("Failed to write sandbox guest lib.rs: {}", e))?;
+
+    println!("[Orchestrate] Compiling sandbox guest '{}' to wasm32-wasip1...", name);
+    let output = Command::new("cargo")
+        .args(["build", "--release", "--target", "wasm32-wasip1", "-q"])
+        .current_dir(&crate_dir)
+        .output()
+        .map_err(|e| format!("Failed to run cargo for sandbox guest '{}': {}", name, e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "Failed to compile sandbox guest '{}' to WASM.\nIs the wasm32-wasip1 target installed? (rustup target add wasm32-wasip1)\n{}",
+            name, stderr
+        ));
+    }
+
+    let wasm_path = crate_dir
+        .join("target/wasm32-wasip1/release")
+        .join(format!("{}.wasm", crate_name));
+    if !wasm_path.exists() {
+        return Err(format!("Sandbox guest '{}' compiled but no .wasm artifact was found at {:?}", name, wasm_path));
+    }
+    println!("[Orchestrate] Sandbox guest '{}' compiled: {:?}", name, wasm_path);
+    Ok(())
+}
+
 pub fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Result<String, String> {
     let input_path = Path::new(input_file);
     let source = fs::read_to_string(input_path)
@@ -85,6 +142,8 @@ pub fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Resu
 
     let mut parser = parser::Parser::new(tokens);
     let ast = parser.parse()?;
+
+    warn_sandbox_serverlets(&ast);
 
     let mut type_checker = typechecker::TypeChecker::new();
 
@@ -116,7 +175,8 @@ pub fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Resu
             };
             
             let module_stmts = compile_module(&module_path)?;
-            
+            warn_sandbox_serverlets(&module_stmts);
+
             for m_stmt in &module_stmts {
                 if let ast::StmtNode::TaskDecl { name, .. } = &m_stmt.node {
                     all_tasks.insert(format!("{}::{}", local_name, name));
@@ -175,11 +235,13 @@ pub fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Resu
     })?;
 
     let mut all_secret_programs: Vec<(String, String)> = Vec::new();
+    let mut all_sandbox_programs: Vec<(String, String)> = Vec::new();
 
     for (local_name, module_stmts, module_path) in modules_data {
         let mut generator = codegen::Codegen::new(all_tasks.clone());
         let mut module_rust_code = generator.generate(&module_stmts, false);
         all_secret_programs.append(&mut generator.secret_programs);
+        all_sandbox_programs.append(&mut generator.sandbox_programs);
         
         let mut foreign_code = String::new();
         for stmt in &module_stmts {
@@ -238,6 +300,13 @@ pub fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Resu
     let mut generator = codegen::Codegen::new(all_tasks);
     let main_rust = generator.generate(&ast, true);
     all_secret_programs.append(&mut generator.secret_programs);
+    all_sandbox_programs.append(&mut generator.sandbox_programs);
+
+    // Build each sandboxed serverlet's WASM guest crate (step 2: produce the
+    // .wasm artifact; host integration via wasmtime is step 3).
+    for (sb_name, lib_src) in &all_sandbox_programs {
+        build_sandbox_guest(cache_dir, sb_name, lib_src)?;
+    }
 
     // Write each secret serverlet's standalone program as its own cargo binary.
     if !all_secret_programs.is_empty() {

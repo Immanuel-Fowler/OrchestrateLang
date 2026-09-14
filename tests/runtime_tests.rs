@@ -138,6 +138,49 @@ orchestrator main() {
 }
 
 #[test]
+fn runtime_sandbox_guest_compiles_to_wasm() {
+    // Step 2: a sandboxed serverlet's handler logic must compile to a wasm32-wasip1
+    // artifact. (Host integration via wasmtime is step 3; for now the serverlet
+    // still runs in-process and the compiler warns about it.)
+    let test_name = "sandbox_wasm";
+    let tmp = std::env::temp_dir().join(format!("orch_runtime_{}", test_name));
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(&tmp).unwrap();
+    let src_file = tmp.join("test.orch");
+    fs::write(&src_file, r#"
+serverlet Plugin sandbox(memory_limit: "64mb", timeout: "5s") {
+    let count = 0
+    on tally(n: int) -> int {
+        count = count + n
+        return count
+    }
+}
+orchestrator main() {
+    let p = start Plugin()
+    print(to_string(p.tally(7)))
+    stop_orch()
+}
+"#).unwrap();
+
+    let out = Command::new(orchestrate_bin())
+        .args(["run", src_file.to_str().unwrap()])
+        .output()
+        .expect("failed to run orchestrate");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(),
+        "compile/run failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout), stderr);
+
+    // The WASM guest artifact must exist.
+    let wasm = tmp.join(".orch_cache/sandbox_Plugin/target/wasm32-wasip1/release/sandbox_Plugin.wasm");
+    assert!(wasm.exists(), "expected wasm guest artifact at {:?}", wasm);
+
+    // And the honesty warning must be present (containment not yet active).
+    assert!(stderr.contains("WITHOUT ISOLATION"),
+        "expected the no-isolation warning in stderr, got: {}", stderr);
+}
+
+#[test]
 fn runtime_secret_serverlet_state_persists() {
     // The body runs in a separate process; state must survive across calls,
     // proving the child is long-lived and reused.

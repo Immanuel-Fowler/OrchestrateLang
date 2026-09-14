@@ -54,6 +54,21 @@ fn compile_with_secret(source: &str) -> String {
     out
 }
 
+/// Like `compile_to_rust`, but returns the generated WASM guest crate source for
+/// the first sandboxed serverlet (the part step 2 produces).
+fn compile_sandbox_guest(source: &str) -> String {
+    let mut lex = lexer::Lexer::new(source);
+    let tokens = lex.tokenize().expect("lex failed");
+    let mut p = parser::Parser::new(tokens);
+    let ast = p.parse().expect("parse failed");
+    let mut tc = typechecker::TypeChecker::new();
+    tc.type_check(&ast).expect("typecheck failed");
+    let mut gen = codegen::Codegen::new(std::collections::HashSet::new());
+    let _ = gen.generate(&ast, true);
+    gen.sandbox_programs.first().map(|(_, src)| src.clone())
+        .expect("expected a sandbox guest program")
+}
+
 fn assert_snapshot(name: &str, actual: &str) {
     let dir = snapshots_dir();
     fs::create_dir_all(&dir).unwrap();
@@ -176,4 +191,26 @@ orchestrator main() {
 }
 "#;
     assert_snapshot("secret_serverlet", &compile_with_secret(src));
+}
+
+#[test]
+fn snapshot_sandbox_guest() {
+    let src = r#"
+serverlet Plugin sandbox(memory_limit: "64mb", timeout: "5s") {
+    let count = 0
+    on tally(n: int) -> int {
+        count = count + n
+        return count
+    }
+    on echo(s: string) -> string {
+        return s
+    }
+}
+orchestrator main() {
+    let p = start Plugin()
+    print(to_string(p.tally(1)))
+    stop_orch()
+}
+"#;
+    assert_snapshot("sandbox_guest", &compile_sandbox_guest(src));
 }

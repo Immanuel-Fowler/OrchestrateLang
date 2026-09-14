@@ -92,6 +92,12 @@ pub struct Param {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct SandboxConfig {
+    pub memory_limit: String,
+    pub timeout: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Handler {
     pub name: String,
     pub params: Vec<Param>,
@@ -296,6 +302,7 @@ pub enum StmtNode {
         handlers: Vec<Handler>,
         secret: bool,
         crash_handler: Option<(String, Box<Expr>)>,
+        sandbox: Option<SandboxConfig>,
     },
     OnStart(Expr),
     OnStop(Expr),

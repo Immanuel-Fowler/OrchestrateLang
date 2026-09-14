@@ -193,6 +193,10 @@ impl Parser {
         if let TokenKind::Identifier(kw) = &self.peek().kind {
             if kw == "secret" { self.advance(); secret = true; }
         }
+        let mut sandbox = None;
+        if let TokenKind::Identifier(kw) = &self.peek().kind {
+            if kw == "sandbox" { self.advance(); sandbox = Some(self.parse_sandbox_config()?); }
+        }
         self.consume(TokenKind::LBrace, "Expected '{' to start serverlet body")?;
         let mut state = Vec::new();
         let mut handlers = Vec::new();
@@ -220,7 +224,35 @@ impl Parser {
             }
         }
         self.consume(TokenKind::RBrace, "Expected '}' to end serverlet body")?;
-        Ok(StmtNode::Serverlet { name, state, handlers, secret, crash_handler })
+        Ok(StmtNode::Serverlet { name, state, handlers, secret, crash_handler, sandbox })
+    }
+
+    fn parse_sandbox_config(&mut self) -> Result<crate::ast::SandboxConfig, String> {
+        self.consume(TokenKind::LParen, "Expected '(' after 'sandbox'")?;
+        let mut memory_limit = String::new();
+        let mut timeout = String::new();
+        // Parse comma-separated `key: "value"` pairs.
+        while self.peek().kind != TokenKind::RParen && self.peek().kind != TokenKind::EOF {
+            let key_tok = self.advance().clone();
+            let key = match &key_tok.kind {
+                TokenKind::Identifier(s) => s.clone(),
+                _ => return Err(format!("Expected sandbox config key at line {}, col {}", key_tok.line, key_tok.col)),
+            };
+            self.consume(TokenKind::Colon, "Expected ':' after sandbox config key")?;
+            let val_tok = self.advance().clone();
+            let val = match &val_tok.kind {
+                TokenKind::Str(s) => s.clone(),
+                _ => return Err(format!("Expected string value for sandbox config '{}' at line {}, col {}", key, val_tok.line, val_tok.col)),
+            };
+            match key.as_str() {
+                "memory_limit" => memory_limit = val,
+                "timeout" => timeout = val,
+                _ => return Err(format!("Unknown sandbox config key '{}' at line {}, col {} (expected 'memory_limit' or 'timeout')", key, key_tok.line, key_tok.col)),
+            }
+            let _ = self.match_token(TokenKind::Comma);
+        }
+        self.consume(TokenKind::RParen, "Expected ')' to close sandbox config")?;
+        Ok(crate::ast::SandboxConfig { memory_limit, timeout })
     }
 
     fn parse_handler(&mut self) -> Result<Handler, String> {
@@ -1103,6 +1135,41 @@ mod tests {
         assert_eq!(ast.len(), 1);
         if let StmtNode::Let { name, .. } = &ast[0].node { assert_eq!(name, "x"); }
         else { panic!("Expected Let statement"); }
+    }
+
+    #[test]
+    fn test_parser_sandbox_serverlet() {
+        let src = "serverlet Plugin sandbox(memory_limit: \"64mb\", timeout: \"5s\") { on run(x: int) -> int { return x } }";
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let ast = parser.parse().unwrap();
+        assert_eq!(ast.len(), 1);
+        if let StmtNode::Serverlet { name, secret, sandbox, .. } = &ast[0].node {
+            assert_eq!(name, "Plugin");
+            assert_eq!(*secret, false);
+            let cfg = sandbox.as_ref().expect("expected sandbox config");
+            assert_eq!(cfg.memory_limit, "64mb");
+            assert_eq!(cfg.timeout, "5s");
+        } else {
+            panic!("Expected Serverlet statement");
+        }
+    }
+
+    #[test]
+    fn test_parser_secret_serverlet() {
+        let src = "serverlet Vault secret { on get() -> int { return 0 } }";
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let ast = parser.parse().unwrap();
+        if let StmtNode::Serverlet { name, secret, sandbox, .. } = &ast[0].node {
+            assert_eq!(name, "Vault");
+            assert_eq!(*secret, true);
+            assert!(sandbox.is_none());
+        } else {
+            panic!("Expected Serverlet statement");
+        }
     }
 
     #[test]
