@@ -1,7 +1,7 @@
 # Landline Serverlets — Design & Build Plan
 
-> Status: **🚧 IN PROGRESS — build steps 1–7 implemented: Python pipes, Rust library mode, and host callbacks. Tick policies and other runtimes remain planned.** The [Python SDK guide](../../sdk/python/README.md) describes the implemented subset;
-> the [library guide](../library-mode.md) describes host integration. Timing policies and embedded runtimes below remain proposals. What *is* settled: a serverlet's handler bodies can be written in
+> Status: **🚧 IN PROGRESS — build steps 1–8 implemented: Python pipes, Rust library mode, host callbacks, and call budgets. The latency benchmark and other runtimes remain planned.** The [Python SDK guide](../../sdk/python/README.md) describes the implemented subset;
+> the [library guide](../library-mode.md) describes host integration. Embedded runtimes below remain proposals. What *is* settled: a serverlet's handler bodies can be written in
 > another language and run behind a **landline** (a connection with no sockets);
 > OrchestrateLang can build as a Rust library that a host application links; and the
 > design has to serve both event-driven and high-frequency calls.
@@ -193,21 +193,30 @@ implemented by the host application in Rust (see library mode, §6).
 ## 5. High-frequency calls
 
 Calls made every tick — every frame in a game, every step in a simulation — are where a
-naive design fails, so they get explicit rules.
+naive design fails, so they get explicit rules. Budgets are implemented (§8 step 8).
 
-1. **Batch per tick, never per item over a pipe.** The host calls the orchestration
-   once per tick; the orchestration sends **one** tick message per runtime carrying all
-   the inputs, and gets one batched reply. The cost scales with the number of runtimes,
-   not the number of items.
-2. **Every per-tick call has a budget.** If a serverlet misses it, the tick continues
-   without that result. A late result is either applied on the next tick or dropped,
-   per serverlet:
+1. **Batch per tick, never per item over a pipe.** Declare handlers that take and return
+   arrays, and call them once per tick with every item. That is one round trip per tick
+   per serverlet, so the cost scales with the number of serverlets, not the number of
+   items. A dedicated TICK message (kind 9, still reserved) is only worth adding if the
+   benchmark (§8 step 9) shows per-call framing overhead matters.
+2. **Give per-tick calls a budget.** `budget` bounds how long a call waits; a call with
+   no reply in time returns right away:
 
    ```orchestrate
-   serverlet EnemyBrain via python(source: "./enemy.py", budget: "2ms", late: "next_tick") {
-       on think(input: FrameInput) -> EnemyCommands
+   serverlet EnemyBrain via python(source: "./enemy.py", budget: "2ms", late: "latest") {
+       on think(inputs: FrameInput[]) -> EnemyCommand[]
    }
    ```
+
+   - `late: "drop"` (default): the call returns the default value, and the reply is
+     discarded when it arrives.
+   - `late: "latest"`: the call returns the handler's most recent completed result (the
+     default until one exists), and a late reply becomes that result, so a slow answer
+     is used on the next tick instead of stalling this one.
+
+   A queued call whose caller has already given up is never sent, so a slow serverlet
+   doesn't build a backlog. Don't budget handlers whose side effects must always run.
 
 3. **Hot per-item code goes in-process.** When profiling shows a serverlet can't fit its
    budget over a pipe, switch it to `line: "embedded"`, or move it to Rust or C++.
@@ -347,7 +356,8 @@ feature.
 
 6. **[IMPLEMENTED] Library mode** (`build --lib`, `start` / `tick` / `shutdown`, `on_tick`).
 7. **[IMPLEMENTED] Host API + grants** (`host` blocks, `grant call`, `HOST_CALL` frames).
-8. **Tick batching, budgets, and late-result policy.**
+8. **[IMPLEMENTED] Tick batching, budgets, and late-result policy.** Budgets and
+   `late: "drop" | "latest"` are landline options; batching uses array handlers (§5).
 9. **Benchmark harness** — round-trip latency, including the slow tail, per runtime and
    payload size.
 

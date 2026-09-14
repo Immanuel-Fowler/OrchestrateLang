@@ -38,8 +38,24 @@ fn landline_syntax_and_types() {
             r#"serverlet X via python(source: "x") { on f() {} }"#,
             "must not have bodies",
         ),
+        (
+            r#"serverlet X via python(source: "x", budget: "fast") {}"#,
+            "Invalid landline budget",
+        ),
+        (
+            r#"serverlet X via python(source: "x", budget: "0us") {}"#,
+            "Invalid landline budget",
+        ),
+        (
+            r#"serverlet X via python(source: "x", late: "latest") {}"#,
+            "requires a budget",
+        ),
+        (
+            r#"serverlet X via python(source: "x", budget: "2ms", late: "next") {}"#,
+            "Unsupported",
+        ),
     ] {
-        assert!(parse(source).unwrap_err().contains(error));
+        assert!(parse(source).unwrap_err().contains(error), "{}", source);
     }
     for source in [
         r#"serverlet X via python(source: "x") { on f(a: option<int>) }"#,
@@ -49,6 +65,71 @@ fn landline_syntax_and_types() {
             .type_check(&parse(source).unwrap())
             .is_err());
     }
+    use orchestrate_lib::ast::{LatePolicy, StmtNode};
+    for (source, micros, late) in [
+        (r#"serverlet X via python(source: "x") {}"#, None, LatePolicy::Drop),
+        (r#"serverlet X via python(source: "x", budget: "250us") {}"#, Some(250), LatePolicy::Drop),
+        (r#"serverlet X via python(source: "x", budget: "2ms", late: "latest") {}"#, Some(2_000), LatePolicy::Latest),
+        (r#"serverlet X via python(source: "x", budget: "0.5s", late: "drop") {}"#, Some(500_000), LatePolicy::Drop),
+    ] {
+        match &parse(source).unwrap()[0].node {
+            StmtNode::Serverlet { landline: Some(config), .. } => {
+                assert_eq!((config.budget_micros, config.late), (micros, late), "{}", source);
+            }
+            _ => panic!("expected a landline serverlet: {}", source),
+        }
+    }
+}
+
+#[test]
+fn python_budgets_and_late_results() {
+    // Even calls sleep past the 100ms budget. `latest` returns the most recent completed
+    // result (a late reply becomes it); `drop` returns the default, and a queued call
+    // whose caller already gave up is never sent, so `calls()` counts only one compute.
+    let (stdout, stderr) = run(
+        &directory("budgets"),
+        r#"
+serverlet Latest via python(source: "impl.py", budget: "100ms", late: "latest") {
+    on compute(n: int) -> int
+    on calls() -> int
+}
+serverlet Dropper via python(source: "impl.py", budget: "100ms") {
+    on compute(n: int) -> int
+    on calls() -> int
+}
+orchestrator main() {
+    let fresh = start Latest()
+    let dropper = start Dropper()
+    sleep(1500)
+    print(to_string(fresh.compute(1)))
+    print(to_string(fresh.compute(2)))
+    sleep(1000)
+    print(to_string(fresh.compute(4)))
+    sleep(1000)
+    print(to_string(fresh.compute(5)))
+    print(to_string(dropper.compute(2)))
+    print(to_string(dropper.compute(1)))
+    sleep(1000)
+    print(to_string(dropper.calls()))
+    print(to_string(dropper.compute(3)))
+    stop_orch()
+}
+"#,
+        r#"
+import time
+from orchestratelang import landline
+class Worker(landline.Serverlet):
+    def __init__(self): self.count = 0
+    def compute(self, n: int) -> int:
+        self.count += 1
+        if n % 2 == 0:
+            time.sleep(0.6)
+        return n * 10
+    def calls(self) -> int: return self.count
+landline.serve(Worker)
+"#,
+    );
+    assert_eq!(stdout, "10\n10\n20\n50\n0\n0\n1\n30", "{}", stderr);
 }
 
 fn directory(name: &str) -> PathBuf {

@@ -96,8 +96,8 @@ impl Scripts {
         }
         Ok(())
     }
-    /// Run every on_tick hook once, in declaration order. Tick batching and per-call
-    /// budgets are not yet provided.
+    /// Run every on_tick hook once, in declaration order. Bound slow landline calls made
+    /// inside hooks with a landline `budget`.
     pub async fn tick(&mut self, dt: f64) -> Result<(), String> {
         self.ready().await?;
         if self.stop_requested() { return Err("orchestration requested stop".into()); }

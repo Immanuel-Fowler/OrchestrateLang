@@ -457,19 +457,55 @@ impl Codegen {
                         format!("reply_rx.await.unwrap_or_default()")
                     };
 
+                    let budget = landline.as_ref().and_then(|config| config.budget_micros);
+                    let body = if let Some(micros) = budget {
+                        // A budgeted call returns early instead of waiting past its deadline.
+                        let fallback = match landline.as_ref().map(|config| config.late) {
+                            Some(crate::ast::LatePolicy::Latest) if h.return_type != Type::Void => {
+                                format!("self.latest.{}.lock().unwrap().clone().unwrap_or_default()", h.name)
+                            }
+                            _ => "Default::default()".to_string(),
+                        };
+                        format!(
+                            "        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();\n        let call = async {{\n            let _ = self.tx.send({}Msg::{} {{ {} }}).await;\n            reply_rx.await.ok()\n        }};\n        match tokio::time::timeout(std::time::Duration::from_micros({}), call).await {{\n            Ok(Some(value)) => value,\n            _ => {},\n        }}",
+                            name, variant_name, send_fields.join(", "), micros, fallback
+                        )
+                    } else {
+                        format!(
+                            "        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();\n        let _ = self.tx.send({}Msg::{} {{ {} }}).await;\n        {}",
+                            name, variant_name, send_fields.join(", "), await_expr
+                        )
+                    };
+
                     client_methods.push(format!(
-                        "    pub async fn {}({}{}) -> {} {{\n        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();\n        let _ = self.tx.send({}Msg::{} {{ {} }}).await;\n        {}\n    }}",
-                        h.name, self_params, method_params, ret_ty, name, variant_name, send_fields.join(", "), await_expr
+                        "    pub async fn {}({}{}) -> {} {{\n{}\n    }}",
+                        h.name, self_params, method_params, ret_ty, body
                     ));
                 }
 
+                // Landline clients share each handler's most recent result with their actor,
+                // for the `late: "latest"` budget policy.
+                let (latest_struct, latest_field) = if landline.is_some() {
+                    let fields = handlers.iter()
+                        .filter(|h| h.return_type != Type::Void)
+                        .map(|h| format!("    {}: std::sync::Mutex<Option<{}>>,", h.name, self.compile_type(&h.return_type)))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    (
+                        format!("#[derive(Default, Debug)]\npub struct {}Latest {{\n{}\n}}\n\n", name, fields),
+                        format!("    latest: std::sync::Arc<{}Latest>,\n", name),
+                    )
+                } else {
+                    (String::new(), String::new())
+                };
+
                 let client_struct = format!(
-                    "#[derive(Clone, Debug)]\npub struct {}Client {{\n    tx: tokio::sync::mpsc::Sender<{}Msg>,\n}}\n\nimpl {}Client {{\n{}\n}}",
-                    name, name, name, client_methods.join("\n\n")
+                    "{}#[derive(Clone, Debug)]\npub struct {}Client {{\n    tx: tokio::sync::mpsc::Sender<{}Msg>,\n{}}}\n\nimpl {}Client {{\n{}\n}}",
+                    latest_struct, name, name, latest_field, name, client_methods.join("\n\n")
                 );
 
-                if landline.is_some() {
-                    let start_fn = self.compile_python_mirror(name, handlers, crash_handler, grants);
+                if let Some(config) = landline {
+                    let start_fn = self.compile_python_mirror(name, handlers, crash_handler, grants, config);
                     return format!("{}\n\n{}\n\n{}", msg_enum, client_struct, start_fn);
                 }
 

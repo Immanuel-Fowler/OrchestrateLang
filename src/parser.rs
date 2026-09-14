@@ -230,7 +230,23 @@ impl Parser {
             }
             self.consume(TokenKind::LParen, "Expected '(' after python")?;
             let mut source = None;
+            let mut budget_micros = None;
+            let mut late = None;
             let mut keys = std::collections::HashSet::new();
+            // Durations take a us, ms, or s suffix, e.g. "500us", "2ms", "0.5s".
+            fn duration_micros(value: &str) -> Option<u64> {
+                let (number, scale) = if let Some(n) = value.strip_suffix("us") {
+                    (n, 1.0)
+                } else if let Some(n) = value.strip_suffix("ms") {
+                    (n, 1_000.0)
+                } else if let Some(n) = value.strip_suffix('s') {
+                    (n, 1_000_000.0)
+                } else {
+                    return None;
+                };
+                let micros = number.trim().parse::<f64>().ok()? * scale;
+                (micros.is_finite() && micros >= 1.0).then(|| micros.round() as u64)
+            }
             while self.peek().kind != TokenKind::RParen {
                 let key = match self.advance().kind.clone() {
                     TokenKind::Identifier(s) => s,
@@ -245,12 +261,26 @@ impl Parser {
                 match key.as_str() {
                     "source" if !value.is_empty() => source = Some(value),
                     "line" if value == "pipe" => {},
-                    _ => return Err(format!("Unsupported landline config '{}': '{}' (expected source or line: \"pipe\")", key, value)),
+                    "budget" => {
+                        budget_micros = Some(duration_micros(&value).ok_or_else(|| format!(
+                            "Invalid landline budget '{}' (expected a duration such as \"2ms\" or \"0.5s\")", value
+                        ))?);
+                    }
+                    "late" if value == "drop" => late = Some(crate::ast::LatePolicy::Drop),
+                    "late" if value == "latest" => late = Some(crate::ast::LatePolicy::Latest),
+                    _ => return Err(format!("Unsupported landline config '{}': '{}' (expected source, line: \"pipe\", budget, or late: \"drop\" | \"latest\")", key, value)),
                 }
                 if !self.match_token(TokenKind::Comma) { break; }
             }
             self.consume(TokenKind::RParen, "Expected ')' after landline config")?;
-            landline = Some(crate::ast::LandlineConfig { source: source.ok_or("Python landline requires source")? });
+            if late.is_some() && budget_micros.is_none() {
+                return Err("Landline late policy requires a budget".into());
+            }
+            landline = Some(crate::ast::LandlineConfig {
+                source: source.ok_or("Python landline requires source")?,
+                budget_micros,
+                late: late.unwrap_or(crate::ast::LatePolicy::Drop),
+            });
         }
         self.consume(TokenKind::LBrace, "Expected '{' to start serverlet body")?;
         let mut state = Vec::new();

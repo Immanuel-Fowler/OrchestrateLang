@@ -1,6 +1,8 @@
 #[allow(non_snake_case)]
 pub fn start_@NAME@() -> @NAME@Client {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<@NAME@Msg>(100);
+    let __latest = std::sync::Arc::new(@NAME@Latest::default());
+    let latest = __latest.clone();
     tokio::spawn(async move {
         let exe = std::env::current_exe().expect("current_exe");
         let directory = exe.parent().expect("exe directory").join("landline_@NAME@");
@@ -50,5 +52,5 @@ pub fn start_@NAME@() -> @NAME@Client {
             break;
         }
     });
-    @NAME@Client { tx }
+    @NAME@Client { tx, latest }
 }

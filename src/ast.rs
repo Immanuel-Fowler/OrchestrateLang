@@ -105,6 +105,18 @@ pub struct SandboxConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LandlineConfig {
     pub source: String,
+    /// Per-call deadline in microseconds. A call with no reply by then returns early.
+    pub budget_micros: Option<u64>,
+    /// What a call that misses its budget returns.
+    pub late: LatePolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LatePolicy {
+    /// Return the default value and discard the reply when it arrives.
+    Drop,
+    /// Return the handler's most recent completed result; a late reply becomes that result.
+    Latest,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -1055,7 +1055,13 @@ The SDK supports primitive values, lists, and dataclasses matching same-file str
 Exceptions log errors and return default values while preserving process state.
 A process failure during a call invokes `on_crash`, returns a default without replaying
 the failed call, and restarts with fresh state. Startup failures close the client and
-log a diagnostic. There are no per-call budgets or configurable restart policies yet.
+log a diagnostic. There are no configurable restart policies yet.
+
+`budget: "2ms"` (units `us`, `ms`, `s`) bounds how long each call waits. A call with no
+reply in time returns right away: with `late: "drop"` (the default) it returns the
+default value, and with `late: "latest"` it returns the handler's most recent completed
+result, which a late reply replaces. A queued call whose caller has already given up is
+not sent. `late` requires `budget`. Pass arrays to handle many items in one call.
 
 `source` is relative to its declaring file. Builds copy the declared source and SDK
 into `landline_<Name>/` beside the binary; distribute that directory too. External
@@ -1079,7 +1085,7 @@ methods are named `world_record` and return `Result<T, String>`.
 
 See [library-mode.md](library-mode.md) for lifecycle ordering, async APIs, packaging,
 errors, instance isolation, and limitations. Host declarations and `on_tick` require
-library builds; timing budgets and tick batching remain planned.
+library builds. Use landline budgets to bound slow calls made from `on_tick`.
 
 ---
 

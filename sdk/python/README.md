@@ -62,14 +62,30 @@ the process and any prior state mutations survive. An EOF or transport failure
 during a call invokes the `.orch` `on_crash` hook and restarts the process for
 subsequent calls. The failed call receives a default and is never replayed;
 restart creates fresh Python state. Startup/interface failures close the client
-with a diagnostic and do not retry. Startup has a 10-second timeout. Calls do not
-yet have time budgets, and an idle process failure is detected on the next call.
-There is no configurable restart policy yet.
+with a diagnostic and do not retry. Startup has a 10-second timeout, and an idle
+process failure is detected on the next call. There is no configurable restart
+policy yet.
+
+Add `budget` to bound how long each call waits, and `late` to choose what a call that
+misses it returns:
+
+```orchestrate
+serverlet Brain via python(source: "./brain.py", budget: "2ms", late: "latest") {
+    on think(inputs: int[]) -> int[]
+}
+```
+
+Durations take `us`, `ms`, or `s`. With `late: "drop"` (the default) a late call
+returns the default value; with `late: "latest"` it returns the handler's most recent
+completed result, and the late reply becomes that result. The Python handler keeps
+running either way. A queued call whose caller has already given up is not sent, so
+don't budget handlers whose side effects must always happen. Pass arrays to handle
+many items in one call.
 
 Dropping all client handles sends BYE and allows two seconds for shutdown before
 terminating the child. `stop_orch()` still exits the whole orchestrator immediately.
 Pipe landlines run as the same OS user; they provide no sandbox containment.
-Library mode and granted host callbacks are documented in [library-mode.md](../../docs/library-mode.md). Tick budgets and embedded runtimes remain later work.
+Library mode and granted host callbacks are documented in [library-mode.md](../../docs/library-mode.md). Embedded runtimes remain later work.
 
 In library mode, a handler may call `self.host.group.function(...)` for functions
 listed in its `.orch` `grant call` declarations. Host errors raise `RuntimeError`.

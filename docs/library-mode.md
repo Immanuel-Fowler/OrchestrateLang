@@ -54,7 +54,8 @@ The host API is asynchronous to avoid blocking or nesting a Tokio runtime.
 Synchronous hosts can call `runtime.block_on(...)` from outside async code.
 Lifecycle code and synchronous host implementations must cooperate with the
 runtime: CPU-bound loops, blocking host methods, or a stuck `on_start`/`on_stop`
-hook can delay shutdown. Per-call time budgets are not implemented yet.
+hook can delay shutdown. A landline `budget` bounds slow Python calls, but not Rust
+host methods or the hooks themselves.
 
 ## Declaring and granting host functions
 
@@ -121,6 +122,7 @@ children are compiled for the compiler machine's target; cross-compiling that
 bundle is not supported. Existing foreign C/C++ build scripts may still reference
 source files and require their toolchain when the host builds the generated crate.
 
-The next roadmap step adds tick batching, budgets, and late-result handling. This
-release supplies lifecycle hooks and bidirectional host callbacks, not those timing
-policies or a benchmark harness.
+Bound slow landline calls made from `on_tick` with a landline `budget` and `late` policy,
+and batch per-item work by passing arrays; see
+[landline-serverlets.md](design/landline-serverlets.md) §5. A latency benchmark harness
+is not implemented yet.

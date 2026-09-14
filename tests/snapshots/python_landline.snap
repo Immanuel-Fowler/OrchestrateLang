@@ -191,9 +191,15 @@ pub enum CounterMsg {
     Add { n: i64, reply_to: tokio::sync::oneshot::Sender<i64> },
 }
 
+#[derive(Default, Debug)]
+pub struct CounterLatest {
+    add: std::sync::Mutex<Option<i64>>,
+}
+
 #[derive(Clone, Debug)]
 pub struct CounterClient {
     tx: tokio::sync::mpsc::Sender<CounterMsg>,
+    latest: std::sync::Arc<CounterLatest>,
 }
 
 impl CounterClient {
@@ -207,6 +213,8 @@ impl CounterClient {
 #[allow(non_snake_case)]
 pub fn start_Counter() -> CounterClient {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<CounterMsg>(100);
+    let __latest = std::sync::Arc::new(CounterLatest::default());
+    let latest = __latest.clone();
     tokio::spawn(async move {
         let exe = std::env::current_exe().expect("current_exe");
         let directory = exe.parent().expect("exe directory").join("landline_Counter");
@@ -246,6 +254,7 @@ pub fn start_Counter() -> CounterClient {
             while let Some(msg) = rx.recv().await {
                 match msg {
                     CounterMsg::Add { n, reply_to } => {
+                
                 __next_call = __next_call.wrapping_add(1);
                 let mut __payload = Vec::new();
                 0i64.wire_encode(&mut __payload);
@@ -264,7 +273,7 @@ pub fn start_Counter() -> CounterClient {
                     Ok({ let mut pos = 0; let value = <i64 as OrchWire>::wire_decode(&f.payload, &mut pos).ok_or("invalid reply value")?; if pos != f.payload.len() { return Err("trailing reply data".to_string()); } value })
                 }.await;
                 match __result {
-                    Ok(value) => { let _ = reply_to.send(value); },
+                    Ok(value) => {  let _ = reply_to.send(value); },
                     Err(__error) => {
                         eprintln!("[orchestrate] landline 'Counter' crashed: {}", __error);
                         let _ = __child.kill().await;
@@ -284,7 +293,7 @@ pub fn start_Counter() -> CounterClient {
             break;
         }
     });
-    CounterClient { tx }
+    CounterClient { tx, latest }
 }
 
 

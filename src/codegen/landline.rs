@@ -8,6 +8,7 @@ impl Codegen {
         handlers: &[Handler],
         crash: &Option<(String, Box<Expr>)>,
         grants: &[String],
+        config: &crate::ast::LandlineConfig,
     ) -> String {
         if let Some(reason) = super::stmt::wire_unsupported_reason(handlers, &self.struct_defs) {
             return format!("compile_error!({:?});", reason);
@@ -47,7 +48,16 @@ impl Codegen {
             } else {
                 format!("let mut pos = 0; let value = <{} as OrchWire>::wire_decode(&f.payload, &mut pos).ok_or(\"invalid reply value\")?; if pos != f.payload.len() {{ return Err(\"trailing reply data\".to_string()); }} value", self.compile_type(&h.return_type))
             };
+            // With a budget, a call whose caller already stopped waiting is not sent.
+            let skip = if config.budget_micros.is_some() { "if reply_to.is_closed() { continue; }" } else { "" };
+            // `late: "latest"` keeps each handler's most recent result for timed-out callers.
+            let remember = if config.late == crate::ast::LatePolicy::Latest && h.return_type != Type::Void {
+                format!("*__latest.{}.lock().unwrap() = Some(value.clone());", h.name)
+            } else {
+                String::new()
+            };
             format!(r#"{name}Msg::{variant} {{ {bindings} }} => {{
+                {skip}
                 __next_call = __next_call.wrapping_add(1);
                 let mut __payload = Vec::new();
                 {id}i64.wire_encode(&mut __payload);
@@ -66,7 +76,7 @@ impl Codegen {
                     Ok({{ {decode} }})
                 }}.await;
                 match __result {{
-                    Ok(value) => {{ let _ = reply_to.send(value); }},
+                    Ok(value) => {{ {remember} let _ = reply_to.send(value); }},
                     Err(__error) => {{
                         eprintln!("[orchestrate] landline '{name}' crashed: {{}}", __error);
                         let _ = __child.kill().await;
@@ -75,7 +85,7 @@ impl Codegen {
                         continue 'restart;
                     }}
                 }}
-            }}"#, name=name, variant=pascal_case(&h.name), bindings=bindings.join(", "), id=id, encode=encode, handler=h.name, decode=decode, recovery=recovery)
+            }}"#, name=name, variant=pascal_case(&h.name), bindings=bindings.join(", "), id=id, encode=encode, handler=h.name, decode=decode, recovery=recovery, skip=skip, remember=remember)
         }).collect::<Vec<_>>().join("\n");
         let mut code = include_str!("python_mirror.rs.txt")
             .replace("@NAME@", name)

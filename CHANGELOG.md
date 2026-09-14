@@ -9,6 +9,12 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+### Added
+- Landline call budgets: `via python(source: "...", budget: "2ms")` makes a call that gets
+  no reply in time return right away. `late: "drop"` (the default) returns the default
+  value; `late: "latest"` returns the handler's most recent completed result, and a late
+  reply becomes that result. A queued call whose caller has already given up is not sent.
+
 ## [0.2.0] - 2026-09-14
 
 Polyglot serverlets and embedding in a Rust host. See
