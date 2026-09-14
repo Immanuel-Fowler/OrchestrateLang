@@ -14,6 +14,11 @@ There are two distinct ways this could show up in the language, and they serve d
 
 ### 1a. Polyglot Serverlets (actor-style, stateful)
 
+> **Current plan:** [design/landline-serverlets.md](design/landline-serverlets.md). It
+> supersedes the sketch below: handler bodies run over a pipe or embedded in-process, with
+> a binary protocol and an interface check at startup, and OrchestrateLang can build as a
+> library a host application links. First adopter: a Rust game engine's scripting layer.
+
 Extends the existing `serverlet` concept — a serverlet is already "an actor with a message-passing interface," so the *language semantics* don't need to change, only what's running inside the actor. Good for stateful services, long-running connections, or anything that benefits from the actor/message-passing model.
 
 Proposed syntax direction:

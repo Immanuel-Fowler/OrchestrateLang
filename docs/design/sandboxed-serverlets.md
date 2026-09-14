@@ -12,13 +12,14 @@
 
 ---
 
-## 0. The three serverlet types (taxonomy)
+## 0. The serverlet types (taxonomy)
 
 | Type | Where the body runs | Primary property | Status |
 |---|---|---|---|
 | **Serverlet** | In-process tokio actor | Speed, simplicity (you wrote it, you trust it) | ✅ Shipped |
 | **Secret serverlet** | Separate OS process, talked to via a mirror | **Secrecy + isolation** — orchestrator never holds the code | ✅ Shipped (`secret-serverlets.md`) |
-| **Sandboxed serverlet** | WASM guest (`wasmtime`) | **Containment** — hostile code genuinely can't touch the host | 📋 This doc |
+| **Sandboxed serverlet** | WASM guest (`wasmtime`) | **Containment** — hostile code genuinely can't touch the host | 🚧 This doc |
+| **Landline serverlet** | Foreign runtime (Python, TypeScript, C#, C++) over a pipe or embedded in-process | **Polyglot scripting** — handler bodies written in other languages | 📋 `landline-serverlets.md` |
 
 These solve different problems and are **not** substitutes. *Secret* hides and
 decouples code you trust but does **not** contain a hostile implementation.
