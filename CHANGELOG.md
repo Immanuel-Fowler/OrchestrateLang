@@ -9,6 +9,20 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-15
+
+Two fixes for embedding library mode in a Rust engine.
+
+### Changed
+- Generated library crates declare `rust-version = "1.89"` instead of `1.98.1`, so hosts
+  that support Rust 1.89 can depend on them. `build --lib --rust-version <x.y[.z]>`
+  declares another version, down to the 1.85 that edition 2024 requires.
+
+### Fixed
+- An event handler that triggers its own event no longer hangs `tick` and `fixed_tick`.
+  Each pass over the queue handles the events that were queued when it started; events a
+  handler triggers are handled by the next pass, in both normal and deterministic mode.
+
 ## [0.3.0] - 2026-09-15
 
 Embedding in a Rust engine: synchronous driving, host-fired events, typed and fixed-step
@@ -45,8 +59,8 @@ ticks, deterministic replays, host logging, call budgets, and a latency benchmar
 - Rust FFI sidecars accept array, `option<T>`, and `result<T>` types.
 
 ### Changed
-- Generated library crates use edition 2024 and `rust-version = "1.98.1"`. C/C++ bindings
-  use `unsafe extern "C"`, and the identifier `gen` is escaped.
+- Generated library crates use edition 2024 and declare a minimum `rust-version`. C/C++
+  bindings use `unsafe extern "C"`, and the identifier `gen` is escaped.
 - Generated cache crates declare their own empty `[workspace]`, so `build --lib` works
   inside another Cargo workspace; the output crate still joins the host's workspace as a
   path dependency.
@@ -202,7 +216,8 @@ First tagged release.
   `option` / `result`, `try` / `catch`, supervision, `check`, the language server, or the
   standard library. See `examples/` for working code.
 
-[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/releases/tag/v0.1.0

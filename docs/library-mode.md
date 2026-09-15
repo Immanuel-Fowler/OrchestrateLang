@@ -5,8 +5,9 @@ crate named `scripts`. Add it as a Cargo path dependency in a Rust application.
 The host owns its Tokio runtime; the library never creates a runtime or exits the
 host process.
 
-Generated crates use edition 2024 and `rust-version = "1.98.1"`, so the host needs Rust
-1.98.1 or newer. They build inside another Cargo workspace: the compiler's cache crate
+Generated crates use edition 2024 and `rust-version = "1.89"`, so the host needs Rust
+1.89 or newer. Pass `build --lib --rust-version <x.y[.z]>` to declare a different one;
+edition 2024 makes 1.85 the floor. They build inside another Cargo workspace: the compiler's cache crate
 declares its own empty `[workspace]`, and the output crate joins the host's workspace as
 an ordinary path dependency. Python pipe landlines require Python 3.10+.
 
@@ -111,6 +112,13 @@ scripts.trigger_hit(3)?; // handled during the next tick or fixed tick
 shutdown. Events fired by the host and by scripts (`trigger hit(3)`) wait in a
 per-instance queue that is handled in order before and after each tick and fixed tick.
 Queued events are never dropped.
+
+Each of those two passes handles the events that were queued when it started, and no
+more. An event a handler triggers is handled by the next pass — the one after the tick
+hooks, or the one at the start of the next tick — so a handler that triggers its own
+event runs a bounded number of times per tick instead of holding the tick open. In
+deterministic mode, an event whose handler is still sleeping stays queued for a later
+pass in the same way.
 
 ## Typed ticks
 

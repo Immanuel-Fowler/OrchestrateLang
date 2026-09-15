@@ -284,18 +284,133 @@ fn main() {
 }
 
 #[test]
-fn engine_workspace_and_latest_rust_metadata() {
+fn engine_workspace_and_supported_rust_metadata() {
     let root = root("engine_workspace");
     fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = []\nresolver = \"3\"\n").unwrap();
     build(&root, "serverlet C secret { on value() -> int { return 1 } }\nlet c = start C()\non_tick(dt: float) { c.value() }\n");
     fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = [\"scripts\"]\nresolver = \"3\"\n").unwrap();
-    let result = Command::new("cargo").args(["metadata", "--no-deps", "--format-version", "1"])
-        .arg("--manifest-path").arg(root.join("scripts/Cargo.toml")).output().unwrap();
+    let rust_version = |root: &Path| {
+        let result = Command::new("cargo").args(["metadata", "--no-deps", "--format-version", "1"])
+            .arg("--manifest-path").arg(root.join("scripts/Cargo.toml")).output().unwrap();
+        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        let metadata: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+        let package = metadata["packages"][0].clone();
+        assert_eq!(package["edition"], "2024");
+        package["rust_version"].as_str().unwrap().to_owned()
+    };
+    assert_eq!(rust_version(&root), "1.89");
+
+    let library = |root: &Path, version: &str| {
+        Command::new(env!("CARGO_BIN_EXE_orchestrate"))
+            .args(["build", "--lib", "--rust-version", version])
+            .arg(root.join("main.orch")).arg("-o").arg(root.join("scripts")).output().unwrap()
+    };
+    let result = library(&root, "1.85.0");
     assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
-    let metadata: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
-    let package = &metadata["packages"][0];
-    assert_eq!(package["edition"], "2024");
-    assert_eq!(package["rust_version"], "1.98.1");
+    assert_eq!(rust_version(&root), "1.85.0");
+    // Edition 2024 needs 1.85, so an older request is refused rather than generated.
+    let result = library(&root, "1.84");
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("below 1.85"));
+    assert!(String::from_utf8_lossy(&library(&root, "stable").stderr).contains("x.y or x.y.z"));
+}
+
+/// A handler that triggers its own event must not keep a tick running forever: the
+/// events it queues wait for the next drain.
+#[test]
+fn engine_self_triggering_event_bounds_every_tick() {
+    let root = root("self_trigger");
+    build(&root, r#"
+host world { fn record(n: int) }
+on ping(n: int) {
+    world.record(n)
+    trigger ping(n + 1)
+}
+on_tick(dt: float) {
+}
+orchestrator main() {}
+"#);
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<i64>>>);
+impl scripts::Host for Host { fn world_record(&self, n: i64) -> Result<(), String> { self.0.lock().unwrap().push(n); Ok(()) } }
+fn drive(runtime: &tokio::runtime::Runtime, options: scripts::StartOptions) {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut scripts = scripts::start_with_options(runtime.handle(), Host(log.clone()), options).unwrap();
+    scripts.ready_blocking(runtime).unwrap();
+    scripts.trigger_ping(0).unwrap();
+    let mut handled = 0;
+    for frame in 0..32 {
+        let started = std::time::Instant::now();
+        scripts.tick_blocking(runtime, 1.0 / 60.0).unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "tick {} took {:?}", frame, started.elapsed());
+        let total = log.lock().unwrap().len();
+        // One drain before the tick hooks and one after, each running the handler once.
+        assert!(total - handled <= 2, "tick {} ran the handler {} times", frame, total - handled);
+        handled = total;
+    }
+    // Every triggered event is handled exactly once, in order, and none is dropped.
+    assert_eq!(*log.lock().unwrap(), (0..64).collect::<Vec<i64>>());
+    scripts.shutdown_blocking(runtime).unwrap();
+}
+fn main() {
+    // A hung tick never returns, so fail the process instead of blocking the test run.
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        eprintln!("a tick never returned");
+        std::process::exit(2);
+    });
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    drive(&runtime, scripts::StartOptions::default());
+    drive(&runtime, scripts::StartOptions { deterministic: true, ..Default::default() });
+}
+"#);
+    assert!(output.is_empty(), "{}", output);
+}
+
+/// Generated crates must build on the oldest Rust they declare, not just on the
+/// compiler's own toolchain.
+#[test]
+fn engine_generated_crate_builds_on_declared_rust_version() {
+    let toolchain = Command::new("cargo").args(["+1.89", "--version"]).output();
+    if !toolchain.map(|o| o.status.success()).unwrap_or(false) {
+        eprintln!("skipping: Rust 1.89 is not installed (rustup toolchain install 1.89 --profile minimal)");
+        return;
+    }
+    let root = root("minimum_rust");
+    let module = root.join("c_math");
+    fs::create_dir_all(&module).unwrap();
+    fs::write(module.join("module.orch"), "load_foreign \"c\" \"math.c\"\n").unwrap();
+    fs::write(module.join("math.c"), "long long twice(long long n) { return n * 2; }\n").unwrap();
+    fs::write(module.join("math.orch_ffi"), "twice(n: int) -> int\n").unwrap();
+    fs::write(root.join("impl.py"), "from dataclasses import dataclass\nfrom orchestratelang import landline\n@dataclass\nclass Input:\n    values: list[int]\n@dataclass\nclass Output:\n    total: int\nclass P(landline.Serverlet):\n    def tick(self, batch: Input) -> Output: return Output(sum(batch.values) + self.host.world.record(1))\nlandline.serve(P)\n").unwrap();
+    let source = r#"
+use module cm: "./c_math"
+struct Input { values: int[] }
+struct Output { total: int }
+host world { fn record(n: int) -> int }
+serverlet Counter secret { on add(n: int) -> int { return n + 1 } }
+serverlet P via python(source: "impl.py") {
+    grant call world.record
+    on tick(batch: Input) -> Output
+}
+let c = start Counter()
+let p = start P()
+on hit(n: int) { world.record(n) }
+on_fixed_tick(step: float) { print(to_string(cm.twice(2))) world.record(c.add(7)) }
+on_tick(dt: float, input: Input) -> Output { return p.tick(input) }
+orchestrator main() {}
+"#;
+    // Generating under 1.89 also compiles the secret serverlet child with it.
+    fs::write(root.join("main.orch"), source).unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_orchestrate"))
+        .args(["build", "--lib"]).arg(root.join("main.orch")).arg("-o").arg(root.join("scripts"))
+        .env("RUSTUP_TOOLCHAIN", "1.89").output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    // And a host on 1.89 can check the generated crate it links against.
+    let result = Command::new("cargo").args(["+1.89", "check", "--quiet"])
+        .current_dir(root.join("scripts")).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
 }
 
 #[test]
