@@ -482,30 +482,29 @@ fn orch_compile_foreign(language: &str, program: &str, args: &[&str]) {
     }
 }
 
-/// Repack a static archive so its members are properly aligned.
+/// Packs one object file into a static archive with the platform's own archiver.
 ///
-/// Zig 0.16's archive writer does not guarantee 8-byte alignment of Mach-O
-/// members. Apple's linker (Xcode 16+, ld_prime) rejects misaligned archives.
-/// Re-linking with the system `libtool -static` produces a correctly aligned archive.
-fn orch_repack_archive(path: &str) {
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") { return; }
-    let repacked = format!("{}.repacked", path);
-    let ok = std::process::Command::new("libtool")
-        .args(["-static", "-o", &repacked, path])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if ok {
-        let _ = std::fs::rename(&repacked, path);
+/// Zig compiles to an object rather than using `zig build-lib`: Zig 0.16's archive
+/// writer does not 8-byte-align Mach-O members, and Xcode 26's toolchain then drops
+/// the member's symbols (the link fails with "Undefined symbols").
+fn orch_archive_object(language: &str, archive: &str, object: &str) {
+    let _ = std::fs::remove_file(archive);
+    let (program, args): (&str, Vec<&str>) = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        ("xcrun", vec!["libtool", "-static", "-o", archive, object])
     } else {
-        let _ = std::fs::remove_file(&repacked);
+        ("ar", vec!["crs", archive, object])
+    };
+    let status = std::process::Command::new(program).args(&args).status()
+        .unwrap_or_else(|e| panic!("load_foreign '{}': failed to run `{}`: {}", language, program, e));
+    if !status.success() {
+        panic!("load_foreign '{}': `{} {}` failed", language, program, args.join(" "));
     }
 }
 "#);
         }
         for (lib, p) in &zig_files {
             build_rs.push_str(&format!(
-                "    orch_compile_foreign(\"zig\", \"zig\", &[\"build-lib\", \"-O\", \"ReleaseFast\", \"-fPIC\", \"--cache-dir\", &format!(\"{{}}/zig-cache\", out_dir), &format!(\"-femit-bin={{}}/lib{lib}.a\", out_dir), {:?}]);\n    orch_repack_archive(&format!(\"{{}}/lib{lib}.a\", out_dir));\n    println!(\"cargo:rustc-link-lib=static={lib}\");\n",
+                "    orch_compile_foreign(\"zig\", \"zig\", &[\"build-obj\", \"-O\", \"ReleaseFast\", \"-fPIC\", \"--cache-dir\", &format!(\"{{}}/zig-cache\", out_dir), &format!(\"-femit-bin={{}}/{lib}.o\", out_dir), {:?}]);\n    orch_archive_object(\"zig\", &format!(\"{{}}/lib{lib}.a\", out_dir), &format!(\"{{}}/{lib}.o\", out_dir));\n    println!(\"cargo:rustc-link-lib=static={lib}\");\n",
                 p.to_string_lossy()
             ));
         }
