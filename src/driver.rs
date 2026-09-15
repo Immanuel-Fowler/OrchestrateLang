@@ -352,7 +352,7 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>) 
                     let handlers = crate::typescript::sidecar(&sidecar)?;
                     let asset = format!("ffi_{}_{}", local_name, foreign_code.len());
                     let native_scalar = crate::typescript::build(&foreign_path, &bundle_dir.join(&asset), &handlers, &module_stmts, true)?;
-                    foreign_code.push_str(&crate::typescript::ffi_bindings(&asset, &handlers, library, native_scalar)?);
+                    foreign_code.push_str(&crate::typescript::ffi_bindings(&asset, &handlers, library.is_some(), native_scalar)?);
                 } else if matches!(language.as_str(), "c" | "cpp" | "zig" | "swift") {
                     if let Some((program, version_arg, install_hint)) = foreign_toolchain(language) {
                         if Command::new(program).arg(version_arg).output().is_err() {
