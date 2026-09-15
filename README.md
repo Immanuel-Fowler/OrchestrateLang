@@ -21,7 +21,7 @@ OrchestrateLang runs on top of a language called Rust. You need to install Rust 
 
 *Note: After installing Rust, you must close and reopen your Terminal/Command Prompt for the changes to take effect.*
 
-*Requirements: library crates generated with `orchestrate build --lib` need Rust 1.98.1 or newer, and Python landline serverlets need Python 3.10 or newer.*
+*Requirements: library crates generated with `orchestrate build --lib` need Rust 1.89 or newer, and Python landline serverlets need Python 3.10 or newer.*
 
 ### Step 2: Download OrchestrateLang
 Next, you'll download the OrchestrateLang code. In your Terminal or Command Prompt, run:

@@ -374,7 +374,7 @@ feature.
 library in a Rust game engine; each is a general feature for any Rust host.
 
 - **[IMPLEMENTED]** Builds inside another Cargo workspace; generated crates use edition
-  2024 and `rust-version = "1.98.1"`.
+  2024 and `rust-version = "1.89"`, or the one `build --lib --rust-version` asks for.
 - **[IMPLEMENTED]** Synchronous driving: `*_blocking` methods; a current-thread runtime
   runs nothing between calls.
 - **[IMPLEMENTED]** Host-fired events: `Scripts::trigger_<event>`, queued per instance and

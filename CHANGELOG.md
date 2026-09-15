@@ -9,6 +9,11 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+### Changed
+- Generated library crates declare `rust-version = "1.89"` instead of `1.98.1`, so hosts
+  that support Rust 1.89 can depend on them. `build --lib --rust-version <x.y[.z]>`
+  declares another version, down to the 1.85 that edition 2024 requires.
+
 ## [0.3.0] - 2026-09-15
 
 Embedding in a Rust engine: synchronous driving, host-fired events, typed and fixed-step
@@ -45,8 +50,8 @@ ticks, deterministic replays, host logging, call budgets, and a latency benchmar
 - Rust FFI sidecars accept array, `option<T>`, and `result<T>` types.
 
 ### Changed
-- Generated library crates use edition 2024 and `rust-version = "1.98.1"`. C/C++ bindings
-  use `unsafe extern "C"`, and the identifier `gen` is escaped.
+- Generated library crates use edition 2024 and declare a minimum `rust-version`. C/C++
+  bindings use `unsafe extern "C"`, and the identifier `gen` is escaped.
 - Generated cache crates declare their own empty `[workspace]`, so `build --lib` works
   inside another Cargo workspace; the output crate still joins the host's workspace as a
   path dependency.

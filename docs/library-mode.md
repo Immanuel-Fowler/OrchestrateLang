@@ -5,8 +5,9 @@ crate named `scripts`. Add it as a Cargo path dependency in a Rust application.
 The host owns its Tokio runtime; the library never creates a runtime or exits the
 host process.
 
-Generated crates use edition 2024 and `rust-version = "1.98.1"`, so the host needs Rust
-1.98.1 or newer. They build inside another Cargo workspace: the compiler's cache crate
+Generated crates use edition 2024 and `rust-version = "1.89"`, so the host needs Rust
+1.89 or newer. Pass `build --lib --rust-version <x.y[.z]>` to declare a different one;
+edition 2024 makes 1.85 the floor. They build inside another Cargo workspace: the compiler's cache crate
 declares its own empty `[workspace]`, and the output crate joins the host's workspace as
 an ordinary path dependency. Python pipe landlines require Python 3.10+.
 

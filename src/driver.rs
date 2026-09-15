@@ -131,11 +131,31 @@ fn build_sandbox_guest(cache_dir: &Path, name: &str, lib_src: &str) -> Result<()
     Ok(())
 }
 
-pub fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Result<String, String> {
-    compile_with_mode(input_file, cache_dir, false)
+const DEFAULT_LIBRARY_RUST_VERSION: &str = "1.89";
+
+/// The `rust-version` a generated library crate declares: `x.y` or `x.y.z`, never below
+/// 1.85, the first release that understands edition 2024.
+fn library_rust_version(requested: Option<&str>) -> Result<String, String> {
+    let version = requested.unwrap_or(DEFAULT_LIBRARY_RUST_VERSION);
+    let parts = version.split('.').collect::<Vec<_>>();
+    let invalid = || format!("--rust-version expects x.y or x.y.z, got '{}'", version);
+    if !(2..=3).contains(&parts.len()) || parts.iter().any(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit())) {
+        return Err(invalid());
+    }
+    let major: u32 = parts[0].parse().map_err(|_| invalid())?;
+    let minor: u32 = parts[1].parse().map_err(|_| invalid())?;
+    if (major, minor) < (1, 85) {
+        return Err(format!("--rust-version {} is below 1.85, the first release with edition 2024", version));
+    }
+    Ok(version.to_string())
 }
 
-fn compile_with_mode(input_file: &str, cache_dir: &Path, library: bool) -> Result<String, String> {
+pub fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Result<String, String> {
+    compile_with_mode(input_file, cache_dir, None)
+}
+
+/// `library` carries the `rust-version` the generated crate declares; `None` builds a binary.
+fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>) -> Result<String, String> {
     let input_path = Path::new(input_file);
     let source = fs::read_to_string(input_path)
         .map_err(|e| format!("Failed to read source file '{}': {}", input_file, e))?;
@@ -212,19 +232,19 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: bool) -> Resul
         }
     }
     for stmt in ast.iter().chain(modules_data.iter().flat_map(|(_, stmts, _)| stmts.iter())) {
-        if !library && matches!(&stmt.node, ast::StmtNode::Host { .. } | ast::StmtNode::OnTick { .. } | ast::StmtNode::OnFixedTick { .. }) {
+        if library.is_none() && matches!(&stmt.node, ast::StmtNode::Host { .. } | ast::StmtNode::OnTick { .. } | ast::StmtNode::OnFixedTick { .. }) {
             return Err("host and on_tick require build --lib".into());
         }
         if let ast::StmtNode::Serverlet { grants, .. } = &stmt.node {
             let mut seen = std::collections::HashSet::new();
             for grant in grants {
-                if !library || !seen.insert(grant) || !host_functions.iter().any(|(g,h)| format!("{}.{}", g, h.name) == *grant) {
+                if library.is_none() || !seen.insert(grant) || !host_functions.iter().any(|(g,h)| format!("{}.{}", g, h.name) == *grant) {
                     return Err(format!("Unknown or duplicate host grant '{}' (host grants require build --lib)", grant));
                 }
             }
         }
     }
-    if library {
+    if library.is_some() {
         let ticks = ast.iter().filter(|s| matches!(&s.node, ast::StmtNode::OnTick { .. })).collect::<Vec<_>>();
         if ticks.len() > 1 && ticks.iter().any(|s| matches!(&s.node, ast::StmtNode::OnTick { input: Some(_), .. }) || matches!(&s.node, ast::StmtNode::OnTick { return_type, .. } if *return_type != ast::Type::Void)) {
             return Err("A typed on_tick must be the only on_tick declaration".into());
@@ -294,7 +314,7 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: bool) -> Resul
     let module_event_stmts = modules_data.iter().flat_map(|(_, stmts, _)| stmts.clone()).collect::<Vec<_>>();
     for (local_name, module_stmts, module_path) in modules_data {
         let mut generator = codegen::Codegen::new(all_tasks.clone());
-        generator.library = library;
+        generator.library = library.is_some();
         generator.host_functions = host_functions.clone();
         let mut module_rust_code = generator.generate(&module_stmts, false);
         all_secret_programs.append(&mut generator.secret_programs);
@@ -355,9 +375,9 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: bool) -> Resul
     }
 
     let mut generator = codegen::Codegen::new(all_tasks);
-    generator.library = library;
+    generator.library = library.is_some();
     generator.host_functions = host_functions;
-    if library { generator.scan_events(&module_event_stmts); }
+    if library.is_some() { generator.scan_events(&module_event_stmts); }
     let main_rust = generator.generate(&ast, true);
     all_secret_programs.append(&mut generator.secret_programs);
     all_sandbox_programs.append(&mut generator.sandbox_programs);
@@ -431,7 +451,9 @@ tokio = { version = "1.35", features = ["full"] }
     }
     
     cargo_toml_content.push_str("\n[workspace]\n");
-    if library { cargo_toml_content = cargo_toml_content.replace("edition = \"2021\"", "edition = \"2024\"\nrust-version = \"1.98.1\""); }
+    if let Some(rust_version) = library {
+        cargo_toml_content = cargo_toml_content.replace("edition = \"2021\"", &format!("edition = \"2024\"\nrust-version = \"{}\"", rust_version));
+    }
     fs::write(cache_dir.join("Cargo.toml"), cargo_toml_content)
         .map_err(|e| format!("Failed to write Cargo.toml: {}", e))?;
 
@@ -646,9 +668,10 @@ fn copy_landlines(source: &Path, destination: &Path) -> Result<(), String> {
 
 /// Generate a standalone Cargo library crate; do not overwrite unrelated directories.
 pub fn run_build_library(input: &str, output: Option<&str>) -> Result<(), String> {
-    run_build_library_for_target(input, output, None)
+    run_build_library_for_target(input, output, None, None)
 }
-pub fn run_build_library_for_target(input: &str, output: Option<&str>, target: Option<&str>) -> Result<(), String> {
+pub fn run_build_library_for_target(input: &str, output: Option<&str>, target: Option<&str>, rust_version: Option<&str>) -> Result<(), String> {
+    let rust_version = library_rust_version(rust_version)?;
     let destination = PathBuf::from(output.ok_or("build --lib requires -o <crate directory>")?);
     let marker = destination.join(".orchestrate-library");
     if destination.exists() && !marker.is_file() {
@@ -656,7 +679,7 @@ pub fn run_build_library_for_target(input: &str, output: Option<&str>, target: O
     }
     let cache = prepare_cache_dir(Path::new(input))?.join("library");
     fs::create_dir_all(cache.join("src")).map_err(|e| e.to_string())?;
-    let source = compile_with_mode(input, &cache, true)?;
+    let source = compile_with_mode(input, &cache, Some(&rust_version))?;
     fs::write(cache.join("src/lib.rs"), source).map_err(|e| e.to_string())?;
     // Generate placeholder assets while compiling sidecar binaries, then embed them.
     fs::write(cache.join("src/assets.rs"), "const ORCH_ASSETS: &[(&str, &[u8])] = &[];\n").map_err(|e| e.to_string())?;
