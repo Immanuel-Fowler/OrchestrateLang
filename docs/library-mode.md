@@ -234,9 +234,9 @@ removes it on shutdown. The linked host binary does not depend on the original `
 Python, or TypeScript source locations. Python itself and third-party packages remain
 external; point `StartOptions::python` at the interpreter to use. TypeScript assets do not
 need Bun, TypeScript, or scriptc on the player's machine, but data and native dependencies
-the implementation uses still need packaging. Existing foreign C/C++ build scripts may
-still reference source files and require their toolchain when the host builds the generated
-crate.
+the implementation uses still need packaging. Foreign C, C++, Zig, and Swift sources are
+compiled by the generated crate's build script, so they still reference their source files
+and require their toolchain (a C/C++ compiler, `zig`, or `swiftc`) when the host builds it.
 
 Secret children are compiled for the compiler machine's target by default. Pass
 `build --lib --target <triple>` to build them, and check the library, for another target;
@@ -245,7 +245,8 @@ the matching Rust target and linker must be installed. The standard library (`li
 
 TypeScript executables are built for the compiler host. A library containing a TypeScript
 FFI module or landline rejects a different `--target` rather than packaging an incompatible
-executable.
+executable. Zig and Swift FFI also build for the host target only; their build script fails
+with a clear message when the target differs.
 
 Bound slow landline calls made from `on_tick` with a landline `budget` and `late` policy,
 and batch per-item work by passing arrays; see

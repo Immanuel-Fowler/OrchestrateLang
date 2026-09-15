@@ -1,5 +1,11 @@
 # OrchestrateLang — Next Level Improvement Plan
 
+> Status: **historical.** Each of the nine items below has landed in some form (for loops,
+> `orchestrate check`, string interpolation, void checking, match exhaustiveness, closures,
+> the standard library, the language server, generics). The file is kept for its rationale;
+> details may differ from the implementation. See [CHANGELOG.md](../../CHANGELOG.md) and
+> the [language reference](../language-reference.md) for current behavior.
+
 This document maps each of the nine planned improvements to specific weak-points in the
 current codebase, lists the exact implementation steps, and specifies what tests,
 documentation, and examples need to be written to consider the item complete.

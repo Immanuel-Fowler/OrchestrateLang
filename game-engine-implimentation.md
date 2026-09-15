@@ -180,12 +180,14 @@ Follow `CONTRIBUTING.md` for names, commits and releases. Add tests next to the 
 ### 16. Hot reload
 - **Why:** the engine hot-reloads native modules during development (`AGE: docs/ARCHITECTURE.md:114-119`), but a statically linked library can't reload.
 - **Status:**
-  - Landline child restart is **Planned**, build step 14 (`docs/design/landline-serverlets.md:364`).
-  - Reloading `.orch` code itself is only a pipedream (`docs/roadmap.md:160`).
+  - Landline child restart is **Planned**, build step 15 (`docs/design/landline-serverlets.md` §8).
+  - Reloading `.orch` code itself is only a pipedream (`docs/roadmap.md`, Pipedream Ideas).
 
 ### 17. More languages (FFI first)
 
-- **✅ TypeScript 7 FFI bridge and landline serverlets (2026-09-15):** implemented and verified with TypeScript **7.0.2**, Bun **1.4.2**, and scriptc **0.1.1**. The other languages in this stage remain separate work.
+- **✅ Released in OrchestrateLang v0.4.0 (2026-09-15):** Zig, Swift, and TypeScript support below.
+- **✅ Zig and Swift FFI (2026-09-15):** `load_foreign "zig"` (`export fn`, built with `zig build-obj` plus the platform archiver) and `load_foreign "swift"` (`@_cdecl`, or `@c` on Swift 6.3+, with the Swift runtime linked), using `.orch_ffi` sidecars with `int`/`float`/`bool`/`void`. Host target only. Examples: `examples/foreign_zig_math.orch`, `examples/foreign_swift_math.orch`.
+- **✅ TypeScript 7 FFI bridge and landline serverlets (2026-09-15):** implemented and verified with TypeScript **7.0.2**, Bun **1.4.2**, and scriptc **0.1.1**. C# remains separate work.
 - **✅ Automatic backend selection:** TypeScript 7 checks the implementation against its generated interface first. Eligible scalar FFI adapters compile with scriptc; other adapters try scriptc and fall back to `bun build --compile`. Type errors never trigger an unchecked fallback. Builds report the selection and retain `backend.txt` plus native fallback diagnostics alongside the artifact. `ORCH_TS_BACKEND=auto|scriptc|bun` can force a choice; forced scriptc failures are errors.
 - **✅ FFI syntax:** `load_foreign "typescript" "math.ts"` in a module, with the normal `math.orch_ffi` sidecar and named TypeScript exports. `int` maps to `bigint`, `float` to `number`, `bool` to `boolean`, and `string` to `string`; arrays are supported by the Bun bridge. Example: `examples/foreign_typescript_math.orch`.
 - **✅ Landline syntax:** `serverlet Counter via typescript(source: "counter.ts") { on add(amount: int) -> int }`. The source default-exports a class. An optional constructor receives `{ tickNumber, tickDt, host }`. Methods can be synchronous or return promises. Example: `examples/typescript_landline.orch`.
@@ -195,10 +197,10 @@ Follow `CONTRIBUTING.md` for names, commits and releases. Add tests next to the 
 - **Current boundary:** TypeScript FFI is a synchronous process bridge, including the native scalar path; it is not an in-process C-ABI library. Each FFI call starts a fresh process. Use a persistent landline for state and calls that need budgets. Native scalar FFI supports float/bool/void; full-width integers use the bigint-capable Bun transport. Other unsupported native constructs also select Bun. Landlines remain outside deterministic mode.
 - **✅ Verification:** four new TypeScript integration tests cover native selection, Bun fallback, signature errors, large integers, strings/arrays, async replies, Bun APIs, typed ticks, host grants/logging, instance isolation, budgets/late results, and startup after source removal. The regression suite passed, with the four sandbox-blocked Zig/Swift checks passing on toolchain-access reruns.
 - **Why:** the engine wants C# and TypeScript for gameplay and tools, and C++ plugins (`docs/design/landline-serverlets.md` §1).
-- **Status:** **Planned**, FFI first (`docs/design/landline-serverlets.md` §8, v0.4.0):
-  - Richer C-ABI types and opaque handles: step 10. C# via .NET Native AOT: step 11. Zig, Swift, and TypeScript via scriptc: step 12. Stateful FFI serverlets only if handles fall short: step 13.
+- **Status:** Zig, Swift, and TypeScript are **done** (build step 12, v0.4.0). The rest is **Planned**, FFI first (`docs/design/landline-serverlets.md` §8):
+  - Richer C-ABI types and opaque handles: step 10. C# via .NET Native AOT: step 11. Stateful FFI serverlets only if handles fall short: step 13.
   - Embedded Python via pyo3: step 14.
-  - Process granularity is an open question (`:393`).
+  - Process granularity is an open question (`docs/design/landline-serverlets.md` §10).
 
 ---
 

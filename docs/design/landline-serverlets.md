@@ -400,20 +400,20 @@ library in a Rust game engine; each is a general feature for any Rust host.
 
 See [library-mode.md](../library-mode.md) for the API.
 
-**v0.4.0 — more languages, FFI first**
+**More languages, FFI first** — step 12 shipped in v0.4.0; steps 10, 11, and 13 are planned.
 
 Per the [design philosophy](../design-philosophy.md), a language that can export C-callable
 functions uses FFI, not a landline.
 
-10. **Richer C-ABI types** — `string`, arrays, and structs for C and C++ (today only `int`,
-    `float`, and `bool`), plus an opaque handle type whose native object is released when
-    its owner stops. A serverlet holding a handle covers stateful native objects.
+10. **Richer C-ABI types** — `string`, arrays, and structs for C, C++, Zig, and Swift (today
+    only `int`, `float`, and `bool`), plus an opaque handle type whose native object is
+    released when its owner stops. A serverlet holding a handle covers stateful native objects.
 11. **C# via .NET Native AOT** — `[UnmanagedCallersOnly(EntryPoint = "...")]` exports linked
     into the host; the .NET runtime and garbage collector come with them.
-12. **More languages** — ✅ Zig (`export fn`) and Swift (`@_cdecl`, or `@c` on Swift 6.3)
-    through `load_foreign`, for the host target. ✅ TypeScript FFI and pipe landlines:
-    TypeScript 7 checks every source, scriptc serves eligible scalar FFI calls, and Bun
-    compiles the protocol executable when required. See the
+12. **[IMPLEMENTED] More languages (v0.4.0)** — Zig (`export fn`) and Swift (`@_cdecl`, or
+    `@c` on Swift 6.3) through `load_foreign`, for the host target. TypeScript FFI and pipe
+    landlines: TypeScript 7 checks every source, scriptc serves eligible scalar FFI calls,
+    and Bun compiles the protocol executable when required. See the
     [TypeScript SDK guide](../../sdk/typescript/README.md).
 13. **Stateful FFI serverlets, only if needed** — a serverlet whose state lives in a native
     object, if handles (step 10) prove too awkward in practice.

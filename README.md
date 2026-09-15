@@ -118,7 +118,11 @@ The OrchestrateLang **compiler is itself written in Rust** and lives entirely in
 | **Parser** | `src/parser.rs` | Recursive-descent Pratt parser that builds a typed AST |
 | **AST** | `src/ast.rs` | Enum-based Abstract Syntax Tree node definitions |
 | **Typechecker** | `src/typechecker.rs` | Single-pass type inference and checking. Runs before codegen — catches type mismatches in `let` statements, binary operations, and function calls. Module and serverlet signatures are registered first so cross-module return types are correctly inferred. |
-| **Code Generator** | `src/codegen/` | Traverses the AST and emits valid Rust source code as a `String` (`core.rs`, `stmt.rs`, `expr.rs`) |
+| **Code Generator** | `src/codegen/` | Traverses the AST and emits valid Rust source code as a `String` (`core.rs`, `stmt.rs`, `expr.rs`), landline clients (`landline.rs`), and library-mode APIs (`library.rs`) |
+| **FFI bindings** | `src/ffi_parser.rs`, `src/ffi_rust.rs` | Read `.orch_ffi` sidecars: C-ABI `extern "C"` bindings for C, C++, Zig, and Swift, and typechecker registration for Rust |
+| **TypeScript** | `src/typescript.rs` | Checks TypeScript sources with TypeScript 7 and builds the scriptc or Bun executable for FFI and landlines |
+| **PROM** | `src/prom.rs` | The personal module registry and the embedded standard library |
+| **Diagnostics** | `src/errors.rs` | Turns `cargo` errors into OrchestrateLang hints |
 | **Driver** | `src/driver.rs` | Coordinates module resolution, `load` merging, native FFI compilation (C/C++ via `cc-rs`, Zig and Swift via their own compilers), TypeScript 7 scriptc/Bun bridges, sandbox guest builds, and invokes `cargo` |
 | **CLI** | `src/main.rs` | The `orchestrate` command: `run`, `build`, `check`, and `prom` |
 | **Language server** | `src/lsp_main.rs` | The `orchestrate-lsp` binary: hover type information for editors |

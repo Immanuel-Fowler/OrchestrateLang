@@ -1,12 +1,15 @@
 # Serverlet Files — Design & Roadmap
 
-> Status: **design ~90% done — not yet implemented.** The *model* is settled
-> (consent boundary, manifest-as-extended-`module.orch`, two polyglot paths, grant
-> enforcement as the load-bearing wall). What is **not** finalized: the concrete
-> **syntax of the serverlet file itself** — the `serverlet ... via ... { grant ... }`
-> shape in §3 is a sketch, not a decision. Lock that syntax last, *after*
-> sandboxed serverlets ship (see `sandboxed-serverlets.md`), so the file format can
-> account for `sandbox(...)` from the start instead of being retrofitted.
+> Status: **design ~90% done — partly implemented.** Polyglot serverlets shipped as
+> [landline serverlets](landline-serverlets.md): `serverlet X via python(...)` and
+> `via typescript(...)`, with `grant call` for host functions enforced by the generated
+> dispatcher. That supersedes step 5 below (subprocess+JSON). Still design only: the
+> distributable serverlet file itself, `grant read/write "<path>"`, and loading prebuilt
+> serverlets through the `module.orch` consent boundary. The *model* is settled (consent
+> boundary, manifest-as-extended-`module.orch`, two polyglot paths, grant enforcement as
+> the load-bearing wall). Lock the serverlet-file syntax last, *after* sandboxed serverlets
+> ship (see `sandboxed-serverlets.md`), so the file format can account for `sandbox(...)`
+> from the start instead of being retrofitted.
 >
 > This doc captures the agreed-on model, the concrete steps to build it, and *why*
 > the recent language changes (struct support, FFI sidecars, fail-slow errors,

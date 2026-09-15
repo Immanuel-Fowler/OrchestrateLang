@@ -707,7 +707,7 @@ load "validators.orch"
 
 All functions and tasks in the loaded files become part of the module namespace and can be called by serverlets and other functions in the same module.
 
-### 6.4 Calling Foreign Rust Functions (`load_foreign`)
+### 6.4 Calling Foreign Functions (`load_foreign`)
 
 OrchestrateLang loads Rust, C, C++, Zig, Swift, and TypeScript functions into a module's
 namespace. Native C-ABI calls are in-process and stateless. TypeScript uses a generated,
@@ -1203,7 +1203,7 @@ graph LR
     B --> C["Token Stream\nVec&lt;Token&gt;"]
     C --> D["Parser\nparser.rs"]
     D --> E["AST\nVec&lt;Stmt&gt;"]
-    E --> F["Codegen\ncodegen.rs"]
+    E --> F["Codegen\ncodegen/"]
     F --> G["Rust source\n.orch_cache/src/"]
     G --> H["cargo build\n/ cargo run"]
     H --> I["Native Binary"]
@@ -1215,8 +1215,9 @@ graph LR
 | **Parser** | `src/parser.rs` | Recursive-descent Pratt parser. Converts the token stream into a typed AST of `Stmt` and `Expr` nodes. Operator precedence (from lowest `Assign` to highest `Call`) is managed by the `Precedence` enum. |
 | **AST** | `src/ast.rs` | Pure data — enum-based node definitions. No logic, no codegen. The two root types are `Stmt` (statements: declarations, control flow) and `Expr` (expressions: literals, calls, blocks, process blocks). |
 | **Typechecker** | `src/typechecker.rs` | Single-pass type inference and checking over the AST. Runs after all modules are parsed, so module function and serverlet handler signatures are registered before the main file is checked. Catches type mismatches in `let` statements, binary operations, and function calls. Issues warnings for unknown function calls (e.g. unresolved foreign functions). |
-| **Codegen** | `src/codegen.rs` | Single-pass AST traversal. Outputs a Rust source `String`. Performs three pre-passes before emitting code: `scan_tasks` (discovers async callables), `scan_modules` (records imported namespaces), `scan_events` (discovers all event names and their payload types to generate registries). |
-| **Driver** | `src/main.rs` | CLI entry point. Resolves `use module` imports recursively, handles `load` file merging, coordinates per-module codegen, writes all `.rs` files into `.orch_cache/src/`, and invokes `cargo`. Also handles `load_foreign "c"`/`"cpp"` compilation via `cc-rs` and auto-generated `build.rs` files. |
+| **Codegen** | `src/codegen/` | Single-pass AST traversal, split into `core.rs`, `stmt.rs`, `expr.rs`, `landline.rs` (landline clients), and `library.rs` (library mode). Outputs a Rust source `String`. Performs three pre-passes before emitting code: `scan_tasks` (discovers async callables), `scan_modules` (records imported namespaces), `scan_events` (discovers all event names and their payload types to generate registries). |
+| **Driver** | `src/driver.rs` | Resolves `use module` imports recursively, handles `load` file merging, coordinates per-module codegen, writes all `.rs` files into `.orch_cache/src/`, and invokes `cargo`. Also generates `build.rs` for `load_foreign`: C/C++ via `cc-rs`, Zig via `zig build-obj`, Swift via `swiftc`, and TypeScript executables via `src/typescript.rs`. |
+| **CLI** | `src/main.rs` | The `orchestrate` command: `run`, `build`, `check`, and `prom`. |
 
 ### 7.3 The Token Types
 
@@ -1224,8 +1225,16 @@ The lexer produces tokens of kind `TokenKind`. Keywords are:
 
 ```
 let  fn  task  process  orchestrator  automatic  trigger
-on  start  parallel  if  else  while  return
-use  module  load  load_foreign  serverlet  true  false
+on  start  parallel  if  else  while  for  in  break  continue  return
+match  try  catch  struct  enum
+use  module  load  load_foreign  serverlet  on_start  on_stop  on_crash  true  false
+```
+
+These words are recognized by the parser in context rather than reserved by the lexer, so
+they can still be used as ordinary identifiers elsewhere:
+
+```
+secret  sandbox  via  python  typescript  host  grant  call  on_tick  on_fixed_tick
 ```
 
 Operators: `+  -  *  /  ==  !=  <  >  <=  >=  =  ->  |>`
@@ -1246,13 +1255,21 @@ Punctuation: `(  )  {  }  [  ]  :  ,  ;  .`
 | `Trigger` | `trigger event_name(args)` |
 | `Parallel` | `parallel { ... }` |
 | `While` | `while cond { ... }` |
+| `ForIn` | `for x in expr { ... }` |
+| `Break` / `Continue` | `break` / `continue` inside a loop |
+| `Expr` | An expression used as a statement, e.g. `print("hi")` |
+| `StructDef` | `struct Name { field: type, ... }` |
+| `EnumDef` | `enum Name { Variant, Variant(type), ... }` |
 | `UseModule` | `use module alias: "path"` |
 | `Load` | `load "file.orch"` |
-| `LoadForeign` | `load_foreign "rust|c|cpp|zig|swift" "./file"` |
-| `Serverlet` | `serverlet Name { let state = v; on handler(...) { ... } }` |
+| `LoadForeign` | `load_foreign "rust|c|cpp|zig|swift|typescript" "./file"` |
+| `Serverlet` | `serverlet Name { let state = v; on handler(...) { ... } }`, with `secret`, `sandbox(...)`, or `via python|typescript(source: "...")` forms |
+| `Host` | `host name { fn f(params) -> type }` — host functions a library-mode host implements |
 | `Return` | `return expr` |
 | `OnStart` | `on_start { ... }` — runs at program startup, before workers launch |
 | `OnStop` | `on_stop { ... }` — runs on Ctrl-C signal before process exits |
+| `OnTick` | `on_tick(dt: float) { ... }` — library mode; optionally takes an input and returns an output |
+| `OnFixedTick` | `on_fixed_tick(step: float) { ... }` — library mode fixed-step tick |
 
 **Expressions (`Expr`)** — things that produce values:
 

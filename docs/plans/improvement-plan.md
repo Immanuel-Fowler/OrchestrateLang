@@ -1,5 +1,12 @@
 # OrchestrateLang — Critical Improvement Plan
 
+> Status: **historical.** Error handling (`try`/`catch`, `option`/`result`), a richer type
+> system (structs, enums, `match`), the debugging story (`ORCH_SHOW_GENERATED`, friendly
+> `cargo` error hints), and supervision (`on_crash`) have landed in some form. The file is
+> kept for its rationale; details may differ from the implementation. See
+> [CHANGELOG.md](../../CHANGELOG.md) and the [language reference](../language-reference.md)
+> for current behavior.
+
 Four issues were identified as blocking production readiness:
 1. [Error Handling](#1-error-handling)
 2. [Type System Expressiveness](#2-type-system-expressiveness)
