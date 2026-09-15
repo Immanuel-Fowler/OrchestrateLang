@@ -1,6 +1,10 @@
 # Landline Serverlets — Design & Build Plan
 
-> Status: **🚧 IN PROGRESS — build steps 1–9 implemented: Python pipes, Rust library mode, host callbacks, call budgets, and a latency benchmark, plus host integration for the first adopter (§8). Other runtimes remain planned.** The [Python SDK guide](../../sdk/python/README.md) describes the implemented subset;
+> Status: **🚧 IN PROGRESS — Python and TypeScript pipes, TypeScript FFI, Rust library
+> mode, host callbacks, call budgets, a latency benchmark, and host integration for the
+> first adopter are implemented (§8). Other runtimes remain planned.** The
+> [Python SDK guide](../../sdk/python/README.md) and [TypeScript SDK guide](../../sdk/typescript/README.md)
+> describe the implemented subsets;
 > the [library guide](../library-mode.md) describes host integration. Embedded runtimes below remain proposals. What *is* settled: a serverlet's handler bodies can be written in
 > another language and run behind a **landline** (a connection with no sockets);
 > OrchestrateLang can build as a Rust library that a host application links; and the
@@ -20,7 +24,7 @@
 | **Serverlet** | In-process tokio actor, written in OrchestrateLang | Speed, simplicity | ✅ Shipped |
 | **Secret serverlet** | Separate OS process, written in OrchestrateLang | Secrecy + crash isolation | ✅ Shipped ([secret-serverlets.md](secret-serverlets.md)) |
 | **Sandboxed serverlet** | WASM guest (`wasmtime`) | Containment of hostile code | 🚧 Steps 1–2 of 8 ([sandboxed-serverlets.md](sandboxed-serverlets.md)) |
-| **Landline serverlet** | Code in another language, over a pipe or embedded in-process (Python today; languages that can export C functions should prefer FFI) | **Polyglot handler bodies** | ✅ Python pipe; other runtimes planned |
+| **Landline serverlet** | Code in another language, over a pipe or embedded in-process (Python and TypeScript today; languages that can export C functions should prefer FFI) | **Polyglot handler bodies** | ✅ Python and TypeScript pipes; other runtimes planned |
 
 A landline serverlet is the actor-style polyglot path from
 [roadmap.md](../roadmap.md) §1a. It keeps the serverlet contract — callers use the same
@@ -32,13 +36,16 @@ generated `XClient` — and swaps what sits at the other end of the line.
 
 OrchestrateLang exists to coordinate code that runs in separate runtimes
 ([serverlet-files.md](serverlet-files.md) §1). Today a serverlet's body can only be
-written in OrchestrateLang, and `load_foreign` covers stateless calls into Rust, C, and
-C++. There is no way to write a **stateful, long-lived** piece of a program in a language
-such as Python and talk to it the way you talk to any other serverlet.
+written in OrchestrateLang, and `load_foreign` covers stateless calls into Rust, C, C++,
+Zig, Swift, and TypeScript. There is no way to write a **stateful, long-lived** piece of a
+program in a language such as Python or TypeScript and talk to it the way you talk to any
+other serverlet.
 
 Landlines are not the first choice for every language. A language that can export
-C-callable functions (C#, Zig, Swift, TypeScript compiled natively by scriptc) should use
-FFI instead; see the [design philosophy](../design-philosophy.md) §4 and §8 below.
+C-callable functions (C#, Zig, Swift) should use FFI instead; see the
+[design philosophy](../design-philosophy.md) §4 and §8 below. Python needs its interpreter;
+TypeScript also has an executable FFI bridge, but it starts a fresh process per call. Both
+use landlines for persistent state, asynchronous handlers, and budgets.
 
 Landline serverlets close that gap. OrchestrateLang declares each foreign serverlet's
 interface, starts and supervises its runtime, routes calls and events to it, and
@@ -60,14 +67,16 @@ Be precise about this, because "it all compiles to Rust" is only true of the mid
 - **Compiles to Rust:** the orchestration (events, processes, supervision), every
   landline's client and protocol code, the host API that foreign code calls back into,
   and any serverlet written in OrchestrateLang or Rust.
-- **Linked natively (FFI):** Rust, C, and C++ today. Languages that compile to a native
-  library with C-callable functions can join them: C# (.NET Native AOT), Zig, Swift
-  (`@c`), and TypeScript compiled by scriptc (experimental). Some bring their own runtime
-  into the process, such as the .NET garbage collector.
-- **Neither compiles to Rust nor links natively:** Python, which always needs its
-  interpreter (over a pipe or embedded), and TypeScript run the usual way. The TypeScript
-  7 compiler is written in Go but still emits JavaScript, so running that output takes
-  Node, Bun, or an embedded JavaScript engine.
+- **Linked natively (FFI):** Rust, C, C++, Zig, and Swift today. Other languages that
+  compile to a native library with C-callable functions can join them, such as C# (.NET
+  Native AOT). Some bring their own runtime into the process, such as the Swift runtime
+  or the .NET garbage collector.
+- **Neither compiles to Rust nor links through the C ABI:** Python always needs its
+  interpreter (over a pipe or embedded). TypeScript is checked by TypeScript 7 and uses a
+  generated executable bridge for stateless FFI or a persistent landline; scriptc is
+  attempted first and Bun is used when the source needs its runtime features. The backend
+  is currently chosen project-wide via `ORCH_TS_BACKEND`; per-file / per-serverlet
+  selection in `.orch` source is planned.
 
 The host sees one Rust crate. The polyglot part happens at the edges of it.
 
@@ -81,12 +90,13 @@ Host application (Rust, owns its main loop) — e.g. a game engine
      ├─ orchestration: events, automatic/triggered processes, supervision
      ├─ host API: host functions foreign code is granted access to
      ├─ FFI ─────────────────────────── linked in directly (preferred)
-     │     ├─ Rust / C / C++            ← today
-     │     └─ C#, Zig, Swift, TypeScript via scriptc  ← planned
+     │     ├─ Rust / C / C++ / Zig / Swift  ← today
+     │     └─ C# (Native AOT)           ← planned
      ├─ line: "embedded" ────────────── runtime hosted inside the host process
      │     └─ Python (pyo3)             ← high-frequency calls
      └─ line: "pipe" ────────────────── stdin/stdout to a child process (sidecar)
            ├─ python  quests.py         ← event-driven calls
+           ├─ serverlet tools.ts        ← compiled TypeScript executable
            └─ any program that speaks the protocol
 ```
 
@@ -305,7 +315,7 @@ covers the kind, call ID, and payload (not the length prefix). Implemented kind 
 are HELLO=1, READY=2, CALL=3, REPLY=4, ERROR=5, HOST_CALL=6, HOST_REPLY=7,
 BYE=8, TICK=9.
 
-For secret serverlets, HELLO uses call ID 0 and encodes an i64 version followed by
+For secret serverlets and implemented Python/TypeScript landlines, HELLO uses call ID 0 and encodes an i64 version followed by
 an array of signature strings such as `echo(int)->int`, in declaration order.
 READY has call ID 0 and an empty payload. CALL starts with an i64 handler index
 (zero-based), followed by arguments in parameter order. REPLY contains the return
@@ -330,9 +340,9 @@ arrays as u32 count + elements, and structs as fields in declaration order.
 Secret serverlets currently log handler errors and return the return type’s default value;
 state mutations before a panic persist.
 
-In library mode, a Python landline handler named `tick` is called with TICK instead of
-CALL. Its payload starts with the i64 tick number and the f64 `dt`, followed by the
-handler id and arguments exactly as in CALL; the reply is an ordinary REPLY or ERROR.
+In library mode, a Python or TypeScript landline handler named `tick` is called with TICK
+instead of CALL. Its payload starts with the i64 tick number and the f64 `dt`, followed by
+the handler id and arguments exactly as in CALL; the reply is an ordinary REPLY or ERROR.
 
 For Python host integration, READY carries an array of granted signatures such as
 `world.record(int)->int` (an empty payload remains valid for no grants). HOST_CALL
@@ -400,8 +410,11 @@ functions uses FFI, not a landline.
     its owner stops. A serverlet holding a handle covers stateful native objects.
 11. **C# via .NET Native AOT** — `[UnmanagedCallersOnly(EntryPoint = "...")]` exports linked
     into the host; the .NET runtime and garbage collector come with them.
-12. **More C-ABI languages** — Zig (`export fn`), Swift (`@c`, Swift 6.3), and TypeScript
-    compiled by scriptc (`build --lib`, experimental; strings and byte buffers only).
+12. **More languages** — ✅ Zig (`export fn`) and Swift (`@_cdecl`, or `@c` on Swift 6.3)
+    through `load_foreign`, for the host target. ✅ TypeScript FFI and pipe landlines:
+    TypeScript 7 checks every source, scriptc serves eligible scalar FFI calls, and Bun
+    compiles the protocol executable when required. See the
+    [TypeScript SDK guide](../../sdk/typescript/README.md).
 13. **Stateful FFI serverlets, only if needed** — a serverlet whose state lives in a native
     object, if handles (step 10) prove too awkward in practice.
 
@@ -420,7 +433,8 @@ exception replies, process restart after a failed call, portable source/SDK bund
 and snapshot/runtime tests. CI installs Python 3.10. The initial restart behavior is
 fixed: invoke `on_crash`, return a default for the failed call without replaying it,
 and restart for subsequent calls. Configurable restart policies remain future work.
-See the [SDK guide](../../sdk/python/README.md) for current limits.
+See the [Python SDK guide](../../sdk/python/README.md) and
+[TypeScript SDK guide](../../sdk/typescript/README.md) for current limits.
 
 
 - `serverlet X via python(source: "...") { on h(...) -> T }` compiles; callers use

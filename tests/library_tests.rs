@@ -443,6 +443,43 @@ fn main() {
     assert_eq!(output.trim(), "6\n6\ngen");
 }
 
+/// Zig and Swift static libraries (and the Swift runtime) must reach the host's final link.
+#[test]
+fn engine_zig_and_swift_ffi() {
+    for tool in ["zig", "swiftc"] {
+        if Command::new(tool).arg(if tool == "zig" { "version" } else { "--version" }).output().is_err() {
+            eprintln!("skipping: `{}` is not on PATH", tool);
+            return;
+        }
+    }
+    let root = root("zig_swift_ffi");
+    for (name, language, source) in [
+        ("zig_math", "zig", "export fn zig_triple(n: i64) i64 { return n * 3; }\n"),
+        ("swift_math", "swift", "@_cdecl(\"swift_square\")\npublic func swiftSquare(_ n: Int64) -> Int64 { n * n }\n"),
+    ] {
+        let dir = root.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("module.orch"), format!("load_foreign \"{language}\" \"math.{language}\"\n")).unwrap();
+        fs::write(dir.join(format!("math.{language}")), source).unwrap();
+        let function = if language == "zig" { "zig_triple" } else { "swift_square" };
+        fs::write(dir.join("math.orch_ffi"), format!("{function}(n: int) -> int\n")).unwrap();
+    }
+    build(&root, r#"
+use module z: "./zig_math"
+use module s: "./swift_math"
+on_tick(dt: float) { print(to_string(z.zig_triple(s.swift_square(4)))) }
+"#);
+    let output = host(&root, r#"
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let mut scripts = scripts::start(runtime.handle(), ()).unwrap();
+    scripts.tick_blocking(&runtime, 0.1).unwrap();
+    scripts.shutdown_blocking(&runtime).unwrap();
+}
+"#);
+    assert_eq!(output.trim(), "48");
+}
+
 #[test]
 fn engine_typed_tick_and_fixed_step() {
     let root = root("typed_tick");

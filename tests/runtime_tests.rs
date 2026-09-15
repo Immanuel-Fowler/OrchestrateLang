@@ -33,6 +33,87 @@ fn run_orch(test_name: &str, source: &str) -> String {
         .join("\n")
 }
 
+/// True when `program` runs; FFI tests for optional toolchains skip otherwise.
+fn has_tool(program: &str, version_arg: &str) -> bool {
+    let found = Command::new(program).arg(version_arg).output().is_ok();
+    if !found {
+        eprintln!("skipping: `{}` is not on PATH", program);
+    }
+    found
+}
+
+/// Writes a `load_foreign` module (source + sidecar) into the test's temp dir.
+fn write_foreign_module(test_name: &str, module: &str, language: &str, file: &str, source: &str, sidecar: &str) {
+    let dir = std::env::temp_dir().join(format!("orch_runtime_{}", test_name)).join(module);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("module.orch"), format!("load_foreign \"{}\" \"./{}\"\n", language, file)).unwrap();
+    fs::write(dir.join(file), source).unwrap();
+    fs::write(dir.join(file).with_extension("orch_ffi"), sidecar).unwrap();
+}
+
+#[test]
+fn runtime_ffi_zig() {
+    if !has_tool("zig", "version") { return; }
+    write_foreign_module("ffi_zig", "zmath", "zig", "math.zig",
+        "export fn add(a: i64, b: i64) i64 { return a + b; }\nexport fn half(x: f64) f64 { return x / 2.0; }\nexport fn is_even(n: i64) bool { return @mod(n, 2) == 0; }\n",
+        "add(a: int, b: int) -> int\nhalf(x: float) -> float\nis_even(n: int) -> bool\n");
+    let out = run_orch("ffi_zig", r#"
+use module zmath: "./zmath"
+let worker = automatic {
+    print(to_string(zmath.add(2, 3)))
+    print(to_string(zmath.half(5.0)))
+    print(to_string(zmath.is_even(10)))
+    stop_orch()
+}
+orchestrator main(procs: process[worker]) { }
+"#);
+    assert_eq!(out.trim(), "5\n2.5\ntrue");
+}
+
+#[test]
+fn runtime_ffi_swift() {
+    if !has_tool("swiftc", "--version") { return; }
+    write_foreign_module("ffi_swift", "smath", "swift", "math.swift",
+        "@_cdecl(\"add\")\npublic func add(_ a: Int64, _ b: Int64) -> Int64 { a + b }\n@_cdecl(\"half\")\npublic func half(_ x: Double) -> Double { x / 2 }\n@_cdecl(\"is_even\")\npublic func isEven(_ n: Int64) -> Bool { n % 2 == 0 }\n",
+        "add(a: int, b: int) -> int\nhalf(x: float) -> float\nis_even(n: int) -> bool\n");
+    let out = run_orch("ffi_swift", r#"
+use module smath: "./smath"
+let worker = automatic {
+    print(to_string(smath.add(2, 3)))
+    print(to_string(smath.half(5.0)))
+    print(to_string(smath.is_even(10)))
+    stop_orch()
+}
+orchestrator main(procs: process[worker]) { }
+"#);
+    assert_eq!(out.trim(), "5\n2.5\ntrue");
+}
+
+/// Two Zig and two Swift libraries plus C in one program: library names must not collide.
+#[test]
+fn runtime_ffi_mixed_c_zig_swift() {
+    if !has_tool("zig", "version") || !has_tool("swiftc", "--version") { return; }
+    let name = "ffi_mixed_c_zig_swift";
+    write_foreign_module(name, "c1", "c", "math.c", "long long c_twice(long long n) { return n * 2; }\n", "c_twice(n: int) -> int\n");
+    write_foreign_module(name, "z1", "zig", "math.zig", "export fn z_one(n: i64) i64 { return n + 1; }\n", "z_one(n: int) -> int\n");
+    write_foreign_module(name, "z2", "zig", "math.zig", "export fn z_two(n: i64) i64 { return n + 2; }\n", "z_two(n: int) -> int\n");
+    write_foreign_module(name, "s1", "swift", "math.swift", "@_cdecl(\"s_ten\")\npublic func sTen(_ n: Int64) -> Int64 { n * 10 }\n", "s_ten(n: int) -> int\n");
+    write_foreign_module(name, "s2", "swift", "math.swift", "@_cdecl(\"s_hundred\")\npublic func sHundred(_ n: Int64) -> Int64 { n * 100 }\n", "s_hundred(n: int) -> int\n");
+    let out = run_orch(name, r#"
+use module c1: "./c1"
+use module z1: "./z1"
+use module z2: "./z2"
+use module s1: "./s1"
+use module s2: "./s2"
+let worker = automatic {
+    print(to_string(c1.c_twice(z1.z_one(z2.z_two(s1.s_ten(s2.s_hundred(1)))))))
+    stop_orch()
+}
+orchestrator main(procs: process[worker]) { }
+"#);
+    assert_eq!(out.trim(), "2006");
+}
+
 #[test]
 fn runtime_basic_task_add() {
     let src = r#"

@@ -1,0 +1,31 @@
+use std::io::{Read, Write};
+struct Child(std::process::Child);
+impl Drop for Child { fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); } }
+fn read_frame(reader: &mut impl Read) -> OrchFrame {
+    let mut size = [0;4]; reader.read_exact(&mut size).expect("TypeScript FFI closed its pipe");
+    let n = u32::from_le_bytes(size) as usize;
+    assert!((5..=64*1024*1024).contains(&n), "invalid TypeScript FFI frame length");
+    let mut bytes = vec![0;n]; reader.read_exact(&mut bytes).expect("truncated TypeScript FFI frame");
+    OrchFrame::parse(bytes).expect("invalid frame")
+}
+fn write_frame(writer: &mut impl Write, kind: u8, id: u32, payload: &[u8]) {
+    writer.write_all(&((payload.len()+5) as u32).to_le_bytes()).unwrap();
+    writer.write_all(&[kind]).unwrap(); writer.write_all(&id.to_le_bytes()).unwrap();
+    writer.write_all(payload).unwrap(); writer.flush().unwrap();
+}
+fn call(executable: std::path::PathBuf, payload: Vec<u8>, signatures: Vec<String>) -> Vec<u8> {
+    let mut child = Child(std::process::Command::new(executable).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().expect("cannot start TypeScript FFI"));
+    let mut input = child.0.stdin.take().unwrap(); let mut output = child.0.stdout.take().unwrap();
+    let hello = read_frame(&mut output); assert_eq!((hello.kind,hello.call_id), (1,0), "expected HELLO");
+    let mut pos = 0;
+    assert_eq!(i64::wire_decode(&hello.payload, &mut pos), Some(1));
+    assert_eq!(Vec::<String>::wire_decode(&hello.payload, &mut pos), Some(signatures));
+    assert_eq!(pos, hello.payload.len());
+    write_frame(&mut input, 2, 0, &[]);
+    write_frame(&mut input, 3, 1, &payload);
+    let reply = read_frame(&mut output); assert_eq!(reply.call_id, 1);
+    if reply.kind == 5 { panic!("TypeScript FFI: {}", String::wire_decode(&reply.payload, &mut 0).unwrap_or_default()); }
+    assert_eq!(reply.kind, 4, "expected REPLY");
+    write_frame(&mut input, 8, 0, &[]);
+    reply.payload
+}

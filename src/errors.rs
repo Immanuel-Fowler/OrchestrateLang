@@ -143,7 +143,7 @@ fn get_friendly_message(stderr: &str) -> Option<&'static str> {
     } else if stderr.contains("error[E0382]: borrow of moved value") || stderr.contains("error[E0382]: use of moved value") {
         Some("value used after it was moved — add .clone() where you need to use a value in multiple places")
     } else if stderr.contains("error: linking with") {
-        Some("linker failed — if using load_foreign 'c' or 'cpp', check that your C/C++ source compiles and exports the expected symbols")
+        Some("linker failed — if using load_foreign 'c', 'cpp', 'zig', or 'swift', check that the foreign source exports every function in its .orch_ffi sidecar with a C symbol (extern \"C\", Zig `export fn`, Swift `@_cdecl`/`@c`)")
     } else if stderr.contains("error[E0080]") {
         Some("compile-time evaluation error — a constant expression could not be evaluated")
     } else {

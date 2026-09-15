@@ -9,7 +9,9 @@ Generated crates use edition 2024 and `rust-version = "1.89"`, so the host needs
 1.89 or newer. Pass `build --lib --rust-version <x.y[.z]>` to declare a different one;
 edition 2024 makes 1.85 the floor. They build inside another Cargo workspace: the compiler's cache crate
 declares its own empty `[workspace]`, and the output crate joins the host's workspace as
-an ordinary path dependency. Python pipe landlines require Python 3.10+.
+an ordinary path dependency. Python pipe landlines require Python 3.10+. TypeScript
+landlines and FFI require TypeScript 7 and Bun while compiling; their generated
+executables are packaged with the result.
 
 Run the complete example from the repository root:
 
@@ -61,7 +63,7 @@ assets, host implementations, and stop flags are isolated per instance.
 | Field | Default | Meaning |
 |---|---|---|
 | `deterministic` | `false` | Run lifecycle and event hooks on host-driven time ([below](#deterministic-mode)) |
-| `python` | `None` | Python executable for landlines; otherwise `ORCH_PYTHON`, then `python3` |
+| `python` | `None` | Python executable for Python landlines; otherwise `ORCH_PYTHON`, then `python3` |
 | `shutdown_grace` | 3 seconds | How long shutdown waits for sidecar tasks before aborting them; zero is allowed |
 
 ```rust
@@ -93,7 +95,7 @@ runs between them. A multithreaded runtime keeps running background work between
 
 Lifecycle code and host implementations must cooperate with the runtime: CPU-bound
 loops, blocking host methods, or a stuck `on_start`/`on_stop` hook can delay a tick or
-shutdown. A landline `budget` bounds slow Python calls, but not Rust host methods or the
+shutdown. A landline `budget` bounds slow Python or TypeScript calls, but not Rust host methods or the
 hooks themselves.
 
 ## Events from the host
@@ -134,9 +136,10 @@ The generated method becomes `tick(dt, input: Input) -> Result<Output, String>`,
 `tick_blocking(&runtime, dt, input)`. A typed hook must be the only `on_tick` in the
 program.
 
-Calls to a Python landline handler named `tick` are sent as a TICK message that also
-carries the tick number and `dt`; the handler reads them from `self.tick_number` and
-`self.tick_dt`. Put arrays in the input to batch per-item work into one call.
+Calls to a Python or TypeScript landline handler named `tick` are sent as a TICK message
+that also carries the tick number and `dt`. Python reads them from `self.tick_number` and
+`self.tick_dt`; TypeScript reads `context.tickNumber` and `context.tickDt`. Put arrays in
+the input to batch per-item work into one call.
 
 ## Deterministic mode
 
@@ -190,18 +193,17 @@ serverlet's grants, so forging an ID cannot invoke an ungranted method. Grants m
 appear on landlines in imported modules, but refer to the entry file's host groups.
 Calls in constructors or outside an active handler are rejected.
 
-Host functions use the existing binary wire types: primitives, arrays, and
-same-file structs represented by Python dataclasses. Matching dataclass types must
-be defined/imported in the Python implementation. Their field order must match the
-OrchestrateLang struct. Host names must not begin with `_` or produce colliding
-`group_function` Rust method names.
+Host functions use the existing binary wire types: primitives, arrays, and same-file
+structs. Python uses matching dataclasses; TypeScript uses matching object shapes. Their
+field order must match the OrchestrateLang struct. Host names must not begin with `_` or
+produce colliding `group_function` Rust method names.
 
 OrchestrateLang code can also call `world.record(...)` directly. A returned host
-error is logged and produces a default value. Python exceptions retain the normal
-landline behavior: log the error, return a default value, and preserve process state.
+error is logged and produces a default value. Python and TypeScript exceptions retain the
+normal landline behavior: log the error, return a default value, and preserve process state.
 
 Grants constrain the generated host-call interface. They do not sandbox Python or
-restrict its OS permissions.
+TypeScript or restrict their OS permissions.
 
 ## Logging
 
@@ -217,7 +219,7 @@ impl scripts::Host for AppHost {
 ```
 
 In library mode, `print` output, runtime diagnostics (such as a failed host call), and
-the stderr of Python and secret serverlet children all go through `log`. `LogLevel` is
+the stderr of Python, TypeScript, and secret serverlet children all go through `log`. `LogLevel` is
 `Info`, `Warning`, or `Error`. Rust's process-wide panic hook is outside this logger.
 
 ## Packaging
@@ -226,18 +228,24 @@ The output directory is compiler-owned and marked `.orchestrate-library`.
 Generation refuses to overwrite an existing unmarked directory. Regenerate from
 `.orch` sources rather than editing generated files.
 
-Python sources/SDK files and compiled secret children are embedded as library
-assets. Each instance extracts its own temporary directory, then removes it on
-shutdown. The linked host binary does not depend on the original `.orch`/Python
-source locations. Python itself and third-party packages remain external; point
-`StartOptions::python` at the interpreter to use. Existing foreign C/C++ build scripts
-may still reference source files and require their toolchain when the host builds the
-generated crate.
+Python sources/SDK files, compiled TypeScript executables, and compiled secret children
+are embedded as library assets. Each instance extracts its own temporary directory, then
+removes it on shutdown. The linked host binary does not depend on the original `.orch`,
+Python, or TypeScript source locations. Python itself and third-party packages remain
+external; point `StartOptions::python` at the interpreter to use. TypeScript assets do not
+need Bun, TypeScript, or scriptc on the player's machine, but data and native dependencies
+the implementation uses still need packaging. Existing foreign C/C++ build scripts may
+still reference source files and require their toolchain when the host builds the generated
+crate.
 
 Secret children are compiled for the compiler machine's target by default. Pass
 `build --lib --target <triple>` to build them, and check the library, for another target;
 the matching Rust target and linker must be installed. The standard library (`lists`,
 `strings`) is embedded in the compiler, so it works from an installed `orchestrate`.
+
+TypeScript executables are built for the compiler host. A library containing a TypeScript
+FFI module or landline rejects a different `--target` rather than packaging an incompatible
+executable.
 
 Bound slow landline calls made from `on_tick` with a landline `budget` and `late` policy,
 and batch per-item work by passing arrays; see

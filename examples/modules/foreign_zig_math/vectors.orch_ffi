@@ -1,0 +1,4 @@
+length2d(x: float, y: float) -> float
+lerp(a: float, b: float, t: float) -> float
+gcd(a: int, b: int) -> int
+is_power_of_two(n: int) -> bool

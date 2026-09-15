@@ -50,7 +50,7 @@ pub fn parse_ffi_and_generate_bindings(
             };
             
             if arg_type_str == "string" {
-                return Err(format!("load_foreign '{}': string type is not supported in C/C++ FFI signatures", language));
+                return Err(format!("load_foreign '{}': string type is not supported in C-ABI FFI signatures (use int, float, bool, or void)", language));
             }
             
             let rust_type = orch_type_to_rust_ffi(&arg_type_str, file_name, tok.line)?;
@@ -85,7 +85,7 @@ pub fn parse_ffi_and_generate_bindings(
             };
             
             if ret_type_str == "string" {
-                return Err(format!("load_foreign '{}': string type is not supported in C/C++ FFI signatures", language));
+                return Err(format!("load_foreign '{}': string type is not supported in C-ABI FFI signatures (use int, float, bool, or void)", language));
             }
             
             rust_ret = orch_type_to_rust_ffi(&ret_type_str, file_name, tok.line)?;
@@ -152,11 +152,11 @@ mod tests {
     fn test_string_type_rejected() {
         let ffi = "greet(name: string) -> void";
         let err = parse_ffi_and_generate_bindings(ffi, "c", "test.orch_ffi").unwrap_err();
-        assert_eq!(err, "load_foreign 'c': string type is not supported in C/C++ FFI signatures");
-        
+        assert_eq!(err, "load_foreign 'c': string type is not supported in C-ABI FFI signatures (use int, float, bool, or void)");
+
         let ffi2 = "get_name() -> string";
-        let err2 = parse_ffi_and_generate_bindings(ffi2, "c", "test.orch_ffi").unwrap_err();
-        assert_eq!(err2, "load_foreign 'c': string type is not supported in C/C++ FFI signatures");
+        let err2 = parse_ffi_and_generate_bindings(ffi2, "zig", "test.orch_ffi").unwrap_err();
+        assert_eq!(err2, "load_foreign 'zig': string type is not supported in C-ABI FFI signatures (use int, float, bool, or void)");
     }
 
     #[test]

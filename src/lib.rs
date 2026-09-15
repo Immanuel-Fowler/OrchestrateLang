@@ -8,3 +8,5 @@ pub mod errors;
 pub mod ffi_parser;
 pub mod ffi_rust;
 pub mod prom;
+
+pub mod typescript;

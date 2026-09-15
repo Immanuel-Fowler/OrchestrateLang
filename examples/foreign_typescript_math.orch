@@ -1,0 +1,5 @@
+use module math: "./modules/foreign_typescript_math"
+orchestrator main() {
+    print(math.twice(21.0))
+    stop_orch()
+}

@@ -1,0 +1,13 @@
+// Requires Zig 0.16+ on PATH (`brew install zig`).
+use module vec: "./modules/foreign_zig_math"
+
+let worker = automatic {
+    print("Length of (3, 4): " + to_string(vec.length2d(3.0, 4.0)))
+    print("Lerp 10 -> 20 at 0.25: " + to_string(vec.lerp(10.0, 20.0, 0.25)))
+    print("GCD(84, 36): " + to_string(vec.gcd(84, 36)))
+    print("64 is a power of two: " + to_string(vec.is_power_of_two(64)))
+
+    stop_orch()
+}
+
+orchestrator main(procs: process[worker]) { }
