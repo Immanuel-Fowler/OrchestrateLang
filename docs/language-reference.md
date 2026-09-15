@@ -857,7 +857,7 @@ is_leap_year(year: int) -> bool
 | `void` | `void` | no return value |
 
 The generated `build.rs` compiles each file into its own static library —
-`zig build-lib -O ReleaseFast` for Zig, `swiftc -emit-library -static -parse-as-library -O`
+`zig build-obj -O ReleaseFast` packed by `libtool` (macOS) or `ar` for Zig, `swiftc -emit-library -static -parse-as-library -O`
 for Swift — and links it. Swift libraries also link the Swift runtime (`swiftCore`), found
 through `swiftc -print-target-info`.
 

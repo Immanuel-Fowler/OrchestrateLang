@@ -57,7 +57,7 @@ load_foreign "typescript" "./math.ts"   // requires math.orch_ffi sidecar
 
 - **Rust**: fully implemented. The `.rs` file's `pub fn`s are injected verbatim into the generated module; type signatures are auto-scanned and registered into the typechecker.
 - **C/C++**: fully implemented via `cc-rs` for compilation and `.orch_ffi` sidecar files that declare the function signatures OrchestrateLang exposes to callers. Functions compile to `unsafe extern "C"` wrappers with safe Rust signatures.
-- **Zig / Swift**: implemented with the same `.orch_ffi` sidecars and C-ABI types. The generated `build.rs` compiles each file to a static library with `zig build-lib` (`export fn`) or `swiftc` (`@_cdecl`, or `@c` on Swift 6.3+) and links the Swift runtime. Host target only.
+- **Zig / Swift**: implemented with the same `.orch_ffi` sidecars and C-ABI types. The generated `build.rs` compiles each file to a static library with `zig build-obj` plus the platform archiver (`export fn`) or `swiftc` (`@_cdecl`, or `@c` on Swift 6.3+) and links the Swift runtime. Host target only.
 - **Python**: not possible as FFI, because Python needs its interpreter. Use a landline serverlet (1a).
 - **TypeScript**: implemented as a generated executable bridge. TypeScript 7 checks the
   source, then the compiler tries scriptc and falls back to `bun build --compile`. Scalar

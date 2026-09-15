@@ -493,7 +493,7 @@ load_foreign "typescript" "./math.ts"   // requires math.orch_ffi sidecar
 ```
 
 - **Rust:** `pub fn`s are injected verbatim; the sidecar declares signatures and may use `string`, arrays, `option<T>`, and `result<T>`.
-- **C, C++, Zig, Swift:** the sidecar declares signatures using `int`, `float`, `bool`, and `void`; the compiler generates `unsafe extern "C"` bindings. C and C++ compile via `cc-rs`; Zig (`export fn`) compiles with `zig build-lib`, and Swift (`@_cdecl`, or `@c` on Swift 6.3+) with `swiftc`, which also links the Swift runtime. Zig and Swift need their compiler on `PATH` and build for the host target only.
+- **C, C++, Zig, Swift:** the sidecar declares signatures using `int`, `float`, `bool`, and `void`; the compiler generates `unsafe extern "C"` bindings. C and C++ compile via `cc-rs`; Zig (`export fn`) compiles with `zig build-obj` into a static library, and Swift (`@_cdecl`, or `@c` on Swift 6.3+) with `swiftc`, which also links the Swift runtime. Zig and Swift need their compiler on `PATH` and build for the host target only.
 - **TypeScript:** TypeScript 7 checks the source, then scriptc is attempted for eligible scalar calls and Bun compiles the bridge when required. `int` maps to `bigint`; the Bun bridge also supports strings, arrays, and same-file structs. See [`sdk/typescript/README.md`](sdk/typescript/README.md) for setup and limits.
 - FFI calls are stateless. Keep state in a serverlet, which can call these functions.
 - More C-ABI languages (C# via Native AOT) and richer C-ABI types are planned; see [`docs/roadmap.md`](docs/roadmap.md) §1b.

@@ -9,10 +9,16 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-15
+
+More languages: Zig and Swift FFI, TypeScript FFI through scriptc or Bun, and TypeScript
+landline serverlets.
+
 ### Added
 - Zig FFI: `load_foreign "zig" "./file.zig"` with an `.orch_ffi` sidecar. Functions are
   `export fn`s using `i64`, `f64`, `bool`, or `void`; the generated `build.rs` compiles the
-  file with `zig build-lib` (Zig 0.16+ on `PATH`). Example: `examples/foreign_zig_math.orch`.
+  file with `zig build-obj` and packs it with the platform archiver (Zig 0.16+ on `PATH`).
+  Example: `examples/foreign_zig_math.orch`.
 - Swift FFI: `load_foreign "swift" "./file.swift"` with an `.orch_ffi` sidecar. Functions
   are exported with `@_cdecl("name")` (Swift 5.10+) or `@c` (Swift 6.3+) using `Int64`,
   `Double`, `Bool`, or no return value; the generated `build.rs` compiles the file with
@@ -250,7 +256,8 @@ First tagged release.
   `option` / `result`, `try` / `catch`, supervision, `check`, the language server, or the
   standard library. See `examples/` for working code.
 
-[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.1.0...v0.2.0
