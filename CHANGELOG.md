@@ -9,6 +9,12 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-15
+
+Embedding in a Rust engine: synchronous driving, host-fired events, typed and fixed-step
+ticks, deterministic replays, host logging, call budgets, and a latency benchmark. See
+[docs/library-mode.md](docs/library-mode.md).
+
 ### Added
 - `clock_micros()` built-in: microseconds on a monotonic clock, for measuring elapsed time.
 - Latency benchmark in `benchmarks/landline_latency`: round-trip p50/p90/p99/max for Python
@@ -46,6 +52,36 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   path dependency.
 - In library mode, events triggered by scripts are queued and handled at tick boundaries
   instead of on a task per handler.
+
+### Known limitations
+- Python is the only landline runtime. TypeScript, C#, and C++ landlines and embedded
+  runtimes are planned.
+- Library mode depends on Tokio's full feature set and child processes, so it does not
+  build for `wasm32-unknown-unknown` yet.
+- Deterministic mode excludes spawned workers, serverlets and landlines, and `sleep`
+  outside event handlers.
+- Grants limit which host functions a landline can call; they do not sandbox Python or
+  restrict its OS permissions.
+- Python itself is not bundled. Hosts ship an interpreter and point
+  `StartOptions::python` at it.
+- The Python SDK encodes arrays one element at a time, so large arrays are slow (about
+  0.6 ms for 1,000 ints in the sample benchmark).
+- Adding a string variable to itself (`s + s`) fails to compile.
+- A line break does not end an expression, so a line that starts with an operator
+  continues the previous line.
+- The typechecker accepts payload patterns on unit enum variants (`Color::Red(v)`); the
+  Rust build then fails.
+- `start <process>` inside an orchestrator is not supported. List processes in
+  `process[...]` instead.
+- A `try` block cannot call a `task`, because the generated closure is not async. Call
+  `fn`s inside `try`.
+- Outside library mode, `on_stop` runs only on Ctrl+C; `stop_orch()` exits immediately
+  without running it.
+- In library mode, Rust's process-wide panic hook still writes to stderr.
+- Sandboxed serverlets provide no isolation yet.
+- `docs/language-reference.md` does not yet cover string interpolation, generics,
+  `option` / `result`, `try` / `catch`, supervision, `check`, the language server, or the
+  standard library. See `examples/` for working code.
 
 ## [0.2.0] - 2026-09-14
 
@@ -166,6 +202,7 @@ First tagged release.
   `option` / `result`, `try` / `catch`, supervision, `check`, the language server, or the
   standard library. See `examples/` for working code.
 
-[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/releases/tag/v0.1.0
