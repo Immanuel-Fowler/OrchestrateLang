@@ -21,6 +21,8 @@ OrchestrateLang runs on top of a language called Rust. You need to install Rust 
 
 *Note: After installing Rust, you must close and reopen your Terminal/Command Prompt for the changes to take effect.*
 
+*Requirements: library crates generated with `orchestrate build --lib` need Rust 1.98.1 or newer, and Python landline serverlets need Python 3.10 or newer.*
+
 ### Step 2: Download OrchestrateLang
 Next, you'll download the OrchestrateLang code. In your Terminal or Command Prompt, run:
 ```bash
@@ -200,13 +202,18 @@ OrchestrateLang is **statically typed**. All variables and parameters carry a ty
 
 | Function | Description |
 | :--- | :--- |
-| `print(val)` | Prints any value to stdout |
+| `print(val)` | Prints any value to stdout (in library mode, to `Host::log`) |
 | `to_string(val)` | Converts any value to a string |
+| `to_int(val)` / `to_float(val)` | Numeric conversions |
+| `parse_int(s)` / `parse_float(s)` | Parse a string into a number (see the language reference) |
 | `sleep(ms)` | Asynchronously sleeps for N milliseconds |
-| `stop_orch()` | Immediately exits the program (`std::process::exit(0)`) |
+| `clock_micros()` | Microseconds on a monotonic clock, for measuring elapsed time |
+| `stop_orch()` | Exits the program (in library mode, asks the host to stop) |
 | `length(arr)` | Returns the number of elements in an array |
 | `append(arr, val)` | Appends a value to the end of an array in place |
 | `remove(arr, index)` | Removes the element at the given index from an array in place |
+| `range(n)` / `range(a, b)` | Integers for `for` loops |
+| `map`, `filter`, `reduce`, `find`, `any`, `all` | Higher-order array functions that take closures |
 
 ### Debugging Tip: `ORCH_SHOW_GENERATED`
 
@@ -469,23 +476,25 @@ let result = utils.hypotenuse(3, 4)   // direct native function call
 
 ### Foreign Functions (`load_foreign`)
 
-Module files can also load functions from Rust, C, or C++ source files directly into the module's namespace:
+Module files can load functions from Rust, C, or C++ source files directly into the module's namespace. This is **FFI**: a plain function call inside the program, with no process and no copying. It is the preferred way to use another language whenever that language can export C-callable functions.
 
 ```orchestrate
 // math/module.orch
-load_foreign "rust" "./geometry.rs"    // auto-scanned, no sidecar needed
+load_foreign "rust" "./geometry.rs"    // requires geometry.orch_ffi sidecar
 load_foreign "c"    "./fastmath.c"     // requires fastmath.orch_ffi sidecar
 load_foreign "cpp"  "./stats.cpp"      // requires stats.orch_ffi sidecar
 ```
 
-- **Rust:** `pub fn`s are injected verbatim; signatures are auto-scanned for the typechecker.
-- **C/C++:** a `.orch_ffi` sidecar file declares function signatures; the compiler generates `extern "C"` bindings and compiles the source via `cc-rs`.
+- **Rust:** `pub fn`s are injected verbatim; the sidecar declares signatures and may use `string`, arrays, `option<T>`, and `result<T>`.
+- **C/C++:** the sidecar declares signatures using `int`, `float`, `bool`, and `void`; the compiler generates `unsafe extern "C"` bindings and compiles the source via `cc-rs`.
+- FFI calls are stateless. Keep state in a serverlet, which can call these functions.
+- More C-ABI languages (C#, Zig, Swift, TypeScript compiled by scriptc) are planned; see [`docs/roadmap.md`](docs/roadmap.md) §1b.
 
 See [`docs/language-reference.md §6.4`](docs/language-reference.md) for the full sidecar format and type mappings.
 
-### Separate Process (Serverlet)
+### Serverlets (Stateful Services)
 
-For modules backed by a separate OS process (a Python service, a Go binary, a Node.js API), a **Serverlet** acts as an in-process actor gateway.
+A **serverlet** is a long-lived actor with its own state: you `start` it once and send it messages, which it handles one at a time. Serverlets can call their module's FFI functions.
 
 ```orchestrate
 // database/module.orch
@@ -521,9 +530,25 @@ orchestrator main(procs: process[]) { }
 - A `DatabaseConnectorClient` struct with `async fn` methods wrapping `Sender` + `oneshot::channel` reply
 - A `start_DatabaseConnector()` function that spawns the message-loop Tokio task and returns the client
 
+Where a serverlet's handlers run depends on its kind:
+
+| Kind | Declared as | Runs in | Use it for |
+| :--- | :--- | :--- | :--- |
+| Serverlet | `serverlet X { ... }` | The program, as a Tokio task | State and services you trust |
+| Secret serverlet | `serverlet X secret { ... }` | A separate process | Keeping code out of the main binary; crash isolation |
+| Landline serverlet | `serverlet X via python(source: "x.py") { ... }` | A Python process over stdin/stdout | Languages without FFI; supports `budget` and `late` |
+| Sandboxed serverlet | `serverlet X sandbox(...) { ... }` | Planned: a WASM sandbox | Untrusted code (no isolation yet) |
+
+See [`sdk/python/README.md`](sdk/python/README.md) and [`docs/design/landline-serverlets.md`](docs/design/landline-serverlets.md).
+
+## Embedding in a Rust Host (Library Mode)
+
+`orchestrate build --lib main.orch -o generated/scripts` generates a Rust crate that another Rust application links. The host keeps its own main loop and Tokio runtime and drives the scripts with `tick`, `fixed_tick`, and `trigger_<event>`; OrchestrateLang code calls back through declared `host` functions. See [`docs/library-mode.md`](docs/library-mode.md).
+
 ## Documentation
 
 - **[`README.md`](README.md)** — this file; overview, syntax reference, and architecture
+- **[`docs/design-philosophy.md`](docs/design-philosophy.md)** — the principles behind the language
 - **[`docs/language-reference.md`](docs/language-reference.md)** — complete language specification including all generated Rust patterns, the event system internals, serverlet actor model, and operator precedence
 - **[`docs/library-mode.md`](docs/library-mode.md)** — embedding in a Rust host, lifecycle, and host callbacks
 - **[`sdk/python/README.md`](sdk/python/README.md)** — Python pipe serverlets, types, and packaging
@@ -545,14 +570,19 @@ Event registries are **process-local** — each compiled binary has its own isol
 
 ## Design Philosophy
 
-| Principle | Implementation |
+| Principle | In short |
 | :--- | :--- |
-| **Concurrency is structural** | Workers and event handlers are declared as top-level language constructs, not library calls |
-| **No hidden runtime** | Generated Rust compiles to native code; execution is fully transparent |
-| **Zero-boilerplate async** | Tokio task spawning, channel wiring, and `Arc` management are compiler-generated |
-| **Separation of concerns** | Automatic blocks own looping logic; triggered blocks own reaction logic; the orchestrator owns lifecycle |
-| **Interoperability** | Serverlets decouple OrchestrateLang from external technology stacks at a well-defined message boundary |
-| **Predictable performance** | All types resolve at compile time; no garbage collector; no interpreter overhead |
+| **Concurrency is structural** | Workers, event handlers, and services are language constructs; the compiler writes the async plumbing |
+| **General-purpose first** | Projects that adopt the language set priorities, not designs |
+| **Compile to Rust, no hidden runtime** | OrchestrateLang code is native; other languages bring their own runtimes |
+| **Cheapest boundary that works** | FFI first, then serverlets, then separate processes, then sandboxes |
+| **FFI is stateless; serverlets own state** | A new serverlet kind needs a reason |
+| **Wrap, don't build** | Tokio, Cargo, `cc-rs`, wasmtime, and each language's own toolchain |
+| **Honest guarantees** | Names and docs never promise more than the implementation delivers |
+| **The host is in charge** | Embedded, the library never owns the loop, runtime, logs, or process |
+| **Measure before promising** | Performance claims come from benchmarks |
+
+The full version, with the reasoning behind each principle: [`docs/design-philosophy.md`](docs/design-philosophy.md).
 
 ---
 

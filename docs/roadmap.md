@@ -50,7 +50,14 @@ load_foreign "cpp"  "./stats.cpp"       // requires stats.orch_ffi sidecar
 
 - **Rust**: fully implemented. The `.rs` file's `pub fn`s are injected verbatim into the generated module; type signatures are auto-scanned and registered into the typechecker.
 - **C/C++**: fully implemented via `cc-rs` for compilation and `.orch_ffi` sidecar files that declare the function signatures OrchestrateLang exposes to callers. Functions compile to `unsafe extern "C"` wrappers with safe Rust signatures.
-- **Python**: not yet implemented — trickiest for a direct-call model since Python isn't natively callable from Rust without an embedded interpreter.
+- **Python**: not possible as FFI, because Python needs its interpreter. Use a landline serverlet (1a).
+
+**Next FFI work** (preferred over landlines; see the [design philosophy](design-philosophy.md) §4):
+
+- `string`, arrays, and structs across the C ABI (C/C++ sidecars accept only `int`, `float`, and `bool` today), and an opaque handle type for native objects.
+- **C#** via .NET Native AOT exports (`[UnmanagedCallersOnly]`).
+- **Zig** (`export fn`), **Swift** (`@c`, Swift 6.3), and **TypeScript** compiled natively by scriptc (`build --lib`, experimental).
+- **Go** works through `-buildmode=c-archive`, but only one Go library can be loaded per process.
 
 See `language-reference.md` §6.4 and §6.5 for full documentation.
 
@@ -137,7 +144,7 @@ Given the combined scope of these four features, recommend picking **one end-to-
 1. ~~**PROM** first — smallest, self-contained, validates registry plumbing.~~ **[SHIPPED]**
 2. ~~**Loaded foreign Rust module** (1b, Rust only) — validates the "non-OrchestrateLang module" pattern with the lowest possible risk (no FFI, no embedded interpreter).~~ **[SHIPPED]**
 3. ~~**Loaded foreign C/C++ module** (1b, C and C++) — via `.orch_ffi` sidecar and `cc-rs`.~~ **[SHIPPED]**
-4. **Landline serverlets** — [build plan](design/landline-serverlets.md): Python pipe landlines are implemented, including prerequisites, protocol v1, declarations, SDK, and portable bundles (steps 1–5). Library mode and host callbacks are also implemented (steps 6–7), as are call budgets with drop/latest late-result policies, with batching done through array handlers (step 8), and a latency benchmark (step 9, `benchmarks/landline_latency`). Host integration for the first adopter is also implemented: synchronous driving, host-fired events, typed and fixed-step ticks, deterministic mode, host logging, and cross-target builds. Next are more runtimes (TypeScript, C#, C++) and a web-compatible library subset. This supersedes the subprocess+JSON sketch.
+4. **Landline serverlets** — [build plan](design/landline-serverlets.md): Python pipe landlines are implemented, including prerequisites, protocol v1, declarations, SDK, and portable bundles (steps 1–5). Library mode and host callbacks are also implemented (steps 6–7), as are call budgets with drop/latest late-result policies, with batching done through array handlers (step 8), and a latency benchmark (step 9, `benchmarks/landline_latency`). Host integration for the first adopter is also implemented: synchronous driving, host-fired events, typed and fixed-step ticks, deterministic mode, host logging, and cross-target builds. Next is more languages, FFI first (richer C-ABI types, then C# via Native AOT, Zig, Swift, and TypeScript via scriptc), and a web-compatible library subset. This supersedes the subprocess+JSON sketch.
 5. **OPM (git-based, no hosted index)** — builds on PROM's name→location mapping.
 6. **Sandboxed serverlets (wasmtime)** — largest single feature; benefits from #4's pattern and gives OPM a security story.
 

@@ -2,6 +2,8 @@
 
 This file is the source of truth for naming, commits, branches, and releases.
 When something here and the code disagree, fix one of them — don't leave the drift.
+Check new features and design docs against the
+[design philosophy](docs/design-philosophy.md).
 
 ---
 

@@ -709,7 +709,7 @@ All functions and tasks in the loaded files become part of the module namespace 
 
 ### 6.4 Calling Foreign Rust Functions (`load_foreign`)
 
-OrchestrateLang allows you to natively call functions written in Rust, C, or C++ by loading their source files directly into a module's namespace.
+OrchestrateLang allows you to natively call functions written in Rust, C, or C++ by loading their source files directly into a module's namespace. These FFI calls are plain, stateless function calls inside the program; keep state in a serverlet, which can call them. C and C++ functions currently take and return only `int`, `float`, `bool`, and `void`. More C-ABI languages are planned ([roadmap](roadmap.md) §1b).
 
 #### Foreign Rust (`load_foreign "rust"`)
 
