@@ -10,6 +10,10 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 ## [Unreleased]
 
 ### Added
+- `clock_micros()` built-in: microseconds on a monotonic clock, for measuring elapsed time.
+- Latency benchmark in `benchmarks/landline_latency`: round-trip p50/p90/p99/max for Python
+  landlines, secret serverlets, and in-process serverlets with int, string, and array
+  payloads (`python3 benchmarks/landline_latency/run.py`).
 - Landline call budgets: `via python(source: "...", budget: "2ms")` makes a call that gets
   no reply in time return right away. `late: "drop"` (the default) returns the default
   value; `late: "latest"` returns the handler's most recent completed result, and a late

@@ -1,0 +1,109 @@
+// Round-trip latency for the same echo handlers in three kinds of serverlet.
+// Prints one `kind,payload,micros` line per measured call; run.py computes percentiles.
+
+serverlet PyEcho via python(source: "echo.py") {
+    on number(n: int) -> int
+    on text(s: string) -> string
+    on numbers(items: int[]) -> int[]
+}
+
+serverlet SecretEcho secret {
+    on number(n: int) -> int { return n }
+    on text(s: string) -> string { return s }
+    on numbers(items: int[]) -> int[] { return items }
+}
+
+serverlet LocalEcho {
+    on number(n: int) -> int { return n }
+    on text(s: string) -> string { return s }
+    on numbers(items: int[]) -> int[] { return items }
+}
+
+orchestrator main() {
+    let python = start PyEcho()
+    let child = start SecretEcho()
+    let local = start LocalEcho()
+    // Give the child processes time to finish their startup handshakes.
+    sleep(1500)
+
+    // Payloads: a 1,024-character string and a 1,000-element int array. Reading
+    // `texts[0]` / `arrays[0]` copies the value, which happens before each timer starts.
+    let text = "x"
+    for i in range(1023) {
+        text = text + "x"
+    }
+    let items = [0]
+    for i in range(1, 1000) {
+        append(items, i)
+    }
+    let texts = [text]
+    let arrays = [items]
+
+    let warmup = 200
+    let total = 2200
+
+    for i in range(total) {
+        let began = clock_micros()
+        let r = local.number(i)
+        let elapsed = clock_micros() - began
+        if i >= warmup { print("in-process,int,{elapsed}") }
+    }
+    for i in range(total) {
+        let payload = texts[0]
+        let began = clock_micros()
+        let r = local.text(payload)
+        let elapsed = clock_micros() - began
+        if i >= warmup { print("in-process,string-1KB,{elapsed}") }
+    }
+    for i in range(total) {
+        let payload = arrays[0]
+        let began = clock_micros()
+        let r = local.numbers(payload)
+        let elapsed = clock_micros() - began
+        if i >= warmup { print("in-process,int[1000],{elapsed}") }
+    }
+
+    for i in range(total) {
+        let began = clock_micros()
+        let r = child.number(i)
+        let elapsed = clock_micros() - began
+        if i >= warmup { print("secret,int,{elapsed}") }
+    }
+    for i in range(total) {
+        let payload = texts[0]
+        let began = clock_micros()
+        let r = child.text(payload)
+        let elapsed = clock_micros() - began
+        if i >= warmup { print("secret,string-1KB,{elapsed}") }
+    }
+    for i in range(total) {
+        let payload = arrays[0]
+        let began = clock_micros()
+        let r = child.numbers(payload)
+        let elapsed = clock_micros() - began
+        if i >= warmup { print("secret,int[1000],{elapsed}") }
+    }
+
+    for i in range(total) {
+        let began = clock_micros()
+        let r = python.number(i)
+        let elapsed = clock_micros() - began
+        if i >= warmup { print("python,int,{elapsed}") }
+    }
+    for i in range(total) {
+        let payload = texts[0]
+        let began = clock_micros()
+        let r = python.text(payload)
+        let elapsed = clock_micros() - began
+        if i >= warmup { print("python,string-1KB,{elapsed}") }
+    }
+    for i in range(total) {
+        let payload = arrays[0]
+        let began = clock_micros()
+        let r = python.numbers(payload)
+        let elapsed = clock_micros() - began
+        if i >= warmup { print("python,int[1000],{elapsed}") }
+    }
+
+    stop_orch()
+}

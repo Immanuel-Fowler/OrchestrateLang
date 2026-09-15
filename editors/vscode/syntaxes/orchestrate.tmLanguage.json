@@ -83,7 +83,7 @@
 
     "builtin-function": {
       "name": "support.function.builtin.orch",
-      "match": "\\b(print|to_string|to_int|to_float|parse_int|parse_float|sleep|stop_orch|length|append|remove|map|filter|reduce|find|any|all|range|some|ok|err)\\b(?=\\s*[({]|\\s*$)"
+      "match": "\\b(print|clock_micros|to_string|to_int|to_float|parse_int|parse_float|sleep|stop_orch|length|append|remove|map|filter|reduce|find|any|all|range|some|ok|err)\\b(?=\\s*[({]|\\s*$)"
     },
 
     "enum-variant": {

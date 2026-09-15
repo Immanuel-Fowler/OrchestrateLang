@@ -250,6 +250,29 @@ orchestrator main() {
 }
 
 #[test]
+fn runtime_clock_micros_measures_elapsed_time() {
+    let src = r#"
+orchestrator main() {
+    let began = clock_micros()
+    sleep(20)
+    let elapsed = clock_micros() - began
+    print(to_string(elapsed >= 15000 && elapsed < 5000000))
+    stop_orch()
+}
+"#;
+    assert_eq!(run_orch("clock_micros", src).trim(), "true");
+}
+
+#[test]
+fn benchmark_programs_typecheck() {
+    let out = Command::new(orchestrate_bin())
+        .args(["check", "benchmarks/landline_latency/main.orch"])
+        .output()
+        .expect("failed to run orchestrate");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
 fn runtime_sandbox_guest_compiles_to_wasm() {
     // Step 2: a sandboxed serverlet's handler logic must compile to a wasm32-wasip1
     // artifact. (Host integration via wasmtime is step 3; for now the serverlet

@@ -276,6 +276,7 @@ trigger update_orchestrator([])
 | `to_string` | `to_string(val) -> string` | Converts any value to its string representation |
 | `sleep` | `sleep(ms: int)` | Asynchronously pauses for the given number of milliseconds |
 | `stop_orch` | `stop_orch()` | Immediately exits the program |
+| `clock_micros` | `clock_micros() -> int` | Microseconds on a monotonic clock; subtract two readings to measure elapsed time |
 
 #### Array Functions
 

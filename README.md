@@ -527,6 +527,7 @@ orchestrator main(procs: process[]) { }
 - **[`docs/language-reference.md`](docs/language-reference.md)** — complete language specification including all generated Rust patterns, the event system internals, serverlet actor model, and operator precedence
 - **[`docs/library-mode.md`](docs/library-mode.md)** — embedding in a Rust host, lifecycle, and host callbacks
 - **[`sdk/python/README.md`](sdk/python/README.md)** — Python pipe serverlets, types, and packaging
+- **[`benchmarks/README.md`](benchmarks/README.md)** — how to measure serverlet call latency
 - **[`docs/roadmap.md`](docs/roadmap.md)** — planned features and their status
 - **[`docs/design/`](docs/design/)** — design docs for secret serverlets, sandboxed serverlets, and serverlet files
 - **[`CHANGELOG.md`](CHANGELOG.md)** — what changed in each release

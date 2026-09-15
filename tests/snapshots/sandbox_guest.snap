@@ -67,6 +67,11 @@ fn stop_orch() {
     std::process::exit(0);
 }
 
+fn clock_micros() -> i64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_micros() as i64
+}
+
 
 #[no_mangle]
 pub extern "C" fn tally(n: i64) -> i64 {

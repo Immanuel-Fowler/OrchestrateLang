@@ -69,6 +69,11 @@ fn stop_orch() {{
     std::process::exit(0);
 }}
 
+fn clock_micros() -> i64 {{
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_micros() as i64
+}}
+
 {process_ref}"#, print_macro = print_macro, process_ref = process_ref)
 }
 
@@ -545,7 +550,7 @@ impl Codegen {
     pub fn functions_and_tasks_contain(&self, name: &str) -> bool {
         self.tasks.contains(name)
             || matches!(name, "print" | "to_string" | "to_int" | "to_float" | "parse_int" | "parse_float"
-                            | "length" | "append" | "remove" | "sleep" | "stop_orch"
+                            | "length" | "append" | "remove" | "sleep" | "stop_orch" | "clock_micros"
                             | "range" | "map" | "filter" | "reduce" | "find" | "any" | "all")
     }
 

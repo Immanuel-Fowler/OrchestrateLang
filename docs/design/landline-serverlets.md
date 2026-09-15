@@ -1,6 +1,6 @@
 # Landline Serverlets — Design & Build Plan
 
-> Status: **🚧 IN PROGRESS — build steps 1–8 implemented: Python pipes, Rust library mode, host callbacks, and call budgets. The latency benchmark and other runtimes remain planned.** The [Python SDK guide](../../sdk/python/README.md) describes the implemented subset;
+> Status: **🚧 IN PROGRESS — build steps 1–9 implemented: Python pipes, Rust library mode, host callbacks, call budgets, and a latency benchmark. Other runtimes remain planned.** The [Python SDK guide](../../sdk/python/README.md) describes the implemented subset;
 > the [library guide](../library-mode.md) describes host integration. Embedded runtimes below remain proposals. What *is* settled: a serverlet's handler bodies can be written in
 > another language and run behind a **landline** (a connection with no sockets);
 > OrchestrateLang can build as a Rust library that a host application links; and the
@@ -199,7 +199,10 @@ naive design fails, so they get explicit rules. Budgets are implemented (§8 ste
    arrays, and call them once per tick with every item. That is one round trip per tick
    per serverlet, so the cost scales with the number of serverlets, not the number of
    items. A dedicated TICK message (kind 9, still reserved) is only worth adding if the
-   benchmark (§8 step 9) shows per-call framing overhead matters.
+   benchmark (§8 step 9) shows per-call framing overhead matters. The first measurements
+   ([benchmarks](../../benchmarks/README.md)) put pipe framing at tens of microseconds,
+   while the Python SDK's per-element list encoding dominates large arrays, so TICK stays
+   unimplemented.
 2. **Give per-tick calls a budget.** `budget` bounds how long a call waits; a call with
    no reply in time returns right away:
 
@@ -358,8 +361,8 @@ feature.
 7. **[IMPLEMENTED] Host API + grants** (`host` blocks, `grant call`, `HOST_CALL` frames).
 8. **[IMPLEMENTED] Tick batching, budgets, and late-result policy.** Budgets and
    `late: "drop" | "latest"` are landline options; batching uses array handlers (§5).
-9. **Benchmark harness** — round-trip latency, including the slow tail, per runtime and
-   payload size.
+9. **[IMPLEMENTED] Benchmark harness** — round-trip latency, including the slow tail, per
+   runtime and payload size: [benchmarks/landline_latency](../../benchmarks/README.md).
 
 **v0.4.0 — more languages**
 

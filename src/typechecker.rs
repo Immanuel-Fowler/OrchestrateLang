@@ -32,7 +32,7 @@ impl TypeChecker {
 
         let builtins = vec![
             "print", "to_string", "to_int", "to_float", "parse_int", "parse_float",
-            "sleep", "stop_orch",
+            "sleep", "stop_orch", "clock_micros",
             "length", "append", "remove",
             "map", "filter", "reduce", "find", "any", "all", "range",
         ];
@@ -553,6 +553,9 @@ impl TypeChecker {
                     }
                     "to_string" => {
                         return Ok(Type::Str);
+                    }
+                    "clock_micros" if args.is_empty() => {
+                        return Ok(Type::Int);
                     }
                     "to_int" if args.len() == 1 => {
                         return Ok(Type::Int);

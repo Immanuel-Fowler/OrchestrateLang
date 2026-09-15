@@ -175,6 +175,7 @@ fn hover_info(
         "map" => Some("Transforms each element of an array with a function.\n\n```\nmap(xs, fn(x: int) -> int { x * 2 })\n```"),
         "filter" => Some("Keeps array elements matching a predicate.\n\n```\nfilter(xs, fn(x: int) -> bool { x > 0 })\n```"),
         "reduce" => Some("Folds an array into a single value.\n\n```\nreduce(xs, 0, fn(acc: int, x: int) -> int { acc + x })\n```"),
+        "clock_micros" => Some("Microseconds elapsed on a monotonic clock. Subtract two readings to measure time.\n\n```\nlet began = clock_micros()\nwork()\nprint(to_string(clock_micros() - began))\n```"),
         "to_int" => Some("Casts a numeric value to `int`.\n\n```\nto_int(3.7)   // 3\n```"),
         "to_float" => Some("Casts a numeric value to `float`.\n\n```\nto_float(5)   // 5.0\n```"),
         "parse_int" => Some("Parses a string to `result<int>`.\n\n```\nparse_int(\"42\")   // ok(42)\n```"),
