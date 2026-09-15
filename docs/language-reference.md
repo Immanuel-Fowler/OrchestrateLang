@@ -709,7 +709,13 @@ All functions and tasks in the loaded files become part of the module namespace 
 
 ### 6.4 Calling Foreign Rust Functions (`load_foreign`)
 
-OrchestrateLang allows you to natively call functions written in Rust, C, or C++ by loading their source files directly into a module's namespace. These FFI calls are plain, stateless function calls inside the program; keep state in a serverlet, which can call them. C and C++ functions currently take and return only `int`, `float`, `bool`, and `void`. More C-ABI languages are planned ([roadmap](roadmap.md) §1b).
+OrchestrateLang loads Rust, C, C++, Zig, Swift, and TypeScript functions into a module's
+namespace. Native C-ABI calls are in-process and stateless. TypeScript uses a generated,
+synchronous executable bridge and is also stateless; use a landline serverlet for persistent
+state. C, C++, Zig, and Swift functions currently take and return only `int`, `float`,
+`bool`, and `void`. TypeScript supports `int`, `float`, `bool`, `string`, arrays, and
+same-file structs through its Bun bridge. More C-ABI languages are planned
+([roadmap](roadmap.md) §1b).
 
 #### Foreign Rust (`load_foreign "rust"`)
 
@@ -811,11 +817,61 @@ let worker = automatic {
 | `bool` | `bool` | `bool` |
 | `void` | `void` | `()` |
 
-> **Why no `string`?** C/C++ FFI signatures (`.orch_ffi`) do not support `string` as a parameter or return type because managing string ownership and lifetimes across the C/Rust boundary is unsafe without additional marshaling. If you attempt to use `string`, the compiler will produce the error: `load_foreign '<language>': string type is not supported in C/C++ FFI signatures`.
+> **Why no `string`?** C/C++ FFI signatures (`.orch_ffi`) do not support `string` as a parameter or return type because managing string ownership and lifetimes across the C/Rust boundary is unsafe without additional marshaling. If you attempt to use `string`, the compiler will produce the error: `load_foreign '<language>': string type is not supported in C-ABI FFI signatures (use int, float, bool, or void)`.
+
+#### Foreign Zig (`load_foreign "zig"`) and Swift (`load_foreign "swift"`)
+
+Zig and Swift use the same `.orch_ffi` sidecar and the same types as C. Each function the
+sidecar declares must be exported under that exact C symbol name:
+
+```zig
+// vectors.zig — `export fn` gives the function a C symbol
+export fn length2d(x: f64, y: f64) f64 {
+    return @sqrt(x * x + y * y);
+}
+```
+
+```swift
+// calendar.swift — `@_cdecl("name")` (Swift 5.10+) or `@c` (Swift 6.3+)
+@_cdecl("is_leap_year")
+public func isLeapYear(_ year: Int64) -> Bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+```
+
+The sidecars (`vectors.orch_ffi` and `calendar.orch_ffi`) look exactly like C sidecars:
+
+```
+length2d(x: float, y: float) -> float
+```
+
+```
+is_leap_year(year: int) -> bool
+```
+
+| OrchestrateLang type | Zig type | Swift type |
+| :--- | :--- | :--- |
+| `int` | `i64` | `Int64` |
+| `float` | `f64` | `Double` |
+| `bool` | `bool` | `Bool` |
+| `void` | `void` | no return value |
+
+The generated `build.rs` compiles each file into its own static library —
+`zig build-lib -O ReleaseFast` for Zig, `swiftc -emit-library -static -parse-as-library -O`
+for Swift — and links it. Swift libraries also link the Swift runtime (`swiftCore`), found
+through `swiftc -print-target-info`.
+
+> **Notes for Zig and Swift FFI:**
+> - The compiler (`zig` 0.16+ or `swiftc` 5.10+) must be on `PATH`; otherwise the build
+>   stops with an error naming the missing tool.
+> - They build for the host target only. `build --lib --target` with a different target
+>   fails with a clear message.
+> - One source file per `load_foreign`. A Zig file can `@import` other files; Swift files
+>   are compiled one at a time.
 
 **Type conversions for `load_foreign "rust"`:**
 
-*Note: The `string` row applies only to Rust foreign functions. C/C++ FFI signatures do not support `string` (see the C/C++ table above).*
+*Note: The `string` row applies only to Rust foreign functions. C, C++, Zig, and Swift FFI signatures do not support `string` (see the tables above).*
 
 | OrchestrateLang | Rust |
 | :--- | :--- |
@@ -1033,12 +1089,17 @@ spawn it on first use and shut it down when the orchestrator stops.
 ---
 ---
 
-## Python Landline Serverlets
+## Landline Serverlets
 
-A landline declares handlers whose implementations run in a long-lived Python process:
+A landline declares handlers whose implementations run in a long-lived foreign process.
+Python and TypeScript are supported runtimes:
 
 ```orchestrate
 serverlet Counter via python(source: "./counter.py", line: "pipe") {
+    on add(n: int) -> int
+}
+
+serverlet Scoreboard via typescript(source: "./scoreboard.ts") {
     on add(n: int) -> int
 }
 ```
@@ -1064,11 +1125,35 @@ default value, and with `late: "latest"` it returns the handler's most recent co
 result, which a late reply replaces. A queued call whose caller has already given up is
 not sent. `late` requires `budget`. Pass arrays to handle many items in one call.
 
-`source` is relative to its declaring file. Builds copy the declared source and SDK
-into `landline_<Name>/` beside the binary; distribute that directory too. External
-Python dependencies must be installed separately. These processes are not sandboxed.
-See the [Python SDK guide](../sdk/python/README.md) for exact type mappings, packaging,
-shutdown, and limitations, and [the example](../examples/python_landline.orch).
+### TypeScript 7
+
+`via typescript(source: "...")` checks the source with TypeScript 7, then compiles a
+protocol executable. The compiler attempts `scriptc` first and falls back to
+`bun build --compile` when necessary. Set `ORCH_TS_BACKEND=scriptc` or `bun` to force a
+backend; `auto` is the default. The compiler finds tools under a source ancestor's
+`node_modules/.bin` before `PATH`; `ORCH_TSC`, `ORCH_SCRIPTC`, and `ORCH_BUN` override
+them. Install project tools with `bun add --dev typescript scriptc @types/bun`.
+
+> **Note:** Backend selection is currently a project-wide environment variable
+> (`ORCH_TS_BACKEND`). Per-serverlet / per-FFI-file backend hints declared directly in
+> `.orch` source are planned for a future release.
+
+The source default-exports a class with methods matching the declared handlers. A method
+may return its declared value or a `Promise` of that value. `int` maps to `bigint`,
+`float` to `number`, `bool` to `boolean`, `string` to `string`, arrays to `T[]`, and
+same-file structs to matching object shapes. Its optional constructor receives
+`{ tickNumber, tickDt, host }`; granted host functions are available under
+`host.<group>.<function>` only during a handler. `tickNumber` and `tickDt` are populated
+for a `tick` handler called from a typed library tick.
+
+`source` is relative to its declaring file. Python builds copy the source and SDK into
+`landline_<Name>/` beside the binary. TypeScript builds put a compiled executable there.
+Library builds embed their respective assets. Python dependencies remain external; the
+TypeScript executable does not need Bun, TypeScript, scriptc, or the original source at
+runtime. Package application data and native dependencies separately. TypeScript artifacts
+are currently host-target only. These processes are not sandboxed. See the
+[Python SDK guide](../sdk/python/README.md), [TypeScript SDK guide](../sdk/typescript/README.md),
+and [the examples](../examples/typescript_landline.orch).
 
 ---
 
@@ -1163,7 +1248,7 @@ Punctuation: `(  )  {  }  [  ]  :  ,  ;  .`
 | `While` | `while cond { ... }` |
 | `UseModule` | `use module alias: "path"` |
 | `Load` | `load "file.orch"` |
-| `LoadForeign` | `load_foreign "rust|c|cpp" "./file"` |
+| `LoadForeign` | `load_foreign "rust|c|cpp|zig|swift" "./file"` |
 | `Serverlet` | `serverlet Name { let state = v; on handler(...) { ... } }` |
 | `Return` | `return expr` |
 | `OnStart` | `on_start { ... }` — runs at program startup, before workers launch |

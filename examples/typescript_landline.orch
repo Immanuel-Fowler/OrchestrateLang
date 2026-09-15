@@ -1,0 +1,9 @@
+serverlet Counter via typescript(source: "modules/typescript_counter/counter.ts") {
+    on add(amount: int) -> int
+}
+orchestrator main() {
+    let counter = start Counter()
+    print(counter.add(10))
+    print(counter.add(5))
+    stop_orch()
+}

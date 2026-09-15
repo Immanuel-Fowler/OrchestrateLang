@@ -35,9 +35,13 @@ serverlet PyScorer via "python" {
 - **C/C++**: via FFI bindings (e.g. `bindgen`-style). Higher complexity — calling conventions, memory ownership across the boundary, build complexity.
 - **Rust**: likely the easiest — could potentially just be another `Combined Process` module pattern, since it's already native.
 
-### 1b. Loaded Foreign Modules (direct function-call style, stateless) — **[SHIPPED for Rust, C, C++]**
+### 1b. Loaded Foreign Modules (direct function-call style, stateless) — **[SHIPPED for Rust, C, C++, Zig, Swift, TypeScript]**
 
-A second, simpler module type: a `module.orch` that directly loads a Rust, C/C++, or Python source/library, where the **only interactable code from OrchestrateLang's side is the functions exposed by that loaded module** — no serverlet, no actor, no message passing. This is the "Combined Process" pattern (see Module System, Pattern A) extended to non-OrchestrateLang languages.
+A second, simpler module type: a `module.orch` that directly loads a Rust, C/C++, Zig,
+Swift, or TypeScript source/library, where the **only interactable code from
+OrchestrateLang's side is the functions exposed by that loaded module** — no serverlet,
+no actor, no message passing. This is the "Combined Process" pattern (see Module System,
+Pattern A) extended to non-OrchestrateLang languages.
 
 **Implemented syntax:**
 
@@ -46,17 +50,27 @@ A second, simpler module type: a `module.orch` that directly loads a Rust, C/C++
 load_foreign "rust" "./geometry.rs"
 load_foreign "c"    "./fastmath.c"      // requires geometry.orch_ffi sidecar
 load_foreign "cpp"  "./stats.cpp"       // requires stats.orch_ffi sidecar
+load_foreign "zig"  "./vectors.zig"     // requires vectors.orch_ffi sidecar
+load_foreign "swift" "./calendar.swift" // requires calendar.orch_ffi sidecar
+load_foreign "typescript" "./math.ts"   // requires math.orch_ffi sidecar
 ```
 
 - **Rust**: fully implemented. The `.rs` file's `pub fn`s are injected verbatim into the generated module; type signatures are auto-scanned and registered into the typechecker.
 - **C/C++**: fully implemented via `cc-rs` for compilation and `.orch_ffi` sidecar files that declare the function signatures OrchestrateLang exposes to callers. Functions compile to `unsafe extern "C"` wrappers with safe Rust signatures.
+- **Zig / Swift**: implemented with the same `.orch_ffi` sidecars and C-ABI types. The generated `build.rs` compiles each file to a static library with `zig build-lib` (`export fn`) or `swiftc` (`@_cdecl`, or `@c` on Swift 6.3+) and links the Swift runtime. Host target only.
 - **Python**: not possible as FFI, because Python needs its interpreter. Use a landline serverlet (1a).
+- **TypeScript**: implemented as a generated executable bridge. TypeScript 7 checks the
+  source, then the compiler tries scriptc and falls back to `bun build --compile`. Scalar
+  FFI calls can take the native scriptc path; the Bun transport handles rich wire values.
+  TypeScript landlines remain the persistent-state path. Backend selection is currently
+  project-wide via `ORCH_TS_BACKEND`; per-file / per-serverlet hints in `.orch` source
+  are planned.
 
 **Next FFI work** (preferred over landlines; see the [design philosophy](design-philosophy.md) §4):
 
-- `string`, arrays, and structs across the C ABI (C/C++ sidecars accept only `int`, `float`, and `bool` today), and an opaque handle type for native objects.
+- `string`, arrays, and structs across the C ABI (C, C++, Zig, and Swift sidecars accept only `int`, `float`, and `bool` today), and an opaque handle type for native objects.
 - **C#** via .NET Native AOT exports (`[UnmanagedCallersOnly]`).
-- **Zig** (`export fn`), **Swift** (`@c`, Swift 6.3), and **TypeScript** compiled natively by scriptc (`build --lib`, experimental).
+- Cross-compiling Zig and Swift sources for `build --lib --target`.
 - **Go** works through `-buildmode=c-archive`, but only one Go library can be loaded per process.
 
 See `language-reference.md` §6.4 and §6.5 for full documentation.
@@ -144,7 +158,12 @@ Given the combined scope of these four features, recommend picking **one end-to-
 1. ~~**PROM** first — smallest, self-contained, validates registry plumbing.~~ **[SHIPPED]**
 2. ~~**Loaded foreign Rust module** (1b, Rust only) — validates the "non-OrchestrateLang module" pattern with the lowest possible risk (no FFI, no embedded interpreter).~~ **[SHIPPED]**
 3. ~~**Loaded foreign C/C++ module** (1b, C and C++) — via `.orch_ffi` sidecar and `cc-rs`.~~ **[SHIPPED]**
-4. **Landline serverlets** — [build plan](design/landline-serverlets.md): Python pipe landlines are implemented, including prerequisites, protocol v1, declarations, SDK, and portable bundles (steps 1–5). Library mode and host callbacks are also implemented (steps 6–7), as are call budgets with drop/latest late-result policies, with batching done through array handlers (step 8), and a latency benchmark (step 9, `benchmarks/landline_latency`). Host integration for the first adopter is also implemented: synchronous driving, host-fired events, typed and fixed-step ticks, deterministic mode, host logging, and cross-target builds. Next is more languages, FFI first (richer C-ABI types, then C# via Native AOT, Zig, Swift, and TypeScript via scriptc), and a web-compatible library subset. This supersedes the subprocess+JSON sketch.
+4. **Landline serverlets** — [build plan](design/landline-serverlets.md): Python and
+   TypeScript landlines are implemented, including TypeScript 7 checking, scriptc/Bun
+   executable selection, protocol v1, grants, library packaging, budgets, and late-result
+   policies. TypeScript FFI, Zig FFI, and Swift FFI are also implemented. Next are richer
+   C-ABI types, C# via Native AOT, and a web-compatible library subset. This supersedes the
+   subprocess+JSON sketch.
 5. **OPM (git-based, no hosted index)** — builds on PROM's name→location mapping.
 6. **Sandboxed serverlets (wasmtime)** — largest single feature; benefits from #4's pattern and gives OPM a security story.
 

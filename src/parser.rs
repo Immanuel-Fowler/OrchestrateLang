@@ -234,10 +234,11 @@ impl Parser {
             self.advance();
             if secret || sandbox.is_some() { return Err("via cannot be combined with secret or sandbox".into()); }
             let runtime = self.advance().clone();
-            if !matches!(&runtime.kind, TokenKind::Identifier(s) if s == "python") {
-                return Err("Only the python landline runtime is supported".into());
-            }
-            self.consume(TokenKind::LParen, "Expected '(' after python")?;
+            let runtime = match runtime.kind {
+                TokenKind::Identifier(s) if s == "python" || s == "typescript" => s,
+                _ => return Err("Expected python or typescript landline runtime".into()),
+            };
+            self.consume(TokenKind::LParen, "Expected '(' after landline runtime")?;
             let mut source = None;
             let mut budget_micros = None;
             let mut late = None;
@@ -286,7 +287,8 @@ impl Parser {
                 return Err("Landline late policy requires a budget".into());
             }
             landline = Some(crate::ast::LandlineConfig {
-                source: source.ok_or("Python landline requires source")?,
+                runtime,
+                source: source.ok_or("Landline requires source")?,
                 budget_micros,
                 late: late.unwrap_or(crate::ast::LatePolicy::Drop),
             });
@@ -307,7 +309,7 @@ impl Parser {
                 grants.push(format!("{}.{}", group, function));
                 let _ = self.match_token(TokenKind::Semicolon);
             } else if self.match_token(TokenKind::Let) {
-                if landline.is_some() { return Err("Landline state belongs in the Python implementation".into()); }
+                if landline.is_some() { return Err("Landline state belongs in the foreign implementation".into()); }
                 let start_tok = self.peek().clone();
                 let span = Span::new(start_tok.line, start_tok.col);
                 let node = self.parse_let_statement()?;

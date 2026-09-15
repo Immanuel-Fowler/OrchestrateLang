@@ -21,7 +21,7 @@ OrchestrateLang runs on top of a language called Rust. You need to install Rust 
 
 *Note: After installing Rust, you must close and reopen your Terminal/Command Prompt for the changes to take effect.*
 
-*Requirements: library crates generated with `orchestrate build --lib` need Rust 1.89 or newer, and Python landline serverlets need Python 3.10 or newer.*
+*Requirements: library crates generated with `orchestrate build --lib` need Rust 1.89 or newer. Python landlines need Python 3.10 or newer. TypeScript landlines and FFI need TypeScript 7 and Bun; install their project dependencies with Bun.*
 
 ### Step 2: Download OrchestrateLang
 Next, you'll download the OrchestrateLang code. In your Terminal or Command Prompt, run:
@@ -71,6 +71,10 @@ orchestrate run examples/generics.orch              # Generic functions
 orchestrate run examples/string_interpolation.orch  # "Hello, {name}!"
 orchestrate run examples/foreign_rust_math.orch     # Calling Rust from a module
 orchestrate run examples/foreign_c_math.orch        # Calling C from a module
+orchestrate run examples/foreign_zig_math.orch      # Calling Zig from a module
+orchestrate run examples/foreign_swift_math.orch    # Calling Swift from a module
+orchestrate run examples/foreign_typescript_math.orch # Calling TypeScript from a module
+orchestrate run examples/typescript_landline.orch   # Stateful TypeScript landline
 ```
 
 ---
@@ -115,7 +119,7 @@ The OrchestrateLang **compiler is itself written in Rust** and lives entirely in
 | **AST** | `src/ast.rs` | Enum-based Abstract Syntax Tree node definitions |
 | **Typechecker** | `src/typechecker.rs` | Single-pass type inference and checking. Runs before codegen — catches type mismatches in `let` statements, binary operations, and function calls. Module and serverlet signatures are registered first so cross-module return types are correctly inferred. |
 | **Code Generator** | `src/codegen/` | Traverses the AST and emits valid Rust source code as a `String` (`core.rs`, `stmt.rs`, `expr.rs`) |
-| **Driver** | `src/driver.rs` | Coordinates module resolution, `load` merging, C/C++ FFI compilation via `cc-rs`, sandbox guest builds, and invokes `cargo` |
+| **Driver** | `src/driver.rs` | Coordinates module resolution, `load` merging, native FFI compilation (C/C++ via `cc-rs`, Zig and Swift via their own compilers), TypeScript 7 scriptc/Bun bridges, sandbox guest builds, and invokes `cargo` |
 | **CLI** | `src/main.rs` | The `orchestrate` command: `run`, `build`, `check`, and `prom` |
 | **Language server** | `src/lsp_main.rs` | The `orchestrate-lsp` binary: hover type information for editors |
 
@@ -476,19 +480,23 @@ let result = utils.hypotenuse(3, 4)   // direct native function call
 
 ### Foreign Functions (`load_foreign`)
 
-Module files can load functions from Rust, C, or C++ source files directly into the module's namespace. This is **FFI**: a plain function call inside the program, with no process and no copying. It is the preferred way to use another language whenever that language can export C-callable functions.
+Module files can load functions from Rust, C, C++, Zig, Swift, or TypeScript source files directly into the module's namespace. Native C-ABI FFI is a plain in-process function call; TypeScript uses a generated executable bridge. Both stay stateless, so keep state in a serverlet.
 
 ```orchestrate
 // math/module.orch
-load_foreign "rust" "./geometry.rs"    // requires geometry.orch_ffi sidecar
-load_foreign "c"    "./fastmath.c"     // requires fastmath.orch_ffi sidecar
-load_foreign "cpp"  "./stats.cpp"      // requires stats.orch_ffi sidecar
+load_foreign "rust"  "./geometry.rs"    // requires geometry.orch_ffi sidecar
+load_foreign "c"     "./fastmath.c"     // requires fastmath.orch_ffi sidecar
+load_foreign "cpp"   "./stats.cpp"      // requires stats.orch_ffi sidecar
+load_foreign "zig"   "./vectors.zig"    // requires vectors.orch_ffi sidecar
+load_foreign "swift" "./calendar.swift" // requires calendar.orch_ffi sidecar
+load_foreign "typescript" "./math.ts"   // requires math.orch_ffi sidecar
 ```
 
 - **Rust:** `pub fn`s are injected verbatim; the sidecar declares signatures and may use `string`, arrays, `option<T>`, and `result<T>`.
-- **C/C++:** the sidecar declares signatures using `int`, `float`, `bool`, and `void`; the compiler generates `unsafe extern "C"` bindings and compiles the source via `cc-rs`.
+- **C, C++, Zig, Swift:** the sidecar declares signatures using `int`, `float`, `bool`, and `void`; the compiler generates `unsafe extern "C"` bindings. C and C++ compile via `cc-rs`; Zig (`export fn`) compiles with `zig build-lib`, and Swift (`@_cdecl`, or `@c` on Swift 6.3+) with `swiftc`, which also links the Swift runtime. Zig and Swift need their compiler on `PATH` and build for the host target only.
+- **TypeScript:** TypeScript 7 checks the source, then scriptc is attempted for eligible scalar calls and Bun compiles the bridge when required. `int` maps to `bigint`; the Bun bridge also supports strings, arrays, and same-file structs. See [`sdk/typescript/README.md`](sdk/typescript/README.md) for setup and limits.
 - FFI calls are stateless. Keep state in a serverlet, which can call these functions.
-- More C-ABI languages (C#, Zig, Swift, TypeScript compiled by scriptc) are planned; see [`docs/roadmap.md`](docs/roadmap.md) §1b.
+- More C-ABI languages (C# via Native AOT) and richer C-ABI types are planned; see [`docs/roadmap.md`](docs/roadmap.md) §1b.
 
 See [`docs/language-reference.md §6.4`](docs/language-reference.md) for the full sidecar format and type mappings.
 
@@ -536,10 +544,10 @@ Where a serverlet's handlers run depends on its kind:
 | :--- | :--- | :--- | :--- |
 | Serverlet | `serverlet X { ... }` | The program, as a Tokio task | State and services you trust |
 | Secret serverlet | `serverlet X secret { ... }` | A separate process | Keeping code out of the main binary; crash isolation |
-| Landline serverlet | `serverlet X via python(source: "x.py") { ... }` | A Python process over stdin/stdout | Languages without FFI; supports `budget` and `late` |
+| Landline serverlet | `serverlet X via python(source: "x.py") { ... }` or `via typescript(source: "x.ts")` | A Python process or compiled TypeScript executable over stdin/stdout | Stateful foreign code; supports `budget` and `late` |
 | Sandboxed serverlet | `serverlet X sandbox(...) { ... }` | Planned: a WASM sandbox | Untrusted code (no isolation yet) |
 
-See [`sdk/python/README.md`](sdk/python/README.md) and [`docs/design/landline-serverlets.md`](docs/design/landline-serverlets.md).
+See [`sdk/python/README.md`](sdk/python/README.md), [`sdk/typescript/README.md`](sdk/typescript/README.md), and [`docs/design/landline-serverlets.md`](docs/design/landline-serverlets.md).
 
 ## Embedding in a Rust Host (Library Mode)
 
@@ -551,7 +559,8 @@ See [`sdk/python/README.md`](sdk/python/README.md) and [`docs/design/landline-se
 - **[`docs/design-philosophy.md`](docs/design-philosophy.md)** — the principles behind the language
 - **[`docs/language-reference.md`](docs/language-reference.md)** — complete language specification including all generated Rust patterns, the event system internals, serverlet actor model, and operator precedence
 - **[`docs/library-mode.md`](docs/library-mode.md)** — embedding in a Rust host, lifecycle, and host callbacks
-- **[`sdk/python/README.md`](sdk/python/README.md)** — Python pipe serverlets, types, and packaging
+- **[`sdk/python/README.md`](sdk/python/README.md)** — Python landlines, types, and packaging
+- **[`sdk/typescript/README.md`](sdk/typescript/README.md)** — TypeScript 7 FFI and landlines, tool setup, and packaging
 - **[`benchmarks/README.md`](benchmarks/README.md)** — how to measure serverlet call latency
 - **[`docs/roadmap.md`](docs/roadmap.md)** — planned features and their status
 - **[`docs/design/`](docs/design/)** — design docs for secret serverlets, sandboxed serverlets, and serverlet files

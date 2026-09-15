@@ -104,6 +104,7 @@ pub struct SandboxConfig {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LandlineConfig {
+    pub runtime: String,
     pub source: String,
     /// Per-call deadline in microseconds. A call with no reply by then returns early.
     pub budget_micros: Option<u64>,

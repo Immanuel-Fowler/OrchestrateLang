@@ -25,7 +25,7 @@ fn landline_syntax_and_types() {
             r#"serverlet X via python(source: "x", line: "embedded") {}"#,
             "Unsupported",
         ),
-        (r#"serverlet X via node(source: "x") {}"#, "Only the python"),
+        (r#"serverlet X via node(source: "x") {}"#, "Expected python or typescript"),
         (
             r#"serverlet X secret via python(source: "x") {}"#,
             "cannot be combined",

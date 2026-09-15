@@ -97,6 +97,11 @@ impl Codegen {
             .replace("@NAME@", name)
             .replace("@SIGNATURES@", &signatures)
             .replace("@ARMS@", &arms);
+        if config.runtime == "typescript" {
+            code = code.replace("let python = std::env::var_os(\"ORCH_PYTHON\").unwrap_or_else(|| \"python3\".into());", "let python = directory.join(if cfg!(windows) { \"serverlet.exe\" } else { \"serverlet\" });")
+                .replace(".arg(\"-u\").arg(directory.join(\"main.py\"))", "")
+                .replace("cannot start Python landline", "cannot start TypeScript landline");
+        }
         if !grants.is_empty() {
             let mut signatures = Vec::new();
             let mut dispatch = Vec::new();

@@ -453,7 +453,7 @@ pub fn start_with_options(runtime: &tokio::runtime::Handle, host: impl Host, opt
         let result = std::fs::create_dir_all(path.parent().unwrap()).and_then(|_| std::fs::write(&path, contents));
         if let Err(e) = result { let _ = std::fs::remove_dir_all(&assets); return Err(e.to_string()); }
         #[cfg(unix)]
-        if name.starts_with("secret_") {
+        if name.starts_with("secret_") || name.ends_with("/serverlet") || name.ends_with("/serverlet.exe") {
             use std::os::unix::fs::PermissionsExt;
             if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)) {
                 let _ = std::fs::remove_dir_all(&assets); return Err(e.to_string());

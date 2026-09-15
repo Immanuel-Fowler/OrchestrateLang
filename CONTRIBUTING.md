@@ -112,6 +112,11 @@ cargo test
 
 - Runtime tests compile real programs through cargo, so they need network access the
   first time (to fetch `tokio`) and a C/C++ compiler.
+- Zig and Swift FFI tests need `zig` (0.16+) and `swiftc` (5.10+) on `PATH`; without them
+  those tests print `skipping` and pass.
+- TypeScript integration tests need Bun and TypeScript 7. Install project tools with
+  `bun add --dev typescript scriptc @types/bun`; without them those tests print `skipping`
+  and pass. Set `ORCH_SCRIPTC` when `scriptc` is not on `PATH`.
 - **Snapshots:** when codegen output changes on purpose, delete the affected
   `tests/snapshots/<name>.snap`, rerun `cargo test` to regenerate it, and review the diff
   before committing.

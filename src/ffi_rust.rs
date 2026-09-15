@@ -81,7 +81,7 @@ pub fn register_rust_ffi_from_sidecar(
     Ok(())
 }
 
-fn parse_sidecar_type(tokens: &[crate::lexer::Token], pos: &mut usize, file: &str) -> Result<ast::Type, String> {
+pub(crate) fn parse_sidecar_type(tokens: &[crate::lexer::Token], pos: &mut usize, file: &str) -> Result<ast::Type, String> {
     let token = tokens.get(*pos).ok_or_else(|| format!("Error in {}: expected type", file))?;
     let name = match &token.kind { TokenKind::Identifier(name) => name, _ => return Err(format!("Error in {}: expected type", file)) };
     *pos += 1;

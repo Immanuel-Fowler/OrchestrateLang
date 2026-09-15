@@ -9,6 +9,39 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+### Added
+- Zig FFI: `load_foreign "zig" "./file.zig"` with an `.orch_ffi` sidecar. Functions are
+  `export fn`s using `i64`, `f64`, `bool`, or `void`; the generated `build.rs` compiles the
+  file with `zig build-lib` (Zig 0.16+ on `PATH`). Example: `examples/foreign_zig_math.orch`.
+- Swift FFI: `load_foreign "swift" "./file.swift"` with an `.orch_ffi` sidecar. Functions
+  are exported with `@_cdecl("name")` (Swift 5.10+) or `@c` (Swift 6.3+) using `Int64`,
+  `Double`, `Bool`, or no return value; the generated `build.rs` compiles the file with
+  `swiftc` and links the Swift runtime. Example: `examples/foreign_swift_math.orch`.
+- A clear error when `load_foreign "zig"` or `"swift"` can't find its compiler on `PATH`.
+- CI installs Zig 0.16.0.
+- TypeScript 7 FFI: `load_foreign "typescript" "./file.ts"` with an `.orch_ffi`
+  sidecar. Eligible scalar functions use a native `scriptc` executable; functions using
+  full-width integers, strings, arrays, structs, or unsupported native features use the
+  compiled Bun transport. Example: `examples/foreign_typescript_math.orch`.
+- TypeScript landlines: `serverlet X via typescript(source: "x.ts") { ... }` default-export
+  a class whose methods implement the declared handlers. The transport supports protocol-v1
+  values, typed ticks, host grants, budgets, late results, logging, and library packaging.
+  Example: `examples/typescript_landline.orch`.
+
+### Changed
+- The `string` error for C-ABI sidecars now reads `string type is not supported in C-ABI
+  FFI signatures (use int, float, bool, or void)`.
+- TypeScript source is checked with TypeScript 7 before compilation. Automatic backend
+  selection tries scriptc and then Bun; `ORCH_TS_BACKEND=auto|scriptc|bun` chooses the
+  policy, and `ORCH_TSC`, `ORCH_SCRIPTC`, and `ORCH_BUN` override tool paths.
+
+### Known limitations
+- Zig and Swift sources build for the host target only; `build --lib --target` with a
+  different target fails.
+- TypeScript FFI is synchronous and starts a fresh process for every call. Use a persistent
+  TypeScript landline for state, asynchronous work, or calls that need a budget. TypeScript
+  FFI and landline executables are host-target only.
+
 ## [0.3.1] - 2026-09-15
 
 Two fixes for embedding library mode in a Rust engine.
@@ -68,8 +101,8 @@ ticks, deterministic replays, host logging, call budgets, and a latency benchmar
   instead of on a task per handler.
 
 ### Known limitations
-- Python is the only landline runtime. TypeScript, C#, and C++ landlines and embedded
-  runtimes are planned.
+- Python and TypeScript are the supported landline runtimes. C#, C++, and embedded runtimes
+  are planned.
 - Library mode depends on Tokio's full feature set and child processes, so it does not
   build for `wasm32-unknown-unknown` yet.
 - Deterministic mode excludes spawned workers, serverlets and landlines, and `sleep`
@@ -127,7 +160,8 @@ Polyglot serverlets and embedding in a Rust host. See
   binaries built with 0.1.0; an old child fails the startup handshake.
 
 ### Known limitations
-- Python is the only landline runtime. TypeScript, C#, and embedded runtimes are planned.
+- At the v0.2.0 release, Python was the only landline runtime; TypeScript, C#, and
+  embedded runtimes were planned.
 - Tick batching, per-call time budgets, and late-result handling are not implemented, and
   there is no latency benchmark yet.
 - Grants limit which host functions a landline can call; they do not sandbox Python or
