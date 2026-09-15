@@ -24,6 +24,7 @@ struct OrchContext {
     host: std::sync::Arc<dyn Host>,
     options: StartOptions,
     events: std::sync::Mutex<std::collections::VecDeque<OrchEvent>>,
+    batch: std::sync::Mutex<std::collections::VecDeque<OrchEvent>>,
     clock_nanos: std::sync::atomic::AtomicU64,
     frame: std::sync::atomic::AtomicU64,
     dt_bits: std::sync::atomic::AtomicU64,
@@ -97,10 +98,18 @@ impl OrchContext {
         let duration = std::time::Duration::from_secs_f64(dt);
         self.clock_nanos.fetch_add(duration.as_nanos().min(u64::MAX as u128) as u64, std::sync::atomic::Ordering::Relaxed);
     }
+    /// Handle the events queued when the drain starts, and only those: a handler that
+    /// triggers an event leaves it in `events` for the next drain, so a handler that
+    /// re-triggers itself cannot keep one tick running forever. `batch` also carries the
+    /// fan-out from a queued event to its handlers, which belongs to this drain.
     async fn drain_events(&self) {
+        {
+            let mut batch = self.batch.lock().unwrap();
+            batch.append(&mut self.events.lock().unwrap());
+        }
         let mut pending = std::collections::VecDeque::new();
         loop {
-            let event = self.events.lock().unwrap().pop_front();
+            let event = self.batch.lock().unwrap().pop_front();
             let Some(event) = event else { break; };
             if self.options.deterministic {
                 let mut event = event;
@@ -220,7 +229,7 @@ pub fn start_with_options(runtime: &tokio::runtime::Handle, host: impl Host, opt
     let (closing, _) = tokio::sync::watch::channel(false);
     let (shutdown, _) = tokio::sync::watch::channel(false);
     let context = std::sync::Arc::new(OrchContext {
-        host: std::sync::Arc::new(host), options, events: Default::default(), clock_nanos: 0.into(), frame: 0.into(), dt_bits: 0.into(), stop_requested: false.into(), closing, shutdown,
+        host: std::sync::Arc::new(host), options, events: Default::default(), batch: Default::default(), clock_nanos: 0.into(), frame: 0.into(), dt_bits: 0.into(), stop_requested: false.into(), closing, shutdown,
         tasks: Default::default(), active: 0.into(), idle: tokio::sync::Notify::new(), assets,
 @EVENT_INIT@
     });

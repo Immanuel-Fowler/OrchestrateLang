@@ -14,6 +14,11 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   that support Rust 1.89 can depend on them. `build --lib --rust-version <x.y[.z]>`
   declares another version, down to the 1.85 that edition 2024 requires.
 
+### Fixed
+- An event handler that triggers its own event no longer hangs `tick` and `fixed_tick`.
+  Each pass over the queue handles the events that were queued when it started; events a
+  handler triggers are handled by the next pass, in both normal and deterministic mode.
+
 ## [0.3.0] - 2026-09-15
 
 Embedding in a Rust engine: synchronous driving, host-fired events, typed and fixed-step

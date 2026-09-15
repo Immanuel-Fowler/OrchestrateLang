@@ -113,6 +113,13 @@ shutdown. Events fired by the host and by scripts (`trigger hit(3)`) wait in a
 per-instance queue that is handled in order before and after each tick and fixed tick.
 Queued events are never dropped.
 
+Each of those two passes handles the events that were queued when it started, and no
+more. An event a handler triggers is handled by the next pass — the one after the tick
+hooks, or the one at the start of the next tick — so a handler that triggers its own
+event runs a bounded number of times per tick instead of holding the tick open. In
+deterministic mode, an event whose handler is still sleeping stays queued for a later
+pass in the same way.
+
 ## Typed ticks
 
 A single `on_tick` hook may take an input and return an output:

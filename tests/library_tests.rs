@@ -315,6 +315,59 @@ fn engine_workspace_and_supported_rust_metadata() {
     assert!(String::from_utf8_lossy(&library(&root, "stable").stderr).contains("x.y or x.y.z"));
 }
 
+/// A handler that triggers its own event must not keep a tick running forever: the
+/// events it queues wait for the next drain.
+#[test]
+fn engine_self_triggering_event_bounds_every_tick() {
+    let root = root("self_trigger");
+    build(&root, r#"
+host world { fn record(n: int) }
+on ping(n: int) {
+    world.record(n)
+    trigger ping(n + 1)
+}
+on_tick(dt: float) {
+}
+orchestrator main() {}
+"#);
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<i64>>>);
+impl scripts::Host for Host { fn world_record(&self, n: i64) -> Result<(), String> { self.0.lock().unwrap().push(n); Ok(()) } }
+fn drive(runtime: &tokio::runtime::Runtime, options: scripts::StartOptions) {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut scripts = scripts::start_with_options(runtime.handle(), Host(log.clone()), options).unwrap();
+    scripts.ready_blocking(runtime).unwrap();
+    scripts.trigger_ping(0).unwrap();
+    let mut handled = 0;
+    for frame in 0..32 {
+        let started = std::time::Instant::now();
+        scripts.tick_blocking(runtime, 1.0 / 60.0).unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "tick {} took {:?}", frame, started.elapsed());
+        let total = log.lock().unwrap().len();
+        // One drain before the tick hooks and one after, each running the handler once.
+        assert!(total - handled <= 2, "tick {} ran the handler {} times", frame, total - handled);
+        handled = total;
+    }
+    // Every triggered event is handled exactly once, in order, and none is dropped.
+    assert_eq!(*log.lock().unwrap(), (0..64).collect::<Vec<i64>>());
+    scripts.shutdown_blocking(runtime).unwrap();
+}
+fn main() {
+    // A hung tick never returns, so fail the process instead of blocking the test run.
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        eprintln!("a tick never returned");
+        std::process::exit(2);
+    });
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    drive(&runtime, scripts::StartOptions::default());
+    drive(&runtime, scripts::StartOptions { deterministic: true, ..Default::default() });
+}
+"#);
+    assert!(output.is_empty(), "{}", output);
+}
+
 /// Generated crates must build on the oldest Rust they declare, not just on the
 /// compiler's own toolchain.
 #[test]

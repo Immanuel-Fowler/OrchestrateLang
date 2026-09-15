@@ -70,7 +70,7 @@ impl Codegen {
                 let params = types.iter().enumerate().map(|(i,t)| format!("arg{}: {}", i, self.compile_type(t))).collect::<Vec<_>>().join(", ");
                 let args = (0..types.len()).map(|i| format!("arg{}", i)).collect::<Vec<_>>().join(", ");
                 let value = if types.len() == 1 { args } else { format!("({})", args) };
-                triggers.push_str(&format!("pub fn trigger_{name}(&self, {params}) -> Result<(), String> {{ if *self.context.shutdown.borrow() {{ return Err(\"library is stopped\".into()); }} let context = self.context.clone(); let future: OrchEvent = Box::pin(async move {{ let handlers = context.event_{name}.lock().unwrap().clone(); let value = std::sync::Arc::new({value}); for handler in handlers {{ context.events.lock().unwrap().push_back(handler(value.clone())); }} }}); self.context.events.lock().unwrap().push_back(future); Ok(()) }}\n"));
+                triggers.push_str(&format!("pub fn trigger_{name}(&self, {params}) -> Result<(), String> {{ if *self.context.shutdown.borrow() {{ return Err(\"library is stopped\".into()); }} let context = self.context.clone(); let future: OrchEvent = Box::pin(async move {{ let handlers = context.event_{name}.lock().unwrap().clone(); let value = std::sync::Arc::new({value}); for handler in handlers {{ context.batch.lock().unwrap().push_back(handler(value.clone())); }} }}); self.context.events.lock().unwrap().push_back(future); Ok(()) }}\n"));
                 fields.push_str(&format!("    event_{}: std::sync::Arc<std::sync::Mutex<Vec<OrchEventHandler<{}>>>>,\n", name, ty));
             } else {
                 fields.push_str(&format!("    event_{}: std::sync::Arc<std::sync::Mutex<Vec<tokio::sync::mpsc::Sender<std::sync::Arc<{}>>>>>,\n", name, ty));
