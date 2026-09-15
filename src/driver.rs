@@ -481,11 +481,31 @@ fn orch_compile_foreign(language: &str, program: &str, args: &[&str]) {
         panic!("load_foreign '{}': `{} {}` failed", language, program, args.join(" "));
     }
 }
+
+/// Repack a static archive so its members are properly aligned.
+///
+/// Zig 0.16's archive writer does not guarantee 8-byte alignment of Mach-O
+/// members. Apple's linker (Xcode 16+, ld_prime) rejects misaligned archives.
+/// Re-linking with the system `libtool -static` produces a correctly aligned archive.
+fn orch_repack_archive(path: &str) {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") { return; }
+    let repacked = format!("{}.repacked", path);
+    let ok = std::process::Command::new("libtool")
+        .args(["-static", "-o", &repacked, path])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if ok {
+        let _ = std::fs::rename(&repacked, path);
+    } else {
+        let _ = std::fs::remove_file(&repacked);
+    }
+}
 "#);
         }
         for (lib, p) in &zig_files {
             build_rs.push_str(&format!(
-                "    orch_compile_foreign(\"zig\", \"zig\", &[\"build-lib\", \"-O\", \"ReleaseFast\", \"-fPIC\", \"--cache-dir\", &format!(\"{{}}/zig-cache\", out_dir), &format!(\"-femit-bin={{}}/lib{lib}.a\", out_dir), {:?}]);\n    println!(\"cargo:rustc-link-lib=static={lib}\");\n",
+                "    orch_compile_foreign(\"zig\", \"zig\", &[\"build-lib\", \"-O\", \"ReleaseFast\", \"-fPIC\", \"--cache-dir\", &format!(\"{{}}/zig-cache\", out_dir), &format!(\"-femit-bin={{}}/lib{lib}.a\", out_dir), {:?}]);\n    orch_repack_archive(&format!(\"{{}}/lib{lib}.a\", out_dir));\n    println!(\"cargo:rustc-link-lib=static={lib}\");\n",
                 p.to_string_lossy()
             ));
         }
