@@ -18,6 +18,34 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   no reply in time return right away. `late: "drop"` (the default) returns the default
   value; `late: "latest"` returns the handler's most recent completed result, and a late
   reply becomes that result. A queued call whose caller has already given up is not sent.
+- Synchronous hosts can drive library mode: `ready_blocking`, `tick_blocking`,
+  `fixed_tick_blocking`, and `shutdown_blocking` take the host's Tokio runtime. With a
+  current-thread runtime, nothing runs between those calls.
+- `Scripts::trigger_<event>(...)` fires `on <event>` blocks from Rust. Events queue per
+  instance, run in order before and after each tick, and are never dropped.
+- Typed ticks: `on_tick(dt: float, input: Input) -> Output` generates
+  `tick(dt, input) -> Result<Output, String>`. A Python landline handler named `tick` is
+  sent as a TICK message carrying the tick number and `dt` (`self.tick_number`,
+  `self.tick_dt`).
+- `on_fixed_tick(step: float)` and `Scripts::fixed_tick(step)` for fixed-rate updates.
+- `start_with_options` and `StartOptions`: `deterministic` (host-driven time for lifecycle
+  and event hooks), `python` (interpreter path), and `shutdown_grace` (zero allowed).
+- `Host::log(LogLevel, &str)` receives `print` output, runtime diagnostics, and child
+  process stderr in library mode.
+- `build --lib --target <triple>` builds secret serverlet children and checks the library
+  for that target.
+- The standard library is embedded in the compiler, so `use module lists: "lists"` works
+  from an installed `orchestrate`.
+- Rust FFI sidecars accept array, `option<T>`, and `result<T>` types.
+
+### Changed
+- Generated library crates use edition 2024 and `rust-version = "1.98.1"`. C/C++ bindings
+  use `unsafe extern "C"`, and the identifier `gen` is escaped.
+- Generated cache crates declare their own empty `[workspace]`, so `build --lib` works
+  inside another Cargo workspace; the output crate still joins the host's workspace as a
+  path dependency.
+- In library mode, events triggered by scripts are queued and handled at tick boundaries
+  instead of on a task per handler.
 
 ## [0.2.0] - 2026-09-14
 

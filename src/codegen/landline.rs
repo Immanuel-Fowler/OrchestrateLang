@@ -56,14 +56,20 @@ impl Codegen {
             } else {
                 String::new()
             };
+            let tick_frame = self.library && h.name == "tick";
+            let kind = if tick_frame { "9" } else { "ORCH_KIND_CALL" };
+            let header = if tick_frame {
+                "(crate::__orch_context().frame.load(std::sync::atomic::Ordering::Relaxed) as i64).wire_encode(&mut __payload); f64::from_bits(crate::__orch_context().dt_bits.load(std::sync::atomic::Ordering::Relaxed)).wire_encode(&mut __payload);"
+            } else { "" };
             format!(r#"{name}Msg::{variant} {{ {bindings} }} => {{
                 {skip}
                 __next_call = __next_call.wrapping_add(1);
                 let mut __payload = Vec::new();
+                {header}
                 {id}i64.wire_encode(&mut __payload);
                 {encode}
                 let __result: Result<_, String> = async {{
-                    __secret_write_frame(&mut __cin, ORCH_KIND_CALL, __next_call, &__payload).await.map_err(|e| e.to_string())?;
+                    __secret_write_frame(&mut __cin, {kind}, __next_call, &__payload).await.map_err(|e| e.to_string())?;
                     let f = __secret_read_frame(&mut __cout).await.map_err(|e| e.to_string())?.ok_or("process exited")?;
                     if f.call_id != __next_call {{ return Err("reply call id mismatch".into()); }}
                     if f.kind == ORCH_KIND_ERROR {{
@@ -85,7 +91,7 @@ impl Codegen {
                         continue 'restart;
                     }}
                 }}
-            }}"#, name=name, variant=pascal_case(&h.name), bindings=bindings.join(", "), id=id, encode=encode, handler=h.name, decode=decode, recovery=recovery, skip=skip, remember=remember)
+            }}"#, name=name, variant=pascal_case(&h.name), bindings=bindings.join(", "), id=id, encode=encode, handler=h.name, decode=decode, recovery=recovery, skip=skip, remember=remember, kind=kind, header=header)
         }).collect::<Vec<_>>().join("\n");
         let mut code = include_str!("python_mirror.rs.txt")
             .replace("@NAME@", name)
@@ -155,6 +161,9 @@ impl Codegen {
             code = code.replace("__secret_write_frame(&mut __cin, ORCH_KIND_READY, 0, &[])", &format!("__secret_write_frame(&mut __cin, ORCH_KIND_READY, 0, &__wire_to_bytes(&vec![{}]))", signatures.join(", ")));
         }
         if self.library {
+            code = code.replace("std::env::var_os(\"ORCH_PYTHON\").unwrap_or_else(|| \"python3\".into())", "crate::__orch_context().options.python.clone().map(|p| p.into_os_string()).or_else(|| std::env::var_os(\"ORCH_PYTHON\")).unwrap_or_else(|| \"python3\".into())");
+            code = code.replace(".stdout(std::process::Stdio::piped()).spawn()", ".stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn()");
+            code = code.replace("let mut __cout = __child.stdout.take().expect(\"child stdout\");", "let mut __cout = __child.stdout.take().expect(\"child stdout\"); let stderr = __child.stderr.take().expect(\"child stderr\"); crate::__orch_spawn(async move { use tokio::io::AsyncBufReadExt; let mut lines = tokio::io::BufReader::new(stderr).lines(); while let Ok(Some(line)) = lines.next_line().await { crate::__orch_log(crate::LogLevel::Info, line); } });");
             code = code
                 .replace("tokio::spawn(", "__ORCH_LINE_SPAWN(")
                 .replace(

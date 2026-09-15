@@ -54,17 +54,7 @@ pub fn register_rust_ffi_from_sidecar(
             }
             pos += 1;
 
-            let (ty_str, line) = match tokens.get(pos) {
-                Some(t) => match &t.kind {
-                    TokenKind::Identifier(s) => (s.clone(), t.line),
-                    _ => return Err(format!("Error in {} at line {}: expected parameter type, found {:?}",
-                        sidecar_file_name, t.line, t.kind)),
-                },
-                None => return Err(format!("Error in {}: unexpected end of file", sidecar_file_name)),
-            };
-            pos += 1;
-
-            let orch_ty = sidecar_type_to_orch(&ty_str, sidecar_file_name, line)?;
+            let orch_ty = parse_sidecar_type(&tokens, &mut pos, sidecar_file_name)?;
             param_types.push(orch_ty);
 
             match tokens.get(pos).map(|t| &t.kind) {
@@ -80,16 +70,7 @@ pub fn register_rust_ffi_from_sidecar(
 
         let ret_ty = if tokens.get(pos).map(|t| &t.kind) == Some(&TokenKind::Arrow) {
             pos += 1;
-            let (ty_str, line) = match tokens.get(pos) {
-                Some(t) => match &t.kind {
-                    TokenKind::Identifier(s) => (s.clone(), t.line),
-                    _ => return Err(format!("Error in {} at line {}: expected return type, found {:?}",
-                        sidecar_file_name, t.line, t.kind)),
-                },
-                None => return Err(format!("Error in {}: unexpected end of file after '->'", sidecar_file_name)),
-            };
-            pos += 1;
-            sidecar_type_to_orch(&ty_str, sidecar_file_name, line)?
+            parse_sidecar_type(&tokens, &mut pos, sidecar_file_name)?
         } else {
             ast::Type::Void
         };
@@ -98,6 +79,27 @@ pub fn register_rust_ffi_from_sidecar(
     }
 
     Ok(())
+}
+
+fn parse_sidecar_type(tokens: &[crate::lexer::Token], pos: &mut usize, file: &str) -> Result<ast::Type, String> {
+    let token = tokens.get(*pos).ok_or_else(|| format!("Error in {}: expected type", file))?;
+    let name = match &token.kind { TokenKind::Identifier(name) => name, _ => return Err(format!("Error in {}: expected type", file)) };
+    *pos += 1;
+    let mut ty = if name == "option" || name == "result" {
+        if tokens.get(*pos).map(|t| &t.kind) != Some(&TokenKind::Lt) { return Err(format!("Error in {}: expected '<'", file)); }
+        *pos += 1;
+        let inner = parse_sidecar_type(tokens, pos, file)?;
+        if tokens.get(*pos).map(|t| &t.kind) != Some(&TokenKind::Gt) { return Err(format!("Error in {}: expected '>'", file)); }
+        *pos += 1;
+        if name == "option" { ast::Type::Option(Box::new(inner)) } else { ast::Type::Result(Box::new(inner)) }
+    } else { sidecar_type_to_orch(name, file, token.line)? };
+    while tokens.get(*pos).map(|t| &t.kind) == Some(&TokenKind::LBracket) {
+        *pos += 1;
+        if tokens.get(*pos).map(|t| &t.kind) != Some(&TokenKind::RBracket) { return Err(format!("Error in {}: expected ']'", file)); }
+        *pos += 1;
+        ty = ast::Type::Array(Box::new(ty), Vec::new());
+    }
+    Ok(ty)
 }
 
 fn sidecar_type_to_orch(ty: &str, file_name: &str, line: usize) -> Result<ast::Type, String> {

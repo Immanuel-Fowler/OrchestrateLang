@@ -282,3 +282,218 @@ fn main() {
     );
     assert!(output.contains("cleanup hook") && output.contains("shutdown completed"));
 }
+
+#[test]
+fn engine_workspace_and_latest_rust_metadata() {
+    let root = root("engine_workspace");
+    fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = []\nresolver = \"3\"\n").unwrap();
+    build(&root, "serverlet C secret { on value() -> int { return 1 } }\nlet c = start C()\non_tick(dt: float) { c.value() }\n");
+    fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = [\"scripts\"]\nresolver = \"3\"\n").unwrap();
+    let result = Command::new("cargo").args(["metadata", "--no-deps", "--format-version", "1"])
+        .arg("--manifest-path").arg(root.join("scripts/Cargo.toml")).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let metadata: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    let package = &metadata["packages"][0];
+    assert_eq!(package["edition"], "2024");
+    assert_eq!(package["rust_version"], "1.98.1");
+}
+
+#[test]
+fn engine_latest_edition_c_cpp_and_reserved_identifiers() {
+    let root = root("edition_ffi");
+    for (name, language, source) in [
+        ("c_math", "c", "long long twice(long long n) { return n * 2; }"),
+        ("cpp_math", "cpp", "extern \"C\" long long twice(long long n) { return n * 2; }"),
+    ] {
+        let dir = root.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("module.orch"), format!("load_foreign \"{language}\" \"math.{language}\"\n")).unwrap();
+        fs::write(dir.join(format!("math.{language}")), source).unwrap();
+        fs::write(dir.join("math.orch_ffi"), "twice(n: int) -> int\n").unwrap();
+    }
+    build(&root, r#"
+use module c: "./c_math"
+use module cpp: "./cpp_math"
+let gen = 3
+on_tick(dt: float) { print(to_string(c.twice(gen))) print(to_string(cpp.twice(gen))) print("gen") }
+"#);
+    let output = host(&root, r#"
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let mut scripts = scripts::start(runtime.handle(), ()).unwrap();
+    scripts.tick_blocking(&runtime, 0.1).unwrap();
+    scripts.shutdown_blocking(&runtime).unwrap();
+}
+"#);
+    assert_eq!(output.trim(), "6\n6\ngen");
+}
+
+#[test]
+fn engine_typed_tick_and_fixed_step() {
+    let root = root("typed_tick");
+    fs::write(root.join("impl.py"), "from dataclasses import dataclass\nfrom orchestratelang import landline\n@dataclass\nclass Input:\n    values: list[int]\n@dataclass\nclass Output:\n    total: int\nclass P(landline.Serverlet):\n    def tick(self, batch: Input) -> Output:\n        assert self.tick_dt == 0.25\n        return Output(sum(batch.values) + self.tick_number)\nlandline.serve(P)\n").unwrap();
+    build(&root, r#"
+struct Input { values: int[] }
+struct Output { total: int }
+serverlet P via python(source: "impl.py") { on tick(batch: Input) -> Output }
+let p = start P()
+on_fixed_tick(step: float) { print("fixed") }
+on_tick(dt: float, input: Input) -> Output { return p.tick(input) }
+"#);
+    let output = host(&root, r#"
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let mut scripts = scripts::start(runtime.handle(), ()).unwrap();
+    scripts.fixed_tick_blocking(&runtime, 0.01).unwrap();
+    let result = scripts.tick_blocking(&runtime, 0.25, scripts::Input { values: vec![2,3] }).unwrap();
+    assert_eq!(result.total, 6);
+    scripts.fixed_tick_blocking(&runtime, 0.01).unwrap();
+    let result = scripts.tick_blocking(&runtime, 0.25, scripts::Input { values: vec![8] }).unwrap();
+    assert_eq!(result.total, 10);
+    scripts.shutdown_blocking(&runtime).unwrap();
+}
+"#);
+    assert_eq!(output.trim(), "fixed\nfixed");
+}
+
+#[test]
+fn engine_pumped_events_and_deterministic_replays() {
+    let root = root("deterministic_events");
+    build(&root, r#"
+host world { fn record(n: int) }
+on hit(n: int) { world.record(n) sleep(10) world.record(n + 100) }
+on_tick(dt: float) { world.record(0) }
+"#);
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<i64>>>);
+impl scripts::Host for Host { fn world_record(&self, n: i64) -> Result<(), String> { self.0.lock().unwrap().push(n); Ok(()) } }
+fn run(runtime: &tokio::runtime::Runtime) -> Vec<i64> {
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let options = scripts::StartOptions { deterministic: true, ..Default::default() };
+    let mut scripts = scripts::start_with_options(runtime.handle(), Host(recorded.clone()), options).unwrap();
+    let untouched = Arc::new(Mutex::new(Vec::new()));
+    let mut other = scripts::start_with_options(runtime.handle(), Host(untouched.clone()), scripts::StartOptions { deterministic: true, ..Default::default() }).unwrap();
+    scripts.trigger_hit(3).unwrap();
+    scripts.tick_blocking(runtime, 0.001).unwrap();
+    assert_eq!(*recorded.lock().unwrap(), vec![3,0]);
+    other.tick_blocking(runtime, 0.001).unwrap();
+    assert_eq!(*untouched.lock().unwrap(), vec![0], "an event must reach only the instance it was fired on");
+    other.shutdown_blocking(runtime).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    assert_eq!(*recorded.lock().unwrap(), vec![3,0]);
+    scripts.trigger_hit(4).unwrap();
+    scripts.tick_blocking(runtime, 0.02).unwrap();
+    scripts.tick_blocking(runtime, 0.02).unwrap();
+    scripts.shutdown_blocking(runtime).unwrap();
+    let result = recorded.lock().unwrap().clone();
+    result
+}
+fn main() {
+    let a = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let b = tokio::runtime::Runtime::new().unwrap();
+    let first = run(&a);
+    assert_eq!(first, run(&a));
+    assert_eq!(first, run(&b));
+    assert_eq!(first, vec![3,0,103,4,0,104,0]);
+    println!("replays match");
+}
+"#);
+    assert_eq!(output.trim(), "replays match");
+}
+
+#[test]
+fn engine_host_logs_and_fast_shutdown() {
+    let root = root("logs_shutdown");
+    fs::write(root.join("impl.py"), "import time\nfrom orchestratelang import landline\nclass P(landline.Serverlet):\n    def busy(self) -> int:\n        print('python message')\n        time.sleep(10)\n        return 1\nlandline.serve(P)\n").unwrap();
+    build(&root, r#"
+host world { fn fail() }
+serverlet P via python(source: "impl.py", budget: "20ms") { on busy() -> int }
+let p = start P()
+on_start { print("startup") world.fail() }
+on_tick(dt: float) { p.busy() }
+"#);
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<String>>>);
+impl scripts::Host for Host {
+    fn world_fail(&self) -> Result<(), String> { Err("host failure".into()) }
+    fn log(&self, _: scripts::LogLevel, message: &str) { self.0.lock().unwrap().push(message.to_owned()); }
+}
+fn main() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let options = scripts::StartOptions { shutdown_grace: std::time::Duration::ZERO, ..Default::default() };
+    let mut scripts = scripts::start_with_options(runtime.handle(), Host(logs.clone()), options).unwrap();
+    scripts.ready_blocking(&runtime).unwrap();
+    // Give the Python startup handshake time to finish before measuring a busy call.
+    runtime.block_on(async { tokio::time::sleep(std::time::Duration::from_millis(200)).await; });
+    let tick = std::time::Instant::now();
+    scripts.tick_blocking(&runtime, 0.1).unwrap();
+    assert!(tick.elapsed() < std::time::Duration::from_millis(100));
+    let shutdown = std::time::Instant::now();
+    scripts.shutdown_blocking(&runtime).unwrap();
+    assert!(shutdown.elapsed() < std::time::Duration::from_millis(100));
+    let messages = logs.lock().unwrap();
+    assert!(messages.iter().any(|s| s == "startup"));
+    assert!(messages.iter().any(|s| s.contains("host failure")));
+}
+"#);
+    assert!(output.is_empty(), "{}", output);
+}
+
+#[test]
+fn engine_installed_layout_stdlib_and_target_children() {
+    let root = root("installed_stdlib");
+    let compiler = root.join(format!("orchestrate{}", std::env::consts::EXE_SUFFIX));
+    fs::copy(env!("CARGO_BIN_EXE_orchestrate"), &compiler).unwrap();
+    fs::write(root.join("main.orch"), "use module lists: \"lists\"\norchestrator main() { print(to_string(lists.sum([2,3]))) stop_orch() }\n").unwrap();
+    let result = Command::new(&compiler).arg("run").arg(root.join("main.orch")).current_dir(&root).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    assert!(String::from_utf8_lossy(&result.stdout).lines().any(|s| s == "5"));
+    fs::write(root.join("main.orch"), "serverlet C secret { on value() -> int { return 1 } }\n").unwrap();
+    let rustc = Command::new("rustc").arg("-vV").output().unwrap();
+    let version = String::from_utf8_lossy(&rustc.stdout);
+    let target = version.lines().find_map(|line| line.strip_prefix("host: ")).unwrap();
+    let result = Command::new(&compiler).args(["build", "--lib", "--target", target]).arg(root.join("main.orch")).arg("-o").arg(root.join("scripts")).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    assert!(root.join(".orch_cache/library/target").join(target).join(format!("debug/secret_C{}", std::env::consts::EXE_SUFFIX)).is_file());
+}
+
+#[test]
+fn engine_current_thread_pumps_workers_events_and_python() {
+    let root = root("pumped_runtime");
+    fs::write(root.join("impl.py"), "from orchestratelang import landline\nclass P(landline.Serverlet):\n    def ping(self) -> int: return 42\nlandline.serve(P)\n").unwrap();
+    build(&root, r#"
+host world { fn record(n: int) }
+serverlet P via python(source: "impl.py") { on ping() -> int }
+let p = start P()
+let worker = automatic { world.record(9) sleep(5) }
+on hit(n: int) { world.record(n) }
+on_tick(dt: float) { world.record(p.ping()) sleep(20) }
+orchestrator main(workers: process[worker]) {}
+"#);
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<i64>>>);
+impl scripts::Host for Host { fn world_record(&self, n: i64) -> Result<(), String> { self.0.lock().unwrap().push(n); Ok(()) } }
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut scripts = scripts::start(runtime.handle(), Host(log.clone())).unwrap();
+    scripts.trigger_hit(3).unwrap();
+    assert!(log.lock().unwrap().is_empty());
+    scripts.tick_blocking(&runtime, 0.1).unwrap();
+    let first = log.lock().unwrap().clone();
+    assert!(first.contains(&3) && first.contains(&42) && first.contains(&9));
+    std::thread::sleep(std::time::Duration::from_millis(40));
+    assert_eq!(*log.lock().unwrap(), first);
+    scripts.trigger_hit(4).unwrap();
+    assert_eq!(*log.lock().unwrap(), first);
+    scripts.tick_blocking(&runtime, 0.1).unwrap();
+    assert!(log.lock().unwrap().contains(&4));
+    scripts.shutdown_blocking(&runtime).unwrap();
+}
+"#);
+    assert!(output.is_empty());
+}

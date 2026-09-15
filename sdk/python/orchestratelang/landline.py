@@ -175,9 +175,12 @@ def serve(serverlet_class):
             return
         kind, call_id, payload = frame
         try:
-            if kind != 3:
-                raise ValueError("expected CALL")
+            if kind not in (3, 9):
+                raise ValueError("expected CALL or TICK")
             data = _Reader(payload)
+            if kind == 9:
+                instance.tick_number = data.value(int)
+                instance.tick_dt = data.value(float)
             index = data.value(int)
             if not 0 <= index < len(methods):
                 raise ValueError("unknown handler id")

@@ -379,7 +379,18 @@ impl TypeChecker {
                 let structs = self.struct_defs.iter().map(|(n,f)| (n.clone(),f.clone())).collect::<Vec<_>>();
                 if let Some(reason) = crate::codegen::stmt::wire_unsupported_reason(functions, &structs) { return Err(reason); }
             }
-            StmtNode::OnTick { param, body } => {
+            StmtNode::OnTick { param, input, return_type, body } => {
+                self.push_env();
+                self.define_var(param.clone(), Type::Float);
+                if let Some(input) = input { self.define_var(input.name.clone(), input.ty.clone()); }
+                let old_return = self.current_return_type.replace(return_type.clone());
+                let result = self.infer_expr(body);
+                self.current_return_type = old_return;
+                self.pop_env();
+                let inferred = result?;
+                if *return_type != Type::Void && inferred != Type::Void && !self.types_compatible(return_type, &inferred) { return Err("on_tick return type mismatch".into()); }
+            }
+            StmtNode::OnFixedTick { param, body } => {
                 self.push_env();
                 self.define_var(param.clone(), Type::Float);
                 self.infer_expr(body)?;

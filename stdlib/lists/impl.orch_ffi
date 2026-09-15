@@ -6,3 +6,4 @@ unique(items: int[]) -> int[]
 sum(items: int[]) -> int
 max(items: int[]) -> int
 min(items: int[]) -> int
+flatten(lists: int[][]) -> int[]

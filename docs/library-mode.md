@@ -3,8 +3,12 @@
 `orchestrate build --lib main.orch -o generated/scripts` generates and checks a Rust
 crate named `scripts`. Add it as a Cargo path dependency in a Rust application.
 The host owns its Tokio runtime; the library never creates a runtime or exits the
-host process. Python pipe landlines require Python 3.10+ (`ORCH_PYTHON` selects the
-executable, otherwise `python3`).
+host process.
+
+Generated crates use edition 2024 and `rust-version = "1.98.1"`, so the host needs Rust
+1.98.1 or newer. They build inside another Cargo workspace: the compiler's cache crate
+declares its own empty `[workspace]`, and the output crate joins the host's workspace as
+an ordinary path dependency. Python pipe landlines require Python 3.10+.
 
 Run the complete example from the repository root:
 
@@ -24,24 +28,25 @@ while !scripts.stop_requested() {
 scripts.shutdown().await?;
 ```
 
-The generated `start(&tokio::runtime::Handle, impl Host)` returns
-`Result<Scripts, String>`. It initializes an independent instance and schedules its
-coordinator on the supplied runtime. Use `()` as the host when there are no host
-functions. Current-thread and multithreaded Tokio runtimes both work; keep the
-runtime running while awaiting library operations.
+`start(&tokio::runtime::Handle, impl Host)` returns `Result<Scripts, String>`; use
+`start_with_options` to pass [`StartOptions`](#start-options). Each call initializes an
+independent instance and schedules its coordinator on the supplied runtime. Use `()` as
+the host when there are no host functions.
 
 - `ready().await` waits for top-level bindings, `on_start`, and event registration.
   It does not wait for the orchestrator body or every sidecar handshake to finish.
-- `tick(dt).await` executes the `on_tick` hooks once, in declaration order. The
-  method requires mutable access, so ticks from one handle are serialized. Its
-  result acknowledges hook completion; it is not a batch of foreign return values.
+- `tick(dt).await` handles queued events, runs the `on_tick` hooks once in declaration
+  order, then handles the events those hooks queued. The method requires mutable access,
+  so ticks from one handle are serialized.
+- `fixed_tick(step).await` does the same for `on_fixed_tick(step: float)` hooks, for
+  fixed-rate updates alongside the per-frame `tick`. Each call runs only its own hooks.
 - `stop_orch()` sets this instance's stop-request flag. It does not exit Rust,
-  automatically shut down the library, or affect other instances. A subsequent
-  tick returns an error; the host should call `shutdown()`.
+  automatically shut down the library, or affect other instances. A later tick returns
+  an error; the host should call `shutdown()`.
 - `shutdown().await` cancels a pending tick, stops the orchestrator task, runs
-  `on_stop`, aborts owned workers, and closes sidecars. Idle pipe children receive
-  BYE; children with unfinished calls may be terminated. Cleanup allows three
-  seconds for sidecar tasks before aborting them. It leaves the host runtime alive.
+  `on_stop`, aborts owned workers, and closes sidecars. Idle pipe children receive BYE;
+  children with unfinished calls are terminated after `StartOptions::shutdown_grace`.
+  It leaves the host runtime alive.
 - Dropping `Scripts` requests shutdown in the background. Await `shutdown()` for
   deterministic cleanup and error reporting, before dropping the Tokio runtime.
 
@@ -50,12 +55,94 @@ are shared by its lifecycle hooks. The `main` orchestrator accepts no parameters
 one `process[]` parameter for worker supervision. Event registries, owned tasks,
 assets, host implementations, and stop flags are isolated per instance.
 
-The host API is asynchronous to avoid blocking or nesting a Tokio runtime.
-Synchronous hosts can call `runtime.block_on(...)` from outside async code.
-Lifecycle code and synchronous host implementations must cooperate with the
-runtime: CPU-bound loops, blocking host methods, or a stuck `on_start`/`on_stop`
-hook can delay shutdown. A landline `budget` bounds slow Python calls, but not Rust
-host methods or the hooks themselves.
+### Start options
+
+| Field | Default | Meaning |
+|---|---|---|
+| `deterministic` | `false` | Run lifecycle and event hooks on host-driven time ([below](#deterministic-mode)) |
+| `python` | `None` | Python executable for landlines; otherwise `ORCH_PYTHON`, then `python3` |
+| `shutdown_grace` | 3 seconds | How long shutdown waits for sidecar tasks before aborting them; zero is allowed |
+
+```rust
+let options = scripts::StartOptions {
+    shutdown_grace: std::time::Duration::ZERO,
+    ..Default::default()
+};
+let mut scripts = scripts::start_with_options(runtime.handle(), AppHost::new(), options)?;
+```
+
+## Driving from synchronous code
+
+Hosts without async code call the blocking methods with the runtime they own:
+
+```rust
+let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+let mut scripts = scripts::start(runtime.handle(), AppHost::new())?;
+scripts.ready_blocking(&runtime)?;
+while !scripts.stop_requested() {
+    scripts.tick_blocking(&runtime, dt)?;
+}
+scripts.shutdown_blocking(&runtime)?;
+```
+
+`ready_blocking`, `tick_blocking`, `fixed_tick_blocking`, and `shutdown_blocking` call
+`runtime.block_on` for you. With a current-thread runtime, all library work (workers,
+event handlers, landline I/O) runs only while one of these calls is in progress; nothing
+runs between them. A multithreaded runtime keeps running background work between calls.
+
+Lifecycle code and host implementations must cooperate with the runtime: CPU-bound
+loops, blocking host methods, or a stuck `on_start`/`on_stop` hook can delay a tick or
+shutdown. A landline `budget` bounds slow Python calls, but not Rust host methods or the
+hooks themselves.
+
+## Events from the host
+
+Every `on <event>(...)` block gets a typed method on `Scripts`:
+
+```orchestrate
+on hit(damage: int) { world.record(damage) }
+```
+
+```rust
+scripts.trigger_hit(3)?; // handled during the next tick or fixed tick
+```
+
+`trigger_<event>` queues the event for that instance only, and returns an error after
+shutdown. Events fired by the host and by scripts (`trigger hit(3)`) wait in a
+per-instance queue that is handled in order before and after each tick and fixed tick.
+Queued events are never dropped.
+
+## Typed ticks
+
+A single `on_tick` hook may take an input and return an output:
+
+```orchestrate
+struct Input { values: int[] }
+struct Output { total: int }
+on_tick(dt: float, input: Input) -> Output { return brain.tick(input) }
+```
+
+The generated method becomes `tick(dt, input: Input) -> Result<Output, String>`, and
+`tick_blocking(&runtime, dt, input)`. A typed hook must be the only `on_tick` in the
+program.
+
+Calls to a Python landline handler named `tick` are sent as a TICK message that also
+carries the tick number and `dt`; the handler reads them from `self.tick_number` and
+`self.tick_dt`. Put arrays in the input to batch per-item work into one call.
+
+## Deterministic mode
+
+With `StartOptions { deterministic: true, .. }`, the same sequence of `tick(dt)` values
+and `trigger_*` calls produces the same host calls, on current-thread and multithreaded
+runtimes.
+
+- Time comes from the host: each tick adds its `dt`, and `sleep` inside an event handler
+  waits until enough later tick time has passed. No wall clock is consulted.
+- Ready events run in FIFO order; events that are sleeping stay queued.
+- The orchestrator body runs to completion during startup instead of on its own task.
+- Spawned workers (`automatic` blocks), serverlets and landlines, and `sleep` outside
+  event handlers are not supported and panic.
+- Host implementations must be deterministic themselves.
 
 ## Declaring and granting host functions
 
@@ -108,6 +195,23 @@ landline behavior: log the error, return a default value, and preserve process s
 Grants constrain the generated host-call interface. They do not sandbox Python or
 restrict its OS permissions.
 
+## Logging
+
+`Host` has a `log` method whose default prints `Info` messages to stdout and other levels
+to stderr. Override it to route output to the host's logger:
+
+```rust
+impl scripts::Host for AppHost {
+    fn log(&self, level: scripts::LogLevel, message: &str) {
+        // forward to the host's logging system
+    }
+}
+```
+
+In library mode, `print` output, runtime diagnostics (such as a failed host call), and
+the stderr of Python and secret serverlet children all go through `log`. `LogLevel` is
+`Info`, `Warning`, or `Error`. Rust's process-wide panic hook is outside this logger.
+
 ## Packaging
 
 The output directory is compiler-owned and marked `.orchestrate-library`.
@@ -117,12 +221,17 @@ Generation refuses to overwrite an existing unmarked directory. Regenerate from
 Python sources/SDK files and compiled secret children are embedded as library
 assets. Each instance extracts its own temporary directory, then removes it on
 shutdown. The linked host binary does not depend on the original `.orch`/Python
-source locations. Python itself and third-party packages remain external. Secret
-children are compiled for the compiler machine's target; cross-compiling that
-bundle is not supported. Existing foreign C/C++ build scripts may still reference
-source files and require their toolchain when the host builds the generated crate.
+source locations. Python itself and third-party packages remain external; point
+`StartOptions::python` at the interpreter to use. Existing foreign C/C++ build scripts
+may still reference source files and require their toolchain when the host builds the
+generated crate.
+
+Secret children are compiled for the compiler machine's target by default. Pass
+`build --lib --target <triple>` to build them, and check the library, for another target;
+the matching Rust target and linker must be installed. The standard library (`lists`,
+`strings`) is embedded in the compiler, so it works from an installed `orchestrate`.
 
 Bound slow landline calls made from `on_tick` with a landline `budget` and `late` policy,
 and batch per-item work by passing arrays; see
-[landline-serverlets.md](design/landline-serverlets.md) §5. A latency benchmark harness
-is not implemented yet.
+[landline-serverlets.md](design/landline-serverlets.md) §5. To measure call latency on
+your machine, see [benchmarks/README.md](../benchmarks/README.md).

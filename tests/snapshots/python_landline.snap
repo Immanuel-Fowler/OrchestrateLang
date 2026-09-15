@@ -105,7 +105,7 @@ const ORCH_KIND_READY: u8 = 2;
 const ORCH_KIND_CALL: u8 = 3;
 const ORCH_KIND_REPLY: u8 = 4;
 const ORCH_KIND_ERROR: u8 = 5;
-// 6 = HOST_CALL and 7 = HOST_REPLY carry landline host callbacks; 9 = TICK is reserved.
+// 6 = HOST_CALL and 7 = HOST_REPLY carry landline host callbacks; 9 = TICK carries a library tick.
 const ORCH_KIND_BYE: u8 = 8;
 
 struct OrchFrame {
@@ -262,6 +262,7 @@ pub fn start_Counter() -> CounterClient {
                 
                 __next_call = __next_call.wrapping_add(1);
                 let mut __payload = Vec::new();
+                
                 0i64.wire_encode(&mut __payload);
                 n.wire_encode(&mut __payload);
                 let __result: Result<_, String> = async {

@@ -8,7 +8,7 @@ pub fn parse_ffi_and_generate_bindings(
     let mut lexer = Lexer::new(ffi_content);
     let tokens = lexer.tokenize().map_err(|e| format!("Error in {} at {}", file_name, e))?;
 
-    let mut extern_c = String::from("extern \"C\" {\n");
+    let mut extern_c = String::from("unsafe extern \"C\" {\n");
     let mut wrappers = String::new();
 
     let mut pos = 0;

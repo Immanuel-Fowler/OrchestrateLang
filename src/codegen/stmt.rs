@@ -32,7 +32,7 @@ impl Codegen {
             StmtNode::Break => "break".to_string(),
             StmtNode::Continue => "continue".to_string(),
             StmtNode::Expr(expr) => self.compile_expr(expr),
-            StmtNode::Host { .. } | StmtNode::OnTick { .. } => String::new(),
+            StmtNode::Host { .. } | StmtNode::OnTick { .. } | StmtNode::OnFixedTick { .. } => String::new(),
             StmtNode::OnStart(expr) => {
                 let inner = self.compile_expr(expr);
                 format!("// OnStart\n{}", inner)
@@ -117,7 +117,7 @@ impl Codegen {
                     let mut exec_code = Vec::new();
                     let local_stmts = self.local_stmts.clone();
                     for s in &local_stmts {
-                        if self.library && matches!(&s.node, StmtNode::OnStart(_) | StmtNode::OnStop(_) | StmtNode::OnTick { .. }) { continue; }
+                        if self.library && matches!(&s.node, StmtNode::OnStart(_) | StmtNode::OnStop(_) | StmtNode::OnTick { .. } | StmtNode::OnFixedTick { .. }) { continue; }
                         let mut compiled = self.compile_stmt(s);
 
                         let mut is_auto_let = false;
@@ -337,6 +337,9 @@ impl Codegen {
                     let compiled_args = args.iter().map(|a| self.compile_expr(a)).collect::<Vec<String>>().join(", ");
                     format!("({})", compiled_args)
                 };
+                if self.library && event_name != "update_orchestrator" {
+                    return format!("let context = crate::__orch_context(); let value = std::sync::Arc::new({payload}); let handlers = {func_name}().lock().unwrap().clone(); for handler in handlers {{ context.events.lock().unwrap().push_back(handler(value.clone())); }}");
+                }
                 format!(
                     "let payload_eval = std::sync::Arc::new({});\nif let Ok(handlers) = {}().lock() {{\n    for tx in handlers.iter() {{\n        if tx.try_send(std::sync::Arc::clone(&payload_eval)).is_err() {{\n            eprintln!(\"[orchestrate] warning: dropped event '{}' — subscriber channel full\");\n        }}\n    }}\n}}",
                     payload, func_name, event_name
@@ -558,6 +561,8 @@ impl Codegen {
                 if *secret {
                     let mut start_fn = self.compile_secret_mirror(name, handlers);
                     if self.library {
+                        start_fn = start_fn.replace(".stdout(std::process::Stdio::piped())", ".stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())");
+                        start_fn = start_fn.replace("let mut __cout = __child.stdout.take().expect(\"child stdout\");", "let mut __cout = __child.stdout.take().expect(\"child stdout\"); let stderr = __child.stderr.take().expect(\"child stderr\"); crate::__orch_spawn(async move { use tokio::io::AsyncBufReadExt; let mut lines = tokio::io::BufReader::new(stderr).lines(); while let Ok(Some(line)) = lines.next_line().await { crate::__orch_log(crate::LogLevel::Info, line); } });");
                         start_fn = start_fn.replace("tokio::spawn(", "__ORCH_LINE_SPAWN(")
                             .replace("let __dir = __exe.parent().expect(\"exe dir\").to_path_buf();", "let __dir = crate::__orch_context().assets.clone();")
                             .replace("__secret_read_frame(", "crate::__orch_read_frame(")
@@ -750,7 +755,7 @@ impl Codegen {
             };
             let body = self.compile_expr(&h.body);
             exports.push(format!(
-                "#[no_mangle]\npub extern \"C\" fn {hname}({params}){ret} {{\n{state}\n    {{ {body} }}\n}}",
+                "#[unsafe(no_mangle)]\npub extern \"C\" fn {hname}({params}){ret} {{\n{state}\n    {{ {body} }}\n}}",
                 hname = h.name, params = params, ret = ret, state = state_block, body = body
             ));
         }

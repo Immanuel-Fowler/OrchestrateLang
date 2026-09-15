@@ -7,6 +7,8 @@
 #![allow(unreachable_code)]
 
 fn get_registry_update_orchestrator() -> std::sync::Arc<std::sync::Mutex<Vec<tokio::sync::mpsc::Sender<std::sync::Arc<Vec<ProcessRef>>>>>> { crate::__orch_context().event_update_orchestrator.clone() }
+macro_rules! println { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::Info, format!($($args)*)) }; }
+macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::Error, format!($($args)*)) }; }
 trait OrchAdd<RHS = Self> {
     type Output;
     fn orch_add(self, rhs: RHS) -> Self::Output;
@@ -99,7 +101,7 @@ const ORCH_KIND_READY: u8 = 2;
 const ORCH_KIND_CALL: u8 = 3;
 const ORCH_KIND_REPLY: u8 = 4;
 const ORCH_KIND_ERROR: u8 = 5;
-// 6 = HOST_CALL and 7 = HOST_REPLY carry landline host callbacks; 9 = TICK is reserved.
+// 6 = HOST_CALL and 7 = HOST_REPLY carry landline host callbacks; 9 = TICK carries a library tick.
 const ORCH_KIND_BYE: u8 = 8;
 
 struct OrchFrame {
@@ -199,24 +201,28 @@ async fn __orch_entry(mut commands: tokio::sync::mpsc::UnboundedReceiver<OrchCom
  } => {} }
     }
     
-    let __main = crate::__orch_spawn(async move { orchestrator_main().await; });
+    let __main = if __context.options.deterministic { orchestrator_main().await; None } else { Some(crate::__orch_spawn(async move { orchestrator_main().await; })) };
     let _ = ready.send(());
     while !*__shutdown.borrow() {
         let command = tokio::select! { biased; _ = __shutdown.changed() => break, command = commands.recv() => command };
         let Some(command) = command else { break; };
         match command {
             OrchCommand::Tick(__dt, reply) => {
-                tokio::select! { biased; _ = __shutdown.changed() => break, _ = async { { let dt = __dt; {
+                __context.frame.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                __context.dt_bits.store(__dt.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                tokio::select! { biased; _ = __shutdown.changed() => break, __output = async { __context.advance_time(__dt); __context.drain_events().await; let output = async { { let dt = __dt; {
     // orch:1:50
         stop_orch()
 }; }
- } => { let _ = reply.send(()); } }
+ }.await; __context.drain_events().await; output } => { let _ = reply.send(__output); } }
+            },
+            OrchCommand::FixedTick(__dt, reply) => {
+                tokio::select! { biased; _ = __shutdown.changed() => break, _ = async { __context.drain_events().await;  __context.drain_events().await; } => { let _ = reply.send(()); } }
             },
             OrchCommand::Shutdown => break,
         }
     }
-    __main.abort();
-    let _ = __main.await;
+    if let Some(__main) = __main { __main.abort(); let _ = __main.await; }
     {
     // orch:1:74
         print_val(String::from("stop"))
@@ -225,12 +231,35 @@ async fn __orch_entry(mut commands: tokio::sync::mpsc::UnboundedReceiver<OrchCom
 }
 
 
+#[derive(Clone, Debug)]
+pub struct StartOptions {
+    pub deterministic: bool,
+    pub python: Option<std::path::PathBuf>,
+    pub shutdown_grace: std::time::Duration,
+}
+impl Default for StartOptions {
+    fn default() -> Self { Self { deterministic: false, python: None, shutdown_grace: std::time::Duration::from_secs(3) } }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogLevel { Info, Warning, Error }
 pub trait Host: Send + Sync + 'static {
+    fn log(&self, level: LogLevel, message: &str) {
+        match level { LogLevel::Info => std::println!("{}", message), _ => std::eprintln!("{}", message) }
+    }
 
 }
 
+type OrchEvent = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+type OrchEventHandler<T> = std::sync::Arc<dyn Fn(std::sync::Arc<T>) -> OrchEvent + Send + Sync>;
+tokio::task_local! { static ORCH_EVENT: (); }
 struct OrchContext {
     host: std::sync::Arc<dyn Host>,
+    options: StartOptions,
+    events: std::sync::Mutex<std::collections::VecDeque<OrchEvent>>,
+    clock_nanos: std::sync::atomic::AtomicU64,
+    frame: std::sync::atomic::AtomicU64,
+    dt_bits: std::sync::atomic::AtomicU64,
     stop_requested: std::sync::atomic::AtomicBool,
     closing: tokio::sync::watch::Sender<bool>,
     shutdown: tokio::sync::watch::Sender<bool>,
@@ -243,6 +272,7 @@ struct OrchContext {
 }
 tokio::task_local! { static ORCH_CONTEXT: std::sync::Arc<OrchContext>; }
 fn __orch_context() -> std::sync::Arc<OrchContext> { ORCH_CONTEXT.with(Clone::clone) }
+fn __orch_log(level: LogLevel, message: String) { __orch_context().host.log(level, &message); }
 fn stop_orch() { __orch_context().stop_requested.store(true, std::sync::atomic::Ordering::Release); }
 
 struct OrchTaskGuard(std::sync::Arc<OrchContext>);
@@ -263,6 +293,7 @@ where F: std::future::Future + Send + 'static, F::Output: Send + 'static {
 fn __orch_spawn_kind<F>(future: F, line: bool) -> tokio::task::JoinHandle<F::Output>
 where F: std::future::Future + Send + 'static, F::Output: Send + 'static {
     let context = __orch_context();
+    assert!(!context.options.deterministic, "deterministic mode supports lifecycle and event hooks; spawned workers and serverlets are excluded");
     context.active.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     let guard = OrchTaskGuard(context.clone());
     let task = tokio::spawn(ORCH_CONTEXT.scope(context.clone(), async move {
@@ -287,7 +318,32 @@ async fn __orch_read_frame<R: tokio::io::AsyncReadExt + Unpin>(reader: &mut R) -
     if *closing.borrow() { return Ok(None); }
     tokio::select! { biased; _ = closing.changed() => Ok(None), result = __secret_read_frame(reader) => result }
 }
+async fn __orch_sleep(duration: std::time::Duration) {
+    let context = __orch_context();
+    if !context.options.deterministic { tokio::time::sleep(duration).await; return; }
+    assert!(ORCH_EVENT.try_with(|_| ()).is_ok(), "deterministic sleep is supported only in event handlers");
+    let deadline = context.clock_nanos.load(std::sync::atomic::Ordering::Relaxed).saturating_add(duration.as_nanos().min(u64::MAX as u128) as u64);
+    std::future::poll_fn(|_| if context.clock_nanos.load(std::sync::atomic::Ordering::Relaxed) >= deadline { std::task::Poll::Ready(()) } else { std::task::Poll::Pending }).await
+}
 impl OrchContext {
+    fn advance_time(&self, dt: f64) {
+        assert!(dt.is_finite() && dt >= 0.0, "tick dt must be finite and nonnegative");
+        let duration = std::time::Duration::from_secs_f64(dt);
+        self.clock_nanos.fetch_add(duration.as_nanos().min(u64::MAX as u128) as u64, std::sync::atomic::Ordering::Relaxed);
+    }
+    async fn drain_events(&self) {
+        let mut pending = std::collections::VecDeque::new();
+        loop {
+            let event = self.events.lock().unwrap().pop_front();
+            let Some(event) = event else { break; };
+            if self.options.deterministic {
+                let mut event = event;
+                let result = ORCH_EVENT.scope((), std::future::poll_fn(|cx| std::task::Poll::Ready(event.as_mut().poll(cx)))).await;
+                if result.is_pending() { pending.push_back(event); }
+            } else { event.await; }
+        }
+        self.events.lock().unwrap().extend(pending);
+    }
     async fn cleanup(&self) {
         self.closing.send_replace(true);
         for (task, line) in self.tasks.lock().unwrap().iter() { if !line { task.abort(); } }
@@ -298,7 +354,7 @@ impl OrchContext {
                 notified.await;
             }
         };
-        if tokio::time::timeout(std::time::Duration::from_secs(3), drained).await.is_err() {
+        if tokio::time::timeout(self.options.shutdown_grace, drained).await.is_err() {
             for (task, _) in self.tasks.lock().unwrap().iter() { task.abort(); }
             while self.active.load(std::sync::atomic::Ordering::Acquire) != 0 { self.idle.notified().await; }
         }
@@ -308,6 +364,7 @@ impl OrchContext {
 
 enum OrchCommand {
     Tick(f64, tokio::sync::oneshot::Sender<()>),
+    FixedTick(f64, tokio::sync::oneshot::Sender<()>),
     Shutdown,
 }
 pub struct Scripts {
@@ -317,6 +374,17 @@ pub struct Scripts {
     context: std::sync::Arc<OrchContext>,
 }
 impl Scripts {
+    /// Pump a current-thread runtime until startup is complete. No work runs between pumps.
+    pub fn ready_blocking(&mut self, runtime: &tokio::runtime::Runtime) -> Result<(), String> {
+        runtime.block_on(self.ready())
+    }
+    pub fn tick_blocking(&mut self, runtime: &tokio::runtime::Runtime, dt: f64) -> Result<(), String> {
+        runtime.block_on(self.tick(dt))
+    }
+    pub fn shutdown_blocking(self, runtime: &tokio::runtime::Runtime) -> Result<(), String> {
+        runtime.block_on(self.shutdown())
+    }
+
     /// Wait until top-level state and on_start have initialized.
     pub async fn ready(&mut self) -> Result<(), String> {
         if let Some(ready) = self.ready.take() {
@@ -333,6 +401,16 @@ impl Scripts {
         self.commands.send(OrchCommand::Tick(dt, tx)).map_err(|_| "library is stopped")?;
         rx.await.map_err(|_| "tick task failed".into())
     }
+    pub async fn fixed_tick(&mut self, step: f64) -> Result<(), String> {
+        self.ready().await?;
+        if self.stop_requested() { return Err("orchestration requested stop".into()); }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.commands.send(OrchCommand::FixedTick(step, tx)).map_err(|_| "library is stopped")?;
+        rx.await.map_err(|_| "fixed tick task failed".into())
+    }
+    pub fn fixed_tick_blocking(&mut self, runtime: &tokio::runtime::Runtime, step: f64) -> Result<(), String> {
+        runtime.block_on(self.fixed_tick(step))
+    }
     pub fn stop_requested(&self) -> bool {
         self.context.stop_requested.load(std::sync::atomic::Ordering::Acquire)
     }
@@ -348,6 +426,9 @@ impl Drop for Scripts {
 }
 
 pub fn start(runtime: &tokio::runtime::Handle, host: impl Host) -> Result<Scripts, String> {
+    start_with_options(runtime, host, StartOptions::default())
+}
+pub fn start_with_options(runtime: &tokio::runtime::Handle, host: impl Host, options: StartOptions) -> Result<Scripts, String> {
     static NEXT_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let assets = loop {
         let id = NEXT_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -373,7 +454,7 @@ pub fn start(runtime: &tokio::runtime::Handle, host: impl Host) -> Result<Script
     let (closing, _) = tokio::sync::watch::channel(false);
     let (shutdown, _) = tokio::sync::watch::channel(false);
     let context = std::sync::Arc::new(OrchContext {
-        host: std::sync::Arc::new(host), stop_requested: false.into(), closing, shutdown,
+        host: std::sync::Arc::new(host), options, events: Default::default(), clock_nanos: 0.into(), frame: 0.into(), dt_bits: 0.into(), stop_requested: false.into(), closing, shutdown,
         tasks: Default::default(), active: 0.into(), idle: tokio::sync::Notify::new(), assets,
     event_update_orchestrator: Default::default(),
 
@@ -390,5 +471,7 @@ pub fn start(runtime: &tokio::runtime::Handle, host: impl Host) -> Result<Script
     Ok(Scripts { commands, ready: Some(ready), supervisor: Some(supervisor), context })
 }
 include!("assets.rs");
+
+impl Scripts {  }
 
 impl Host for () {}

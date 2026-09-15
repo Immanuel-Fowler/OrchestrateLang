@@ -1,6 +1,6 @@
 # Landline Serverlets — Design & Build Plan
 
-> Status: **🚧 IN PROGRESS — build steps 1–9 implemented: Python pipes, Rust library mode, host callbacks, call budgets, and a latency benchmark. Other runtimes remain planned.** The [Python SDK guide](../../sdk/python/README.md) describes the implemented subset;
+> Status: **🚧 IN PROGRESS — build steps 1–9 implemented: Python pipes, Rust library mode, host callbacks, call budgets, and a latency benchmark, plus host integration for the first adopter (§8). Other runtimes remain planned.** The [Python SDK guide](../../sdk/python/README.md) describes the implemented subset;
 > the [library guide](../library-mode.md) describes host integration. Embedded runtimes below remain proposals. What *is* settled: a serverlet's handler bodies can be written in
 > another language and run behind a **landline** (a connection with no sockets);
 > OrchestrateLang can build as a Rust library that a host application links; and the
@@ -198,11 +198,10 @@ naive design fails, so they get explicit rules. Budgets are implemented (§8 ste
 1. **Batch per tick, never per item over a pipe.** Declare handlers that take and return
    arrays, and call them once per tick with every item. That is one round trip per tick
    per serverlet, so the cost scales with the number of serverlets, not the number of
-   items. A dedicated TICK message (kind 9, still reserved) is only worth adding if the
-   benchmark (§8 step 9) shows per-call framing overhead matters. The first measurements
+   items. In library mode, a Python handler named `tick` is sent as a TICK message
+   (kind 9) that also carries the tick number and `dt`. The first measurements
    ([benchmarks](../../benchmarks/README.md)) put pipe framing at tens of microseconds,
-   while the Python SDK's per-element list encoding dominates large arrays, so TICK stays
-   unimplemented.
+   while the Python SDK's per-element list encoding dominates large arrays.
 2. **Give per-tick calls a budget.** `budget` bounds how long a call waits; a call with
    no reply in time returns right away:
 
@@ -301,7 +300,7 @@ simulation, a desktop app — owns its own main loop, so:
 Frame: `[u32 length][u8 kind][u32 call_id][payload]`, little-endian. Length
 covers the kind, call ID, and payload (not the length prefix). Implemented kind IDs
 are HELLO=1, READY=2, CALL=3, REPLY=4, ERROR=5, HOST_CALL=6, HOST_REPLY=7,
-BYE=8; TICK=9 remains reserved.
+BYE=8, TICK=9.
 
 For secret serverlets, HELLO uses call ID 0 and encodes an i64 version followed by
 an array of signature strings such as `echo(int)->int`, in declaration order.
@@ -326,7 +325,11 @@ Values: `int` as i64, `float` as f64, `bool` as u8, `string` as u32 length + UTF
 arrays as u32 count + elements, and structs as fields in declaration order.
 
 Secret serverlets currently log handler errors and return the return type’s default value;
-state mutations before a panic persist. TICK remains reserved.
+state mutations before a panic persist.
+
+In library mode, a Python landline handler named `tick` is called with TICK instead of
+CALL. Its payload starts with the i64 tick number and the f64 `dt`, followed by the
+handler id and arguments exactly as in CALL; the reply is an ordinary REPLY or ERROR.
 
 For Python host integration, READY carries an array of granted signatures such as
 `world.record(int)->int` (an empty payload remains valid for no grants). HOST_CALL
@@ -363,6 +366,26 @@ feature.
    `late: "drop" | "latest"` are landline options; batching uses array handlers (§5).
 9. **[IMPLEMENTED] Benchmark harness** — round-trip latency, including the slow tail, per
    runtime and payload size: [benchmarks/landline_latency](../../benchmarks/README.md).
+
+**Host integration for the first adopter.** Requirements found while embedding the
+library in a Rust game engine; each is a general feature for any Rust host.
+
+- **[IMPLEMENTED]** Builds inside another Cargo workspace; generated crates use edition
+  2024 and `rust-version = "1.98.1"`.
+- **[IMPLEMENTED]** Synchronous driving: `*_blocking` methods; a current-thread runtime
+  runs nothing between calls.
+- **[IMPLEMENTED]** Host-fired events: `Scripts::trigger_<event>`, queued per instance and
+  handled before and after each tick.
+- **[IMPLEMENTED]** Typed ticks: `on_tick(dt, input) -> Output`, with a TICK message for
+  Python handlers named `tick`.
+- **[IMPLEMENTED]** Deterministic mode for lifecycle and event hooks.
+- **[IMPLEMENTED]** `on_fixed_tick(step)` and `Scripts::fixed_tick`.
+- **[IMPLEMENTED]** Host logging (`Host::log`) and a configurable shutdown grace period.
+- **[IMPLEMENTED]** Embedded standard library, and `build --lib --target <triple>`.
+- **Planned:** a web-compatible library subset without child processes, built only with
+  Tokio features that compile for `wasm32-unknown-unknown`.
+
+See [library-mode.md](../library-mode.md) for the API.
 
 **v0.4.0 — more languages**
 

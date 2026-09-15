@@ -53,5 +53,4 @@ What this run shows:
 - The pipe itself is cheap: a Rust child adds roughly 10–20 µs over an in-process call.
 - Python handlers with small payloads cost about 25 µs at the median, 40 µs at p99.
 - Large Python arrays are dominated by the SDK decoding and encoding each element
-  individually. That is the next optimization target, not the frame format, so a
-  dedicated TICK message is not needed yet.
+  individually. That is the next optimization target, not the frame format.

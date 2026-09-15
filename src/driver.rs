@@ -98,7 +98,7 @@ fn build_sandbox_guest(cache_dir: &Path, name: &str, lib_src: &str) -> Result<()
         .map_err(|e| format!("Failed to create sandbox guest crate dir: {}", e))?;
 
     let cargo_toml = format!(
-        "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\n",
+        "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[workspace]\n\n[dependencies]\n",
         crate_name
     );
     fs::write(crate_dir.join("Cargo.toml"), cargo_toml)
@@ -212,7 +212,7 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: bool) -> Resul
         }
     }
     for stmt in ast.iter().chain(modules_data.iter().flat_map(|(_, stmts, _)| stmts.iter())) {
-        if !library && matches!(&stmt.node, ast::StmtNode::Host { .. } | ast::StmtNode::OnTick { .. }) {
+        if !library && matches!(&stmt.node, ast::StmtNode::Host { .. } | ast::StmtNode::OnTick { .. } | ast::StmtNode::OnFixedTick { .. }) {
             return Err("host and on_tick require build --lib".into());
         }
         if let ast::StmtNode::Serverlet { grants, .. } = &stmt.node {
@@ -225,8 +225,12 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: bool) -> Resul
         }
     }
     if library {
+        let ticks = ast.iter().filter(|s| matches!(&s.node, ast::StmtNode::OnTick { .. })).collect::<Vec<_>>();
+        if ticks.len() > 1 && ticks.iter().any(|s| matches!(&s.node, ast::StmtNode::OnTick { input: Some(_), .. }) || matches!(&s.node, ast::StmtNode::OnTick { return_type, .. } if *return_type != ast::Type::Void)) {
+            return Err("A typed on_tick must be the only on_tick declaration".into());
+        }
         for (_, stmts, _) in &modules_data {
-            if stmts.iter().any(|s| matches!(&s.node, ast::StmtNode::Host { .. } | ast::StmtNode::OnTick { .. } | ast::StmtNode::OnStart(_) | ast::StmtNode::OnStop(_))) {
+            if stmts.iter().any(|s| matches!(&s.node, ast::StmtNode::Host { .. } | ast::StmtNode::OnTick { .. } | ast::StmtNode::OnFixedTick { .. } | ast::StmtNode::OnStart(_) | ast::StmtNode::OnStop(_))) {
                 return Err("Library host declarations and lifecycle hooks must be in the entry file".into());
             }
         }
@@ -426,6 +430,8 @@ tokio = { version = "1.35", features = ["full"] }
         let _ = fs::remove_file(cache_dir.join("build.rs"));
     }
     
+    cargo_toml_content.push_str("\n[workspace]\n");
+    if library { cargo_toml_content = cargo_toml_content.replace("edition = \"2021\"", "edition = \"2024\"\nrust-version = \"1.98.1\""); }
     fs::write(cache_dir.join("Cargo.toml"), cargo_toml_content)
         .map_err(|e| format!("Failed to write Cargo.toml: {}", e))?;
 
@@ -640,6 +646,9 @@ fn copy_landlines(source: &Path, destination: &Path) -> Result<(), String> {
 
 /// Generate a standalone Cargo library crate; do not overwrite unrelated directories.
 pub fn run_build_library(input: &str, output: Option<&str>) -> Result<(), String> {
+    run_build_library_for_target(input, output, None)
+}
+pub fn run_build_library_for_target(input: &str, output: Option<&str>, target: Option<&str>) -> Result<(), String> {
     let destination = PathBuf::from(output.ok_or("build --lib requires -o <crate directory>")?);
     let marker = destination.join(".orchestrate-library");
     if destination.exists() && !marker.is_file() {
@@ -656,12 +665,17 @@ pub fn run_build_library(input: &str, output: Option<&str>) -> Result<(), String
     fs::create_dir_all(&assets).map_err(|e| e.to_string())?;
     copy_landlines(&cache.join("landlines"), &assets)?;
     if cache.join("src/bin").exists() {
-        let result = Command::new("cargo").args(["build", "--bins", "--quiet"]).current_dir(&cache).output().map_err(|e| e.to_string())?;
+        let mut command = Command::new("cargo");
+        command.args(["build", "--bins", "--quiet"]);
+        if let Some(target) = target { command.args(["--target", target]); }
+        let result = command.current_dir(&cache).output().map_err(|e| e.to_string())?;
         if !result.status.success() { return Err(String::from_utf8_lossy(&result.stderr).into_owned()); }
         for entry in fs::read_dir(cache.join("src/bin")).map_err(|e| e.to_string())? {
             let path = entry.map_err(|e| e.to_string())?.path();
-            let name = format!("{}{}", path.file_stem().unwrap().to_string_lossy(), std::env::consts::EXE_SUFFIX);
-            fs::copy(cache.join("target/debug").join(&name), assets.join(&name)).map_err(|e| e.to_string())?;
+            let suffix = if target.map_or(cfg!(windows), |t| t.contains("windows")) { ".exe" } else { "" };
+            let name = format!("{}{}", path.file_stem().unwrap().to_string_lossy(), suffix);
+            let binaries = match target { Some(t) => cache.join("target").join(t).join("debug"), None => cache.join("target/debug") };
+            fs::copy(binaries.join(&name), assets.join(&name)).map_err(|e| e.to_string())?;
         }
     }
     fn asset_entries(directory: &Path, root: &Path, entries: &mut Vec<String>) -> Result<(), String> {
@@ -686,12 +700,15 @@ pub fn run_build_library(input: &str, output: Option<&str>) -> Result<(), String
     }
     let manifest = manifest.replace("name = \"orch_generated\"", &format!("name = {:?}\nautobins = false", name));
     fs::write(cache.join("Cargo.toml"), &manifest).map_err(|e| e.to_string())?;
-    let result = Command::new("cargo").args(["check", "--lib", "--quiet"]).current_dir(&cache).output().map_err(|e| e.to_string())?;
+    let mut command = Command::new("cargo");
+    command.args(["check", "--lib", "--quiet"]);
+    if let Some(target) = target { command.args(["--target", target]); }
+    let result = command.current_dir(&cache).output().map_err(|e| e.to_string())?;
     if !result.status.success() { return Err(String::from_utf8_lossy(&result.stderr).into_owned()); }
     fs::create_dir_all(&destination).map_err(|e| e.to_string())?;
     copy_landlines(&cache.join("src"), &destination.join("src"))?;
     copy_landlines(&assets, &destination.join("assets"))?;
-    fs::write(destination.join("Cargo.toml"), manifest).map_err(|e| e.to_string())?;
+    fs::write(destination.join("Cargo.toml"), manifest.replace("\n[workspace]\n", "\n")).map_err(|e| e.to_string())?;
     if cache.join("build.rs").exists() { fs::copy(cache.join("build.rs"), destination.join("build.rs")).map_err(|e| e.to_string())?; }
     fs::write(marker, "Generated by OrchestrateLang\n").map_err(|e| e.to_string())?;
     println!("[orchestrate] Generated library crate: {}", destination.display());

@@ -324,6 +324,10 @@ impl Codegen {
                 };
 
                 let body_str = self.compile_expr(body);
+                if self.library && event_name != "update_orchestrator" {
+                    let clones = capture_code.clone();
+                    return format!("{{ {capture_code} std::sync::Arc::new(move || {{ {clones} crate::{func_name}().lock().unwrap().push(std::sync::Arc::new(move |msg: {arc_type_str}| {{ {clones} Box::pin(async move {{ let {bindings} = (*msg).clone(); {body_str}; }}) as crate::OrchEvent }})); }}) }}");
+                }
 
                 format!(
                     "{{\n    {}std::sync::Arc::new(move || {{\n        let (tx, mut rx) = tokio::sync::mpsc::channel::<{}>(100);\n        {}().lock().unwrap().push(tx);\n        tokio::spawn(async move {{\n            while let Some(msg) = rx.recv().await {{\n                let {} = (*msg).clone();\n                tokio::spawn(async move {{\n                    {}\n                }});\n            }}\n        }});\n    }})\n}}",

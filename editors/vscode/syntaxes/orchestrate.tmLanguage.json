@@ -63,7 +63,7 @@
 
     "keyword-declaration": {
       "name": "keyword.declaration.orch",
-      "match": "\\b(let|fn|task|process|orchestrator|serverlet|struct|enum|on|on_start|on_stop|on_crash|on_tick|module|use|load|load_foreign|start|trigger)\\b"
+      "match": "\\b(let|fn|task|process|orchestrator|serverlet|struct|enum|on|on_start|on_stop|on_crash|on_tick|on_fixed_tick|module|use|load|load_foreign|start|trigger)\\b"
     },
 
     "keyword-concurrency": {

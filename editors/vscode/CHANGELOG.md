@@ -6,7 +6,7 @@ independently of the compiler. Format: [Keep a Changelog](https://keepachangelog
 ## [0.2.0] - Unreleased
 ### Added
 - Highlighting for `for`/`in`, `break`/`continue`, `match`, `try`/`catch`, `struct`,
-  `enum`, `option`/`result`, `some`/`none`/`ok`/`err`, `on_crash`, `on_tick`, and the new built-ins
+  `enum`, `option`/`result`, `some`/`none`/`ok`/`err`, `on_crash`, `on_tick`, `on_fixed_tick`, `clock_micros`, and the new built-ins
   (`map`, `filter`, `reduce`, `find`, `any`, `all`, `range`, `to_int`, `to_float`,
   `parse_int`, `parse_float`).
 

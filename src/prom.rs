@@ -118,7 +118,7 @@ pub fn resolve_module(name: &str) -> Result<Option<PathBuf>, String> {
         return Ok(None);
     }
     // Built-in stdlib modules are resolved first
-    if let Some(stdlib_path) = resolve_stdlib_module(name) {
+    if let Some(stdlib_path) = resolve_stdlib_module(name)? {
         return Ok(Some(stdlib_path));
     }
     // Then check PROM registry
@@ -130,13 +130,13 @@ pub fn resolve_module(name: &str) -> Result<Option<PathBuf>, String> {
     }
 }
 
-fn resolve_stdlib_module(name: &str) -> Option<PathBuf> {
+fn resolve_stdlib_module(name: &str) -> Result<Option<PathBuf>, String> {
     // 1. Relative to the running executable (installed mode)
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
             let candidate = parent.join("stdlib").join(name);
             if candidate.is_dir() && candidate.join("module.orch").exists() {
-                return Some(candidate);
+                return Ok(Some(candidate));
             }
         }
     }
@@ -144,10 +144,30 @@ fn resolve_stdlib_module(name: &str) -> Option<PathBuf> {
     if let Ok(cwd) = std::env::current_dir() {
         let candidate = cwd.join("stdlib").join(name);
         if candidate.is_dir() && candidate.join("module.orch").exists() {
-            return Some(candidate);
+            return Ok(Some(candidate));
         }
     }
-    None
+    let files: &[(&str, &str)] = match name {
+        "lists" => &[("module.orch", include_str!("../stdlib/lists/module.orch")), ("impl.rs", include_str!("../stdlib/lists/impl.rs")), ("impl.orch_ffi", include_str!("../stdlib/lists/impl.orch_ffi"))],
+        "strings" => &[("module.orch", include_str!("../stdlib/strings/module.orch")), ("impl.rs", include_str!("../stdlib/strings/impl.rs")), ("impl.orch_ffi", include_str!("../stdlib/strings/impl.orch_ffi"))],
+        _ => return Ok(None),
+    };
+    static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    let root = ROOT.get_or_init(|| {
+        let mut index = 0;
+        loop {
+            let path = std::env::temp_dir().join(format!("orchestrate_stdlib_{}_{}", std::process::id(), index));
+            match std::fs::create_dir(&path) {
+                Ok(()) => break path,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => index += 1,
+                Err(_) => break path,
+            }
+        }
+    });
+    let directory = root.join(name);
+    std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+    for (file, source) in files { std::fs::write(directory.join(file), source).map_err(|e| e.to_string())?; }
+    Ok(Some(directory))
 }
 
 #[cfg(test)]

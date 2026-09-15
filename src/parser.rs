@@ -105,14 +105,23 @@ impl Parser {
             while self.match_token(TokenKind::Fn) { functions.push(self.parse_handler(true)?); }
             self.consume(TokenKind::RBrace, "Expected '}' after host functions")?;
             StmtNode::Host { name, functions }
-        } else if matches!(&self.peek().kind, TokenKind::Identifier(s) if s == "on_tick") {
-            self.advance();
+        } else if matches!(&self.peek().kind, TokenKind::Identifier(s) if s == "on_tick" || s == "on_fixed_tick") {
+            let fixed = matches!(&self.advance().kind, TokenKind::Identifier(s) if s == "on_fixed_tick");
             self.consume(TokenKind::LParen, "Expected '(' after on_tick")?;
             let param = self.parse_ident("tick parameter")?;
             self.consume(TokenKind::Colon, "Expected ':' after tick parameter")?;
             if self.parse_type()? != Type::Float { return Err("on_tick parameter must be float".into()); }
+            let input = if self.match_token(TokenKind::Comma) {
+                if fixed { return Err("on_fixed_tick accepts only its step parameter".into()); }
+                let name = self.parse_ident("tick input")?;
+                self.consume(TokenKind::Colon, "Expected ':' after tick input")?;
+                Some(Param { name, ty: self.parse_type()? })
+            } else { None };
             self.consume(TokenKind::RParen, "Expected ')' after tick parameter")?;
-            StmtNode::OnTick { param, body: self.parse_block()? }
+            let return_type = if self.match_token(TokenKind::Arrow) { self.parse_type()? } else { Type::Void };
+            if fixed && return_type != Type::Void { return Err("on_fixed_tick cannot return a value".into()); }
+            let body = self.parse_block()?;
+            if fixed { StmtNode::OnFixedTick { param, body } } else { StmtNode::OnTick { param, input, return_type, body } }
         } else if self.match_token(TokenKind::Use) {
             self.parse_use_statement()?
         } else if self.match_token(TokenKind::Load) {

@@ -139,7 +139,7 @@ const ORCH_KIND_READY: u8 = 2;
 const ORCH_KIND_CALL: u8 = 3;
 const ORCH_KIND_REPLY: u8 = 4;
 const ORCH_KIND_ERROR: u8 = 5;
-// 6 = HOST_CALL and 7 = HOST_REPLY carry landline host callbacks; 9 = TICK is reserved.
+// 6 = HOST_CALL and 7 = HOST_REPLY carry landline host callbacks; 9 = TICK carries a library tick.
 const ORCH_KIND_BYE: u8 = 8;
 
 struct OrchFrame {
@@ -306,7 +306,7 @@ impl Codegen {
 
     pub fn scan_events_in_stmt(&mut self, stmt: &Stmt) {
         match &stmt.node {
-            StmtNode::OnTick { body, .. } | StmtNode::OnStart(body) | StmtNode::OnStop(body) => self.scan_events_in_expr(body),
+            StmtNode::OnTick { body, .. } | StmtNode::OnFixedTick { body, .. } | StmtNode::OnStart(body) | StmtNode::OnStop(body) => self.scan_events_in_expr(body),
             StmtNode::Let { value, .. } => self.scan_events_in_expr(value),
             StmtNode::Expr(expr) => self.scan_events_in_expr(expr),
             StmtNode::Return(opt_expr) => {
@@ -596,7 +596,11 @@ impl Codegen {
                 let func_name = format!("get_registry_{}", event_name);
 
                 if self.library {
-                    code.push_str(&format!("fn {}() -> std::sync::Arc<std::sync::Mutex<Vec<tokio::sync::mpsc::Sender<{}>>>> {{ crate::__orch_context().event_{}.clone() }}\n", func_name, arc_type_str, event_name));
+                    if event_name == "update_orchestrator" {
+                        code.push_str(&format!("fn {}() -> std::sync::Arc<std::sync::Mutex<Vec<tokio::sync::mpsc::Sender<{}>>>> {{ crate::__orch_context().event_{}.clone() }}\n", func_name, arc_type_str, event_name));
+                    } else {
+                        code.push_str(&format!("fn {}() -> std::sync::Arc<std::sync::Mutex<Vec<crate::OrchEventHandler<{}>>>> {{ crate::__orch_context().event_{}.clone() }}\n", func_name, type_str, event_name));
+                    }
                     continue;
                 }
                 code.push_str(&format!(
@@ -610,6 +614,11 @@ impl Codegen {
             }
         }
 
+        if self.library && is_main {
+            code.push_str(r#"macro_rules! println { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::Info, format!($($args)*)) }; }
+macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::Error, format!($($args)*)) }; }
+"#);
+        }
         let preamble = runtime_preamble(false, true);
         code.push_str(&if self.library {
             preamble.replace("fn stop_orch() {\n    std::process::exit(0);\n}", if is_main { "" } else { "use crate::stop_orch;" })

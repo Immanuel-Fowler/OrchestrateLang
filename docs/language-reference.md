@@ -1084,9 +1084,15 @@ individual landlines access with `grant call world.record`. Python handlers invo
 `self.host.world.record(n)`. Ungranted IDs are rejected before dispatch. Rust trait
 methods are named `world_record` and return `Result<T, String>`.
 
-See [library-mode.md](library-mode.md) for lifecycle ordering, async APIs, packaging,
-errors, instance isolation, and limitations. Host declarations and `on_tick` require
-library builds. Use landline budgets to bound slow calls made from `on_tick`.
+`on_fixed_tick(step: float) { ... }` runs on `Scripts::fixed_tick(step)`. A single typed
+hook, `on_tick(dt: float, input: Input) -> Output { ... }`, makes `tick` take an input and
+return an output. `Scripts::trigger_<event>(...)` fires `on <event>` blocks from Rust, and
+the `*_blocking` methods drive the library from synchronous code.
+
+See [library-mode.md](library-mode.md) for lifecycle ordering, async and blocking APIs,
+events, deterministic mode, logging, packaging, and limitations. Host declarations,
+`on_tick`, and `on_fixed_tick` require library builds. Use landline budgets to bound slow
+calls made from `on_tick`.
 
 ---
 

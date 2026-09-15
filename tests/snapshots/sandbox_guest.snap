@@ -73,7 +73,7 @@ fn clock_micros() -> i64 {
 }
 
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tally(n: i64) -> i64 {
     let mut count = 0;
     { {
@@ -84,7 +84,7 @@ pub extern "C" fn tally(n: i64) -> i64 {
 } }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn echo(s: String) -> String {
     let mut count = 0;
     { {

@@ -60,17 +60,19 @@ fn main() {
             let mut input = None;
             let mut out = None;
             let mut library = false;
+            let mut target = None;
             let mut options = args[2..].iter();
             while let Some(arg) = options.next() {
                 match arg.as_str() {
                     "--lib" => library = true,
+                    "--target" => target = options.next().map(String::as_str),
                     "-o" => out = options.next().map(String::as_str),
                     value if !value.starts_with('-') && input.is_none() => input = Some(value),
                     _ => { eprintln!("Unknown build argument: {}", arg); std::process::exit(1); }
                 }
             }
             let result = match input {
-                Some(input) if library => driver::run_build_library(input, out),
+                Some(input) if library => driver::run_build_library_for_target(input, out, target),
                 Some(input) => driver::run_build(input, out),
                 None => Err("build requires an input file".into()),
             };
