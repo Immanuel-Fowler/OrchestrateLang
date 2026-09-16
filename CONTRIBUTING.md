@@ -83,7 +83,12 @@ e.g. `feat/polyglot-python`, `fix/sandbox-string-abi`, `docs/language-reference-
 [Semantic Versioning](https://semver.org/). While the version is `0.x`:
 
 - **Minor** (`0.2.0`) — new features or any breaking change.
-- **Patch** (`0.1.1`) — bug fixes only.
+- **Patch** (`0.1.1`) — bug fixes, and filling in functionality the language was always
+  meant to have, as long as nothing that already worked changes behaviour.
+
+The second case is a judgement call, so state the reasoning in the changelog entry. A new
+`orchestrate` subcommand that only reports on existing code can be a patch; one that
+changes how programs compile or run cannot.
 
 Tags are annotated, on `main`, named `vX.Y.Z`. The VS Code extension versions
 independently (`editors/vscode/package.json`) and is tagged `vscode-vX.Y.Z` when a
