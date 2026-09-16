@@ -16,6 +16,14 @@ path = "src/main.rs"
 name = "orchestrate-lsp"
 path = "src/lsp_main.rs"
 
+[[bin]]
+name = "cargo-orch"
+path = "src/bin/cargo-orch.rs"
+
+[[bin]]
+name = "cargo-orchestrate"
+path = "src/bin/cargo-orchestrate.rs"
+
 [lib]
 name = "orchestrate_lib"
 path = "src/lib.rs"

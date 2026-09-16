@@ -13,6 +13,7 @@ Check new features and design docs against the
 | :--- | :--- | :--- |
 | Product (prose, titles, banners, editor UI) | **OrchestrateLang** | One word, capital O and L. Never "Orchestrate Lang" or "Orchestrate". |
 | Command / crate / language id | `orchestrate` | `orchestrate run main.orch`, `cargo install --path .` |
+| Cargo subcommands | `cargo orch`, `cargo orchestrate` | Binaries `cargo-orch` and `cargo-orchestrate`. Thin wrappers over the same dispatch as `orchestrate`; the two spellings are interchangeable. |
 | Language server binary | `orchestrate-lsp` | |
 | Library crate | `orchestrate_lib` | |
 | Source files | `.orch` | FFI sidecars are `.orch_ffi` |

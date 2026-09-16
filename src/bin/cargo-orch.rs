@@ -3,5 +3,5 @@ use orchestrate_lib::cli;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    cli::run("orchestrate", &args);
+    cli::run("cargo orch", &cli::strip_cargo_subcommand("orch", &args));
 }

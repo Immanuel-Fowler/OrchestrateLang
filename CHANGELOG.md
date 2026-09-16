@@ -9,6 +9,17 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+### Added
+- `cargo orch` and `cargo orchestrate` run every command the `orchestrate` binary does —
+  `run`, `build`, `check`, and `prom` — with the same arguments and exit codes. The two
+  spellings are interchangeable; pick whichever reads better in your scripts. `cargo
+  install --path .` installs the `cargo-orch` and `cargo-orchestrate` binaries alongside
+  `orchestrate`, which is all cargo needs to find them.
+
+  OrchestrateLang stays a standalone compiler: these are thin wrappers over the same
+  dispatch, not a proc macro, so `.orch` files remain the unit of compilation and
+  `orchestrate` keeps working unchanged.
+
 ## [0.4.0] - 2026-09-15
 
 More languages: Zig and Swift FFI, TypeScript FFI through scriptc or Bun, and TypeScript

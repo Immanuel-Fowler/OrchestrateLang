@@ -43,6 +43,21 @@ To check if it worked, type:
 orchestrate --help
 ```
 
+### Using it as a cargo subcommand
+
+The same install also registers OrchestrateLang with cargo, so if your hands already live in
+`cargo`, every command works there too:
+
+```bash
+cargo orch run examples/hello.orch          # same as: orchestrate run examples/hello.orch
+cargo orchestrate build main.orch -o myapp  # a longer spelling of the same thing
+```
+
+`cargo orch` and `cargo orchestrate` accept the same arguments and return the same exit
+codes as `orchestrate`; use whichever you prefer. They are thin wrappers, not a separate
+compiler — OrchestrateLang is its own language and `.orch` files stay the unit of
+compilation.
+
 ### Step 4: Run Your First Program
 We've included several examples. To run the "Hello World" example, type:
 ```bash
@@ -124,7 +139,7 @@ The OrchestrateLang **compiler is itself written in Rust** and lives entirely in
 | **PROM** | `src/prom.rs` | The personal module registry and the embedded standard library |
 | **Diagnostics** | `src/errors.rs` | Turns `cargo` errors into OrchestrateLang hints |
 | **Driver** | `src/driver.rs` | Coordinates module resolution, `load` merging, native FFI compilation (C/C++ via `cc-rs`, Zig and Swift via their own compilers), TypeScript 7 scriptc/Bun bridges, sandbox guest builds, and invokes `cargo` |
-| **CLI** | `src/main.rs` | The `orchestrate` command: `run`, `build`, `check`, and `prom` |
+| **CLI** | `src/cli.rs`, `src/main.rs` | The `orchestrate` command: `run`, `build`, `check`, and `prom`. `src/bin/cargo-orch.rs` and `src/bin/cargo-orchestrate.rs` expose the same dispatch as cargo subcommands |
 | **Language server** | `src/lsp_main.rs` | The `orchestrate-lsp` binary: hover type information for editors |
 
 ### Runtime
