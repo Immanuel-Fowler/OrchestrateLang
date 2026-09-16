@@ -5,6 +5,10 @@ independently of the compiler. Format: [Keep a Changelog](https://keepachangelog
 
 ## [0.2.0] - Unreleased
 ### Added
+- Highlighting for the serverlet words `via`, `secret`, `sandbox`, `host`, `grant`, and
+  `call`, used by landline, secret, and sandboxed serverlets and by `host` blocks.
+- Snippets for landline serverlets (`srvpy`, `srvts`), a `host` block (`host`), and
+  foreign loads for Zig, Swift, and TypeScript (`lfzig`, `lfswift`, `lfts`).
 - Highlighting for `for`/`in`, `break`/`continue`, `match`, `try`/`catch`, `struct`,
   `enum`, `option`/`result`, `some`/`none`/`ok`/`err`, `on_crash`, `on_tick`, `on_fixed_tick`, `clock_micros`, and the new built-ins
   (`map`, `filter`, `reduce`, `find`, `any`, `all`, `range`, `to_int`, `to_float`,

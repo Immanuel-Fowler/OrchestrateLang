@@ -126,5 +126,53 @@
       "load_foreign \"${1:rust}\" \"./${2:file}\""
     ],
     "description": "load_foreign"
+  },
+  "Load foreign Zig": {
+    "prefix": "lfzig",
+    "body": [
+      "load_foreign \"zig\" \"./${1:file}.zig\""
+    ],
+    "description": "load_foreign zig (needs a .orch_ffi sidecar)"
+  },
+  "Load foreign Swift": {
+    "prefix": "lfswift",
+    "body": [
+      "load_foreign \"swift\" \"./${1:file}.swift\""
+    ],
+    "description": "load_foreign swift (needs a .orch_ffi sidecar)"
+  },
+  "Load foreign TypeScript": {
+    "prefix": "lfts",
+    "body": [
+      "load_foreign \"typescript\" \"./${1:file}.ts\""
+    ],
+    "description": "load_foreign typescript (needs a .orch_ffi sidecar)"
+  },
+  "Python landline serverlet": {
+    "prefix": "srvpy",
+    "body": [
+      "serverlet ${1:Name} via python(source: \"${2:impl}.py\") {",
+      "\ton ${3:handler}(${4:params}) -> ${5:void}",
+      "}"
+    ],
+    "description": "Python landline serverlet"
+  },
+  "TypeScript landline serverlet": {
+    "prefix": "srvts",
+    "body": [
+      "serverlet ${1:Name} via typescript(source: \"${2:impl}.ts\") {",
+      "\ton ${3:handler}(${4:params}) -> ${5:void}",
+      "}"
+    ],
+    "description": "TypeScript landline serverlet"
+  },
+  "Host block": {
+    "prefix": "host",
+    "body": [
+      "host ${1:world} {",
+      "\tfn ${2:name}(${3:params}) -> ${4:void}",
+      "}"
+    ],
+    "description": "Host functions the library-mode host implements"
   }
 }
