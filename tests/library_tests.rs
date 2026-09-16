@@ -4,8 +4,14 @@ use std::{
     process::Command,
 };
 
+/// Scoped to the test process, so an interrupted run cannot leave a half-built
+/// `.orch_cache` behind for the next one to hang on.
 fn root(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!("orch_library_test_{}", name));
+    let path = std::env::temp_dir().join(format!(
+        "orch_library_test_{}_{}",
+        std::process::id(),
+        name
+    ));
     fs::create_dir_all(&path).unwrap();
     path
 }
