@@ -29,6 +29,21 @@ jobs:
         with:
           version: 0.16.0
 
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      # TypeScript landlines and FFI need `tsc` (TypeScript 7) on PATH; the native
+      # scriptc backend is macOS-first, so Linux exercises the Bun backend only.
+      - name: Install TypeScript 7
+        run: |
+          bun add -g typescript@7
+          bun pm bin -g >> "$GITHUB_PATH"
+
+      - name: Install scriptc
+        if: runner.os == 'macOS'
+        run: bun add -g scriptc
+
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
