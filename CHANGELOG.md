@@ -9,6 +9,51 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-16
+
+Foreign code is checked by the language that owns it.
+
+### Added
+- `orchestrate check-foreign <file.orch>` checks every foreign source a program pulls in
+  using that language's own checker, with no codegen and no Cargo invocation: C and C++
+  through `cc -fsyntax-only`, Zig through `zig build-obj -fno-emit-bin`, Swift through
+  `swiftc -typecheck`, TypeScript through `tsc`, and Python landlines through
+  `python -m py_compile`. Each language reports its own diagnostics, so a Zig type error
+  reads as a Zig type error.
+
+  TypeScript is checked against its contract, not just on its own: the adapter the check
+  stages declares an interface built from the `.orch_ffi` sidecar or the serverlet's
+  handlers, so an implementation that compiles but returns the wrong type, or omits a
+  declared function, fails the check.
+
+  The command is separate from `build` and `run`, which are unchanged.
+
+- `orchestrate check-foreign <file.orch> --deep` adds the two checks that cannot be done
+  cheaply. Python is checked with `mypy` rather than only `py_compile`, which parses but
+  infers nothing; the landline SDK is staged where mypy can resolve it, so a handler's
+  annotations are checked against how the SDK uses them. Rust is checked by generating the
+  program's Rust and running `cargo check` over it.
+
+  Rust needs the deep pass rather than a standalone `rustc`: a `load_foreign` file is
+  concatenated with its module's generated code and may call into it, so checking it alone
+  reports those calls as undefined. Generating the code first checks the file in the
+  context a build gives it, which is why the pass cannot be fast — the first run compiles
+  dependencies, later runs reuse the `.orch_cache/` build cache.
+
+  `--deep` requires mypy to be installed rather than skipping when it is missing, since it
+  is opted into explicitly. Without `--deep` nothing changes, so the default stays fast.
+
+### Changed
+- `typescript::build` is split into `stage_and_check` and `build`, so the TypeScript type
+  check can run without compiling a Bun or scriptc executable. Build behaviour is
+  unchanged.
+
+### Fixed
+- `library_tests` scopes its temporary directories to the test process, as the TypeScript
+  tests already did. They were shared across runs, so an interrupted run could leave a
+  half-built `.orch_cache` that made the next run fail or hang. Each run now builds from
+  a clean directory, which is slower but cannot inherit broken state.
+
 ## [0.5.0] - 2026-09-16
 
 `orchestrate` is also a cargo subcommand.
@@ -271,7 +316,8 @@ First tagged release.
   `option` / `result`, `try` / `catch`, supervision, `check`, the language server, or the
   standard library. See `examples/` for working code.
 
-[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.3.0...v0.3.1
