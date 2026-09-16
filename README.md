@@ -139,7 +139,8 @@ The OrchestrateLang **compiler is itself written in Rust** and lives entirely in
 | **PROM** | `src/prom.rs` | The personal module registry and the embedded standard library |
 | **Diagnostics** | `src/errors.rs` | Turns `cargo` errors into OrchestrateLang hints |
 | **Driver** | `src/driver.rs` | Coordinates module resolution, `load` merging, native FFI compilation (C/C++ via `cc-rs`, Zig and Swift via their own compilers), TypeScript 7 scriptc/Bun bridges, sandbox guest builds, and invokes `cargo` |
-| **CLI** | `src/cli.rs`, `src/main.rs` | The `orchestrate` command: `run`, `build`, `check`, and `prom`. `src/bin/cargo-orch.rs` and `src/bin/cargo-orchestrate.rs` expose the same dispatch as cargo subcommands |
+| **Foreign checks** | `src/foreign_check.rs` | Runs each foreign language's own checker for `orchestrate check-foreign` |
+| **CLI** | `src/cli.rs`, `src/main.rs` | The `orchestrate` command: `run`, `build`, `check`, `check-foreign`, and `prom`. `src/bin/cargo-orch.rs` and `src/bin/cargo-orchestrate.rs` expose the same dispatch as cargo subcommands |
 | **Language server** | `src/lsp_main.rs` | The `orchestrate-lsp` binary: hover type information for editors |
 
 ### Runtime
@@ -515,6 +516,53 @@ load_foreign "typescript" "./math.ts"   // requires math.orch_ffi sidecar
 - **C, C++, Zig, Swift:** the sidecar declares signatures using `int`, `float`, `bool`, and `void`; the compiler generates `unsafe extern "C"` bindings. C and C++ compile via `cc-rs`; Zig (`export fn`) compiles with `zig build-obj` into a static library, and Swift (`@_cdecl`, or `@c` on Swift 6.3+) with `swiftc`, which also links the Swift runtime. Zig and Swift need their compiler on `PATH` and build for the host target only.
 - **TypeScript:** TypeScript 7 checks the source, then scriptc is attempted for eligible scalar calls and Bun compiles the bridge when required. `int` maps to `bigint`; the Bun bridge also supports strings, arrays, and same-file structs. See [`sdk/typescript/README.md`](sdk/typescript/README.md) for setup and limits.
 - FFI calls are stateless. Keep state in a serverlet, which can call these functions.
+
+**Checking foreign code:** `orchestrate check-foreign main.orch` runs each foreign source
+through its own language's checker, without generating code or invoking Cargo. Errors
+come back in that language's own words:
+
+```
+$ orchestrate check-foreign main.orch
+[orchestrate] Checking 4 foreign source(s)...
+  ok    c          fastmath.c
+  ok    typescript math.ts
+  FAIL  zig        vectors.zig
+  skip  rust       geometry.rs  (checked by cargo, during build)
+```
+
+| Language | Checker | Catches |
+| :--- | :--- | :--- |
+| C, C++ | `cc -fsyntax-only` | syntax and type errors |
+| Zig | `zig build-obj -fno-emit-bin` | syntax and type errors |
+| Swift | `swiftc -typecheck` | syntax and type errors |
+| TypeScript | `tsc` | syntax and type errors, **and contract mismatches** |
+| Python | `python -m py_compile` | syntax errors; types with `--deep` |
+| Rust | — | `--deep` only |
+
+TypeScript is checked against its contract, not just on its own: the adapter declares an
+interface built from the `.orch_ffi` sidecar or the serverlet's handlers, so an
+implementation that compiles but returns the wrong type — or omits a declared function —
+fails the check.
+
+### `--deep`
+
+`orchestrate check-foreign main.orch --deep` adds the two checks that cannot be done
+cheaply:
+
+- **Python** is checked with `mypy` instead of only `py_compile`, which parses but infers
+  nothing. The landline SDK is staged where mypy can resolve it, so a handler's
+  annotations are checked against how the SDK uses them. `--deep` requires mypy to be
+  installed rather than skipping when it is missing.
+- **Rust** is checked by generating the program's Rust and running `cargo check` on it.
+
+Rust needs the deep pass because a `load_foreign` file is concatenated with its module's
+generated code and may call into it. Checking the file alone would report those calls as
+undefined, so the deep pass checks it in the context a build would give it — which is
+also why it cannot be fast. The first run pays for compiling dependencies; later runs
+reuse the `.orch_cache/` build cache.
+
+Everything else is unchanged by `--deep`, so the default stays edit-loop fast.
+
 - More C-ABI languages (C# via Native AOT) and richer C-ABI types are planned; see [`docs/roadmap.md`](docs/roadmap.md) §1b.
 
 See [`docs/language-reference.md §6.4`](docs/language-reference.md) for the full sidecar format and type mappings.

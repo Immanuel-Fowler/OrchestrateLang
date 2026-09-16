@@ -13,6 +13,8 @@ fn print_help(invocation: &str) {
     println!("  build --lib <file.orch> -o <dir>   Generate a host-linkable Rust crate");
     println!("  build --lib --rust-version <x.y>   Set the generated crate's rust-version");
     println!("  check <file.orch>            Type-check only — no compilation (fast)");
+    println!("  check-foreign <file.orch>    Check foreign sources with their own language's checker");
+    println!("  check-foreign --deep         Also run mypy on Python and cargo check on Rust (slower)");
     println!();
     println!("  prom add <name> <path>       Register a module path under a short name");
     println!("  prom remove <name>           Remove a registered module");
@@ -89,6 +91,28 @@ pub fn run(invocation: &str, args: &[String]) {
                 std::process::exit(1);
             }
             if let Err(e) = driver::run_check(&args[2]) {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        "check-foreign" => {
+            let mut input = None;
+            let mut deep = false;
+            for arg in &args[2..] {
+                match arg.as_str() {
+                    "--deep" => deep = true,
+                    value if !value.starts_with('-') && input.is_none() => input = Some(value),
+                    _ => {
+                        eprintln!("Unknown check-foreign argument: {}", arg);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            let Some(input) = input else {
+                eprintln!("Usage: {} check-foreign <file.orch> [--deep]", invocation);
+                std::process::exit(1);
+            };
+            if let Err(e) = driver::run_check_foreign(input, deep) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }

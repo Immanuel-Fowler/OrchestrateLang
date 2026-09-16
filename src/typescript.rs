@@ -4,7 +4,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     fs,
     hash::{Hash, Hasher},
-    path::Path,
+    path::{Path, PathBuf},
     process::Command,
 };
 
@@ -106,14 +106,24 @@ pub fn sidecar(source: &str) -> Result<Vec<Handler>, String> {
     Ok(handlers)
 }
 
-/// Build the entire adapter, not just the user's source: native coverage must include transport.
-pub fn build(
+/// A staged adapter directory that has passed the TypeScript 7 check.
+struct Staged {
+    source: PathBuf,
+    work: PathBuf,
+    /// The adapter's import specifier for the user's source.
+    import: String,
+}
+
+/// Stage the whole adapter and type-check it. Checking the generated adapter rather
+/// than the user's source alone is what verifies the implementation against the
+/// contract the sidecar or the serverlet's handlers declare.
+fn stage_and_check(
     source: &Path,
     destination: &Path,
     handlers: &[Handler],
     stmts: &[Stmt],
     ffi: bool,
-) -> Result<bool, String> {
+) -> Result<Staged, String> {
     let source = source.canonicalize().map_err(|e| e.to_string())?;
     let mut hasher = DefaultHasher::new();
     destination.hash(&mut hasher);
@@ -256,6 +266,31 @@ pub fn build(
             String::from_utf8_lossy(&checked.stderr)
         ));
     }
+    Ok(Staged { source, work, import })
+}
+
+/// Type-check a TypeScript source against its contract, without building an executable.
+pub fn check(
+    source: &Path,
+    destination: &Path,
+    handlers: &[Handler],
+    stmts: &[Stmt],
+    ffi: bool,
+) -> Result<(), String> {
+    stage_and_check(source, destination, handlers, stmts, ffi)?;
+    Ok(())
+}
+
+/// Build the entire adapter, not just the user's source: native coverage must include transport.
+pub fn build(
+    source: &Path,
+    destination: &Path,
+    handlers: &[Handler],
+    stmts: &[Stmt],
+    ffi: bool,
+) -> Result<bool, String> {
+    let Staged { source, work, import } =
+        stage_and_check(source, destination, handlers, stmts, ffi)?;
     let selection = std::env::var("ORCH_TS_BACKEND").unwrap_or_else(|_| "auto".into());
     if !matches!(selection.as_str(), "auto" | "scriptc" | "bun") {
         return Err("ORCH_TS_BACKEND must be auto, scriptc, or bun".into());

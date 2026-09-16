@@ -752,6 +752,195 @@ pub fn run_check(input_file: &str) -> Result<(), String> {
 }
 
 
+struct ForeignSource2 {
+    language: String,
+    path: PathBuf,
+    /// TypeScript is checked against a generated adapter, so it needs the contract
+    /// its handlers declare, the declarations in scope, and whether it is FFI.
+    typescript: Option<(Vec<ast::Handler>, Vec<ast::Stmt>, bool)>,
+}
+
+/// Collect every foreign source a file declares: `load_foreign` paths, relative to
+/// the declaring directory, and landline sources, already absolute.
+fn collect_foreign_sources(
+    stmts: &[ast::Stmt],
+    dir: &Path,
+    found: &mut Vec<ForeignSource2>,
+) -> Result<(), String> {
+    for stmt in stmts {
+        match &stmt.node {
+            ast::StmtNode::LoadForeign { language, path } => {
+                let path = dir.join(path);
+                let typescript = if language == "typescript" {
+                    let sidecar = fs::read_to_string(path.with_extension("orch_ffi"))
+                        .map_err(|e| format!("TypeScript FFI sidecar: {e}"))?;
+                    Some((crate::typescript::sidecar(&sidecar)?, stmts.to_vec(), true))
+                } else {
+                    None
+                };
+                found.push(ForeignSource2 { language: language.clone(), path, typescript });
+            }
+            ast::StmtNode::Serverlet { handlers, landline: Some(config), .. } => {
+                let typescript = (config.runtime == "typescript")
+                    .then(|| (handlers.clone(), stmts.to_vec(), false));
+                found.push(ForeignSource2 {
+                    language: config.runtime.clone(),
+                    path: PathBuf::from(&config.source),
+                    typescript,
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Generate the program's Rust and run `cargo check` on it. This is how a Rust
+/// `load_foreign` file gets checked honestly: alongside the module code it is
+/// concatenated with, exactly as a build would compile it, minus the final link.
+fn check_generated_rust(input_file: &str) -> Result<(), String> {
+    let cache_dir = prepare_cache_dir(Path::new(input_file))?;
+    let rust_code = compile_main_file_and_modules(input_file, &cache_dir)?;
+    fs::write(cache_dir.join("src/main.rs"), rust_code)
+        .map_err(|e| format!("Failed to write generated Rust file: {}", e))?;
+
+    let output = Command::new("cargo")
+        .args(["check", "-q"])
+        .current_dir(&cache_dir)
+        .output()
+        .map_err(|e| format!("Failed to run cargo check: {}", e))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    std::env::set_var("ORCH_SOURCE_FILE", input_file);
+    print_friendly_errors(&stderr, &cache_dir);
+    Err("cargo check reported errors in the generated Rust".to_string())
+}
+
+/// Check every foreign source with its own language's checker. Without `deep` this
+/// runs no codegen and no Cargo, so it stays usable in an edit loop; `deep` adds
+/// mypy for Python and a `cargo check` pass that covers Rust.
+pub fn run_check_foreign(input_file: &str, deep: bool) -> Result<(), String> {
+    let input_path = Path::new(input_file);
+    let source = fs::read_to_string(input_path)
+        .map_err(|e| format!("Failed to read source file '{}': {}", input_file, e))?;
+
+    let mut lexer = lexer::Lexer::new(&source);
+    let tokens = lexer.tokenize()?;
+    let mut parser = parser::Parser::new(tokens);
+    let mut ast = parser.parse()?;
+    let parent_dir = input_path.parent().unwrap_or(Path::new("."));
+    resolve_landline_sources(&mut ast, parent_dir)?;
+
+    let mut sources = Vec::new();
+    collect_foreign_sources(&ast, parent_dir, &mut sources)?;
+
+    for stmt in &ast {
+        if let ast::StmtNode::UseModule { module_name, .. } = &stmt.node {
+            let module_path = if let Some(resolved) = prom::resolve_module(module_name)? {
+                resolved
+            } else if module_name.contains('/') || module_name.contains('\\') || module_name.starts_with('.') {
+                parent_dir.join(module_name)
+            } else {
+                return Err(format!("Module '{}' not found in PROM registry", module_name));
+            };
+            let module_stmts = compile_module(&module_path)?;
+            collect_foreign_sources(&module_stmts, &module_path, &mut sources)?;
+        }
+    }
+
+    // Canonicalize so the report reads cleanly and two spellings of one path
+    // are checked once. A path that does not resolve is reported by the checker.
+    for source in sources.iter_mut() {
+        if let Ok(resolved) = source.path.canonicalize() {
+            source.path = resolved;
+        }
+    }
+    sources.sort_by(|a, b| (&a.language, &a.path).cmp(&(&b.language, &b.path)));
+    sources.dedup_by(|a, b| (&a.language, &a.path) == (&b.language, &b.path));
+
+    if sources.is_empty() {
+        println!("[orchestrate] {} — no foreign sources to check", input_file);
+        return Ok(());
+    }
+
+    let scratch = prepare_cache_dir(input_path)?.join("check");
+    fs::create_dir_all(&scratch)
+        .map_err(|e| format!("Failed to create check directory: {}", e))?;
+
+    println!("[orchestrate] Checking {} foreign source(s)...", sources.len());
+    let mut failures = Vec::new();
+    let mut deferred = Vec::new();
+    for (index, source) in sources.iter().enumerate() {
+        let (language, path) = (&source.language, &source.path);
+        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
+        let outcome = match &source.typescript {
+            Some((handlers, declarations, ffi)) => crate::typescript::check(
+                path,
+                &scratch.join(format!("typescript_{}", index)),
+                handlers,
+                declarations,
+                *ffi,
+            )
+            .map(|_| crate::foreign_check::Outcome::Checked),
+            None => crate::foreign_check::check_file(language, path, &scratch, deep),
+        };
+        match outcome {
+            Ok(crate::foreign_check::Outcome::Checked) => {
+                println!("  ok    {:<10} {}", language, name)
+            }
+            Ok(crate::foreign_check::Outcome::CheckedWith(note)) => {
+                println!("  ok    {:<10} {}  ({})", language, name, note)
+            }
+            Ok(crate::foreign_check::Outcome::Deferred) if deep => {
+                deferred.push(name.to_string())
+            }
+            Ok(crate::foreign_check::Outcome::Deferred) => println!(
+                "  skip  {:<10} {}  (checked by cargo during build; --deep checks it here)",
+                language, name
+            ),
+            Err(diagnostics) => {
+                println!("  FAIL  {:<10} {}", language, name);
+                failures.push((path.clone(), diagnostics));
+            }
+        }
+    }
+
+    if deep {
+        println!("[orchestrate] Deep check: generating Rust and running cargo check...");
+        match check_generated_rust(input_file) {
+            Ok(()) => {
+                for name in &deferred {
+                    println!("  ok    {:<10} {}  (cargo check)", "rust", name);
+                }
+                if deferred.is_empty() {
+                    println!("  ok    generated Rust");
+                }
+            }
+            Err(e) => {
+                for name in &deferred {
+                    println!("  FAIL  {:<10} {}  (cargo check)", "rust", name);
+                }
+                if deferred.is_empty() {
+                    println!("  FAIL  generated Rust");
+                }
+                // print_friendly_errors has already reported the diagnostics.
+                failures.push((PathBuf::from(input_file), e));
+            }
+        }
+    }
+
+    if failures.is_empty() {
+        println!("[orchestrate] {} — no foreign errors found", input_file);
+        return Ok(());
+    }
+    for (path, diagnostics) in &failures {
+        eprintln!("\n--- {} ---\n{}", path.display(), diagnostics);
+    }
+    Err(format!("{} check(s) failed", failures.len()))
+}
+
 /// Resolve relative to the declaring file, including declarations loaded by modules.
 fn resolve_landline_sources(stmts: &mut [ast::Stmt], directory: &Path) -> Result<(), String> {
     for stmt in stmts {
