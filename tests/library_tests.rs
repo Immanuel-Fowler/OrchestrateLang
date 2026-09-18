@@ -5,15 +5,40 @@ use std::{
 };
 
 /// Scoped to the test process, so an interrupted run cannot leave a half-built
-/// `.orch_cache` behind for the next one to hang on.
-fn root(name: &str) -> PathBuf {
+/// `.orch_cache` behind for the next one to hang on. Removed when its test passes; a
+/// failing test keeps the directory for inspection.
+struct TempRoot(PathBuf);
+impl std::ops::Deref for TempRoot {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+impl AsRef<Path> for TempRoot {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+impl AsRef<std::ffi::OsStr> for TempRoot {
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        self.0.as_os_str()
+    }
+}
+impl Drop for TempRoot {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+}
+fn root(name: &str) -> TempRoot {
     let path = std::env::temp_dir().join(format!(
         "orch_library_test_{}_{}",
         std::process::id(),
         name
     ));
     fs::create_dir_all(&path).unwrap();
-    path
+    TempRoot(path)
 }
 fn build(root: &Path, source: &str) {
     fs::write(root.join("main.orch"), source).unwrap();
