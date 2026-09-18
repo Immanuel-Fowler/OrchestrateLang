@@ -9,6 +9,39 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-17
+
+TypeScript FFI keeps its process, and each TypeScript file chooses its compiler.
+
+### Added
+- `backend` on TypeScript declarations: `load_foreign "typescript" "math.ts"
+  (backend: "bun")` and `via typescript(source: "tools.ts", backend: "scriptc")` choose
+  that file's compiler in source, where the choice belongs to the file rather than to
+  whoever runs the build. `auto`, `scriptc`, and `bun` are accepted; `ORCH_TS_BACKEND`
+  remains the project-wide default for declarations that say nothing.
+- `docs/language-reference.md` now covers closures and function types, generics, enums
+  and `match`, `option` / `result` with `?` and `try` / `catch`, string interpolation, and
+  the array functions that take closures.
+
+### Changed
+- TypeScript FFI keeps one protocol process alive per imported module instead of starting
+  a scalar-only executable for every call. Module state persists between calls, and
+  process startup and the handshake are paid once rather than on every call. Both scriptc
+  and Bun compile the same wire-protocol adapter, so the two backends behave alike.
+
+  A handler that throws fails only its own call: the error reaches the caller as it did
+  before, and the module's process and state survive it. Only a broken frame discards the
+  process, and the next call starts a fresh one.
+
+### Fixed
+- A `parallel` branch that called a synchronous function — a plain `fn` or a foreign
+  function — failed to compile, because every branch was joined as if it were a future.
+  Each branch is now its own future, so synchronous and awaited calls mix freely, and a
+  `parallel` with a single branch is awaited rather than left as an unawaited future.
+- The TypeScript and library test suites remove a test's temporary directory when it
+  passes. Each run built its own copy of tokio there and nothing removed it, so a day of
+  runs filled the disk. A failing test still keeps its directory for inspection.
+
 ## [0.5.1] - 2026-09-16
 
 Foreign code is checked by the language that owns it.
@@ -316,7 +349,8 @@ First tagged release.
   `option` / `result`, `try` / `catch`, supervision, `check`, the language server, or the
   standard library. See `examples/` for working code.
 
-[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.3.1...v0.4.0
