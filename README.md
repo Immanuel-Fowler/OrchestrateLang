@@ -62,7 +62,7 @@ flowchart LR
 |---|---|---|
 | Standalone orchestration | Async tasks, processes, events, and services | Shipped |
 | Async Rust host | `ready().await`, `tick().await`, `shutdown().await` | Shipped |
-| Synchronous Rust host | `ready_blocking`, `tick_blocking`, `shutdown_blocking` | Shipped |
+| Synchronous Rust host | `ready_blocking`, `tick_blocking`, `shutdown_blocking`; `tick_sync` runs a tick on the calling thread | Shipped |
 | Deterministic host time | Host-driven ticks and ordered event handling | Shipped, with documented limits |
 
 ### 3. Polyglot by choosing the right boundary
