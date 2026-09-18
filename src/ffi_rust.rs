@@ -116,9 +116,15 @@ pub(crate) fn parse_sidecar_type(tokens: &[crate::lexer::Token], pos: &mut usize
         if tokens.get(*pos).map(|t| &t.kind) != Some(&TokenKind::Lt) { return Err(format!("Error in {}: expected '<'", file)); }
         *pos += 1;
         let inner = parse_sidecar_type(tokens, pos, file, type_params)?;
+        let error = if name == "result" && tokens.get(*pos).map(|t| &t.kind) == Some(&TokenKind::Comma) {
+            *pos += 1;
+            parse_sidecar_type(tokens, pos, file, type_params)?
+        } else {
+            ast::Type::Str
+        };
         if tokens.get(*pos).map(|t| &t.kind) != Some(&TokenKind::Gt) { return Err(format!("Error in {}: expected '>'", file)); }
         *pos += 1;
-        if name == "option" { ast::Type::Option(Box::new(inner)) } else { ast::Type::Result(Box::new(inner)) }
+        if name == "option" { ast::Type::Option(Box::new(inner)) } else { ast::Type::Result(Box::new(inner), Box::new(error)) }
     } else if type_params.iter().any(|p| p == name) {
         ast::Type::TypeParam(name.clone())
     } else { sidecar_type_to_orch(name, file, token.line)? };

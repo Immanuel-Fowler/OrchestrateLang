@@ -720,8 +720,10 @@ impl Parser {
                 "result" => {
                     self.consume(TokenKind::Lt, "Expected '<' after 'result'")?;
                     let inner = self.parse_type()?;
+                    // The error type defaults to string, so result<T> keeps its meaning.
+                    let error = if self.match_token(TokenKind::Comma) { self.parse_type()? } else { Type::Str };
                     self.consume(TokenKind::Gt, "Expected '>' after result inner type")?;
-                    Ok(Type::Result(Box::new(inner)))
+                    Ok(Type::Result(Box::new(inner), Box::new(error)))
                 }
                 s => {
                     // Check the active generic declaration context first, then fall back to
@@ -1178,8 +1180,9 @@ impl Parser {
                     TokenKind::Identifier(s) => s.clone(),
                     _ => return Err(format!("Expected error binding name after 'catch' at line {}, col {}", err_tok.line, err_tok.col)),
                 };
+                let err_type = if self.match_token(TokenKind::Colon) { Some(self.parse_type()?) } else { None };
                 let handler = self.parse_block()?;
-                Ok(ExprNode::TryCatch { body: Box::new(body), err_name, handler: Box::new(handler) })
+                Ok(ExprNode::TryCatch { body: Box::new(body), err_name, err_type, handler: Box::new(handler) })
             }
             TokenKind::Match => {
                 self.advance();
@@ -1340,6 +1343,22 @@ mod tests {
     }
 
     #[test]
+    fn test_parser_result_error_type_and_catch_annotation() {
+        let ast = parse("fn f() -> result<int, Failure> { err(Failure::Bad) }");
+        if let StmtNode::FnDecl { return_type, .. } = &ast[0].node {
+            assert_eq!(return_type, &Type::Result(Box::new(Type::Int), Box::new(Type::Named("Failure".into()))));
+        } else { panic!("Expected FnDecl"); }
+        let ast = parse("let x = try { f()? } catch e: Failure { 0 }");
+        if let StmtNode::Let { value, .. } = &ast[0].node {
+            assert!(matches!(&value.node, ExprNode::TryCatch { err_type: Some(Type::Named(n)), .. } if n == "Failure"));
+        } else { panic!("Expected Let"); }
+        let ast = parse("let y = try { f()? } catch e { 0 }");
+        if let StmtNode::Let { value, .. } = &ast[0].node {
+            assert!(matches!(&value.node, ExprNode::TryCatch { err_type: None, .. }));
+        } else { panic!("Expected Let"); }
+    }
+
+    #[test]
     fn test_parser_load_foreign_backend() {
         let ast = parse("load_foreign \"typescript\" \"./math.ts\" (backend: \"bun\")");
         assert_eq!(ast[0].node, StmtNode::LoadForeign { language: "typescript".into(), path: "./math.ts".into(), backend: Some("bun".into()) });
@@ -1422,7 +1441,7 @@ mod tests {
     fn test_parser_result_type() {
         let ast = parse("fn fallible() -> result<string> { ok(\"yes\") }");
         if let StmtNode::FnDecl { return_type, .. } = &ast[0].node {
-            assert_eq!(return_type, &Type::Result(Box::new(Type::Str)));
+            assert_eq!(return_type, &Type::Result(Box::new(Type::Str), Box::new(Type::Str)));
         } else { panic!(); }
     }
 

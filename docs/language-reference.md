@@ -391,40 +391,58 @@ rejects one that misses a variant and has no `_` arm. Literal patterns work for 
 
 ### 2.13 `option`, `result`, `?`, and `try` / `catch`
 
-`option<T>` is `some(value)` or `none`. `result<T>` is `ok(value)` or `err("message")`;
-the error of a `result` is always a `string`.
+`option<T>` is `some(value)` or `none`. `result<T, E>` is `ok(value)` or `err(error)`;
+`result<T>` alone means `result<T, string>`, so an error can be a message or any other
+type — an enum is the natural shape for a set of failures.
 
 ```orchestrate
-fn divide(a: int, b: int) -> result<int> {
+enum Failure {
+    DivideByZero,
+    TooLarge(int),
+}
+
+fn divide(a: int, b: int) -> result<int, Failure> {
     if b == 0 {
-        err("division by zero")
+        err(Failure::DivideByZero)
     } else {
         ok(a / b)
     }
 }
 
-fn halve_then_double(x: int, y: int) -> result<int> {
+fn halve_then_double(x: int, y: int) -> result<int, Failure> {
     let half = divide(x, y)?
     ok(half * 2)
+}
+
+fn describe(r: result<int, Failure>) -> string {
+    match r {
+        result::Ok(v) => "ok " + to_string(v)
+        result::Err(e) => match e {
+            Failure::DivideByZero => "divide by zero"
+            Failure::TooLarge(n) => "too large: " + to_string(n)
+        }
+    }
 }
 
 task guarded(a: int, b: int) -> int {
     try {
         divide(a, b)?
-    } catch e {
-        print("caught: " + e)
+    } catch e: Failure {
         0 - 1
     }
 }
 ```
 
-`expr?` unwraps a `result<T>` or `option<T>` to its `T`, and returns early with the error
-or `none` when there is none. Use it in a function that returns the same kind of value:
-`result` inside a `result` function, `option` inside an `option` function.
+`expr?` unwraps a `result<T, E>` or `option<T>` to its `T`, and returns early with the
+error or `none` when there is none. Use it in a function that returns the same kind of
+value: a `result` with the same `E` inside a `result` function — `?` does not convert
+between error types — or an `option` inside an `option` function.
 
-`try { ... } catch name { ... }` evaluates the block; if a `?` inside it fails, the error
-message is bound to `name` and the `catch` block's value is used instead. Both blocks must
-produce the same type. Inside `try`, `?` applies to `result` values.
+`try { ... } catch name { ... }` evaluates the block; if a `?` inside it fails, the error is
+bound to `name` and the `catch` block's value is used instead. Both blocks must produce
+the same type. `name` is a `string` unless the block propagates another error type, which
+the `catch` then names: `catch e: Failure`. A block that propagates two different error
+types is rejected; handle one at a time. Inside `try`, `?` applies to `result` values.
 
 ### 2.14 String Interpolation
 

@@ -11,6 +11,8 @@ pub struct TypeChecker {
     current_return_type: Option<Type>,
     host_groups: HashSet<String>,
     pub type_map: HashMap<(usize, usize), Type>,  // (line, col) → inferred type
+    /// One collector per open `try` block: the error types its `?`s propagate.
+    try_errors: Vec<Vec<Type>>,
 }
 
 impl TypeChecker {
@@ -25,6 +27,7 @@ impl TypeChecker {
             current_return_type: None,
             host_groups: HashSet::new(),
             type_map: HashMap::new(),
+            try_errors: Vec::new(),
         };
 
         tc.functions.insert("print".to_string(), (vec![Type::Str], Type::Void));
@@ -202,7 +205,10 @@ impl TypeChecker {
             Type::TypeParam(name) => subst.get(name).cloned().unwrap_or_else(|| ty.clone()),
             Type::Array(inner, dims) => Type::Array(Box::new(self.substitute_type_params(inner, subst)), dims.clone()),
             Type::Option(inner) => Type::Option(Box::new(self.substitute_type_params(inner, subst))),
-            Type::Result(inner) => Type::Result(Box::new(self.substitute_type_params(inner, subst))),
+            Type::Result(ok, err) => Type::Result(
+                Box::new(self.substitute_type_params(ok, subst)),
+                Box::new(self.substitute_type_params(err, subst)),
+            ),
             Type::Fn(params, ret) => Type::Fn(
                 params.iter().map(|t| self.substitute_type_params(t, subst)).collect(),
                 Box::new(self.substitute_type_params(ret, subst)),
@@ -224,6 +230,12 @@ impl TypeChecker {
             Type::Option(inner) => {
                 if let Type::Option(arg_inner) = arg_ty {
                     self.unify_type_param(inner, arg_inner, type_params, subst);
+                }
+            }
+            Type::Result(ok, err) => {
+                if let Type::Result(arg_ok, arg_err) = arg_ty {
+                    self.unify_type_param(ok, arg_ok, type_params, subst);
+                    self.unify_type_param(err, arg_err, type_params, subst);
                 }
             }
             Type::Fn(params, _) => {
@@ -428,15 +440,14 @@ impl TypeChecker {
         if let (Type::Option(_), Type::Option(inner)) = (expected, actual) {
             if **inner == Type::Void { return true; }
         }
-        // err("...") literal: Result<Void> is compatible with any result<T>
-        if let (Type::Result(_), Type::Result(inner)) = (expected, actual) {
-            if **inner == Type::Void { return true; }
+        // ok(x) leaves the error side unknown and err(e) the value side; an unknown side
+        // (Void) matches anything, a known side must be compatible.
+        if let (Type::Result(exp_ok, exp_err), Type::Result(act_ok, act_err)) = (expected, actual) {
+            let ok = **act_ok == Type::Void || self.types_compatible(exp_ok, act_ok);
+            let err = **act_err == Type::Void || self.types_compatible(exp_err, act_err);
+            return ok && err;
         }
-        // ok(x): Result<T> compatible where Result<U> expected if T compatible with U
         if let (Type::Option(exp_inner), Type::Option(act_inner)) = (expected, actual) {
-            return self.types_compatible(exp_inner, act_inner);
-        }
-        if let (Type::Result(exp_inner), Type::Result(act_inner)) = (expected, actual) {
             return self.types_compatible(exp_inner, act_inner);
         }
         // Array covariance
@@ -588,10 +599,10 @@ impl TypeChecker {
                         return Ok(Type::Float);
                     }
                     "parse_int" if args.len() == 1 => {
-                        return Ok(Type::Result(Box::new(Type::Int)));
+                        return Ok(Type::Result(Box::new(Type::Int), Box::new(Type::Str)));
                     }
                     "parse_float" if args.len() == 1 => {
-                        return Ok(Type::Result(Box::new(Type::Float)));
+                        return Ok(Type::Result(Box::new(Type::Float), Box::new(Type::Str)));
                     }
                     "map" if args.len() == 2 => {
                         // map(xs: T[], f: fn(T) -> U) -> U[]
@@ -898,19 +909,32 @@ impl TypeChecker {
             }
             ExprNode::OkLiteral(inner) => {
                 let inner_ty = self.infer_expr(inner)?;
-                Ok(Type::Result(Box::new(inner_ty)))
+                Ok(Type::Result(Box::new(inner_ty), Box::new(Type::Void)))
             }
-            ExprNode::ErrLiteral(msg) => {
-                let msg_ty = self.infer_expr(msg)?;
-                if msg_ty != Type::Str {
-                    return Err(format!("line {}, col {}: err() argument must be a string, got {}", expr.span.line, expr.span.col, msg_ty.display_name()));
-                }
-                Ok(Type::Result(Box::new(Type::Void)))
+            ExprNode::ErrLiteral(value) => {
+                let err_ty = self.infer_expr(value)?;
+                Ok(Type::Result(Box::new(Type::Void), Box::new(err_ty)))
             }
             ExprNode::Propagate(inner) => {
                 let inner_ty = self.infer_expr(inner)?;
                 match &inner_ty {
-                    Type::Result(ok_ty) => Ok(*ok_ty.clone()),
+                    Type::Result(ok_ty, err_ty) => {
+                        if let Some(collector) = self.try_errors.last_mut() {
+                            // Inside a try block the error goes to catch, not to the caller.
+                            if **err_ty != Type::Void && !collector.contains(err_ty) { collector.push((**err_ty).clone()); }
+                        } else if let Some(Type::Result(_, returned)) = self.current_return_type.clone() {
+                            let known = **err_ty != Type::Void && *returned != Type::Void
+                                && !matches!(*returned, Type::TypeParam(_)) && !matches!(**err_ty, Type::TypeParam(_));
+                            if known && !self.types_compatible(&returned, err_ty) {
+                                return Err(format!(
+                                    "line {}, col {}: '?' propagates a {} error, but the function returns {}",
+                                    expr.span.line, expr.span.col, err_ty.display_name(),
+                                    self.current_return_type.as_ref().map(|t| t.display_name()).unwrap_or_default()
+                                ));
+                            }
+                        }
+                        Ok(*ok_ty.clone())
+                    }
                     Type::Option(inner_opt) => Ok(*inner_opt.clone()),
                     _ => Err(format!(
                         "line {}, col {}: '?' operator can only be used on result<T> or option<T>, got {}",
@@ -918,15 +942,42 @@ impl TypeChecker {
                     )),
                 }
             }
-            ExprNode::TryCatch { body, err_name, handler } => {
-                let body_ty = self.infer_expr(body)?;
+            ExprNode::TryCatch { body, err_name, err_type, handler } => {
+                self.try_errors.push(Vec::new());
+                let body_result = self.infer_expr(body);
+                let propagated = self.try_errors.pop().unwrap_or_default();
+                let body_ty = body_result?;
                 let unwrapped_ty = match &body_ty {
-                    Type::Result(inner) => *inner.clone(),
+                    Type::Result(inner, _) => *inner.clone(),
                     Type::Option(inner) => *inner.clone(),
                     other => other.clone(),
                 };
+                let error_ty = match err_type {
+                    Some(declared) => {
+                        if let Some(other) = propagated.iter().find(|t| !self.types_compatible(declared, t)) {
+                            return Err(format!(
+                                "line {}, col {}: catch {}: {} but the block propagates a {} error",
+                                expr.span.line, expr.span.col, err_name, declared.display_name(), other.display_name()
+                            ));
+                        }
+                        declared.clone()
+                    }
+                    None => match propagated.as_slice() {
+                        [] => Type::Str,
+                        [only] if *only == Type::Str => Type::Str,
+                        [only] => return Err(format!(
+                            "line {}, col {}: the try block propagates a {} error; write `catch {}: {}`",
+                            expr.span.line, expr.span.col, only.display_name(), err_name, only.display_name()
+                        )),
+                        _ => return Err(format!(
+                            "line {}, col {}: the try block propagates more than one error type ({}); a try block handles one",
+                            expr.span.line, expr.span.col,
+                            propagated.iter().map(|t| t.display_name()).collect::<Vec<_>>().join(", ")
+                        )),
+                    },
+                };
                 self.push_env();
-                self.define_var(err_name.clone(), Type::Str);
+                self.define_var(err_name.clone(), error_ty);
                 let handler_ty = self.infer_expr(handler)?;
                 self.pop_env();
                 if unwrapped_ty != Type::Void && handler_ty != Type::Void
@@ -987,10 +1038,13 @@ impl TypeChecker {
                                         else { Some(Type::Void) }
                                     }
                                     ("result", "Ok") => {
-                                        if let Type::Result(inner) = &value_ty { Some(*inner.clone()) }
+                                        if let Type::Result(ok, _) = &value_ty { Some(*ok.clone()) }
                                         else { Some(Type::Void) }
                                     }
-                                    ("result", "Err") => Some(Type::Str),
+                                    ("result", "Err") => {
+                                        if let Type::Result(_, err) = &value_ty { Some(*err.clone()) }
+                                        else { Some(Type::Str) }
+                                    }
                                     _ => {
                                         if let Some(variants) = self.enum_defs.get(enum_name).cloned() {
                                             if let Some(v) = variants.iter().find(|v| v.name == *variant_name) {
@@ -1151,6 +1205,35 @@ mod tests {
     #[test]
     fn test_result_err_infers() {
         assert!(check("fn f() -> result<int> { err(\"bad\") }").is_ok());
+    }
+
+    // A single uppercase letter reads as a type parameter, so these enums have real names,
+    // and the checks go through `return`, the one place a body is compared to its type.
+    #[test]
+    fn test_result_error_type_defaults_to_string_and_may_be_declared() {
+        assert!(check("enum Failure { Bad } fn f() -> result<int, Failure> { return err(Failure::Bad) }").is_ok());
+        assert!(check("enum Failure { Bad } fn f() -> result<int, Failure> { return err(\"bad\") }").is_err());
+        assert!(check("fn f() -> result<int> { return err(\"bad\") } fn g() -> result<int, string> { return f() }").is_ok());
+        assert!(check("fn f() -> result<int> { return err(1) }").is_err());
+    }
+
+    #[test]
+    fn test_propagate_requires_matching_error_type() {
+        assert!(check("enum Failure { Bad } fn g() -> result<int, Failure> { return err(Failure::Bad) } fn f() -> result<int, Failure> { let x = g()? return ok(x) }").is_ok());
+        let error = check("enum Failure { Bad } fn g() -> result<int, Failure> { return err(Failure::Bad) } fn f() -> result<int> { let x = g()? return ok(x) }").unwrap_err();
+        assert!(error.contains("propagates a Failure error"), "{error}");
+    }
+
+    #[test]
+    fn test_try_catch_binds_the_propagated_error_type() {
+        let g = "enum Failure { Bad } fn g() -> result<int, Failure> { return err(Failure::Bad) } ";
+        assert!(check(&format!("{g}fn f() -> int {{ return try {{ g()? }} catch e: Failure {{ 0 }} }}")).is_ok());
+        let error = check(&format!("{g}fn f() -> int {{ return try {{ g()? }} catch e {{ 0 }} }}")).unwrap_err();
+        assert!(error.contains("write `catch e: Failure`"), "{error}");
+        let error = check(&format!("{g}fn f() -> int {{ return try {{ g()? }} catch e: string {{ 0 }} }}")).unwrap_err();
+        assert!(error.contains("propagates a Failure error"), "{error}");
+        assert!(check("fn f() -> int { return try { parse_int(\"1\")? } catch e { print(\"x\" + e) 0 } }").is_ok());
+        assert!(check(&format!("{g}fn f() -> int {{ return match g() {{ result::Ok(v) => v result::Err(e) => match e {{ Failure::Bad => 0 }} }} }}")).is_ok());
     }
 
     #[test]

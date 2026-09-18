@@ -369,14 +369,15 @@ impl Codegen {
                 // In async context, ? works directly on Result/Option
                 format!("({})? ", self.compile_expr(inner))
             }
-            ExprNode::TryCatch { body, err_name, handler } => {
+            ExprNode::TryCatch { body, err_name, err_type, handler } => {
                 let body_str = self.compile_expr(body);
                 self.push_scope();
                 self.define_local(err_name);
                 let handler_str = self.compile_expr(handler);
                 self.pop_scope();
+                let error_ty = err_type.as_ref().map(|t| self.compile_type(t)).unwrap_or_else(|| "String".to_string());
                 format!(
-                    r#"(|| -> Result<_, String> {{ Ok({{ {} }}) }})().unwrap_or_else(|{}: String| {{ {} }})"#,
+                    r#"(|| -> Result<_, {error_ty}> {{ Ok({{ {} }}) }})().unwrap_or_else(|{}: {error_ty}| {{ {} }})"#,
                     body_str, err_name, handler_str
                 )
             }

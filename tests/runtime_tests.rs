@@ -78,6 +78,55 @@ orchestrator main() {
     assert_eq!(out.trim(), "c\napple\n2.5\n3\n2\n0.75\n9");
 }
 
+/// A result's error can be any type: an enum error is matched on, propagated with `?`
+/// between functions that share it, and caught with `catch e: Failure`; a plain
+/// `catch e` still binds a string.
+#[test]
+fn runtime_result_with_typed_errors() {
+    let out = run_orch("result_typed_errors", r#"
+enum Failure {
+    DivideByZero,
+    TooLarge(int),
+}
+
+fn divide(a: int, b: int) -> result<int, Failure> {
+    if b == 0 {
+        err(Failure::DivideByZero)
+    } else {
+        if a > 100 { err(Failure::TooLarge(a)) } else { ok(a / b) }
+    }
+}
+
+fn describe(r: result<int, Failure>) -> string {
+    match r {
+        result::Ok(v) => "ok " + to_string(v)
+        result::Err(e) => match e {
+            Failure::DivideByZero => "divide by zero"
+            Failure::TooLarge(n) => "too large: " + to_string(n)
+        }
+    }
+}
+
+fn twice(a: int, b: int) -> result<int, Failure> {
+    let half = divide(a, b)?
+    ok(half * 2)
+}
+
+orchestrator main() {
+    print(describe(divide(10, 2)))
+    print(describe(divide(1, 0)))
+    print(describe(twice(500, 5)))
+    print(describe(twice(50, 5)))
+    let recovered = try { divide(7, 0)? } catch e: Failure { 0 - 1 }
+    print(to_string(recovered))
+    let plain = try { parse_int("x")? } catch e { 42 }
+    print(to_string(plain))
+    stop_orch()
+}
+"#);
+    assert_eq!(out.trim(), "ok 5\ndivide by zero\ntoo large: 500\nok 20\n-1\n42");
+}
+
 #[test]
 fn runtime_ffi_zig() {
     if !has_tool("zig", "version") { return; }

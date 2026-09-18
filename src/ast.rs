@@ -52,7 +52,8 @@ pub enum Type {
     Array(Box<Type>, Vec<String>),
     Named(String),
     Option(Box<Type>),
-    Result(Box<Type>),
+    /// `result<T, E>`; `result<T>` is `result<T, string>`.
+    Result(Box<Type>, Box<Type>),
     Fn(Vec<Type>, Box<Type>),       // fn(T1, T2) -> T3
     TypeParam(String),               // generic T, U, K, V
 }
@@ -69,7 +70,8 @@ impl Type {
             Type::Array(inner, _) => format!("{}[]", inner.display_name()),
             Type::Named(name) => name.clone(),
             Type::Option(inner) => format!("option<{}>", inner.display_name()),
-            Type::Result(inner) => format!("result<{}>", inner.display_name()),
+            Type::Result(ok, err) if **err == Type::Str => format!("result<{}>", ok.display_name()),
+            Type::Result(ok, err) => format!("result<{}, {}>", ok.display_name(), err.display_name()),
             Type::Fn(params, ret) => format!(
                 "fn({}) -> {}",
                 params.iter().map(|t| t.display_name()).collect::<Vec<_>>().join(", "),
@@ -83,7 +85,8 @@ impl Type {
         match self {
             Type::TypeParam(_) => true,
             Type::Array(inner, _) => inner.contains_type_param(),
-            Type::Option(inner) | Type::Result(inner) => inner.contains_type_param(),
+            Type::Option(inner) => inner.contains_type_param(),
+            Type::Result(ok, err) => ok.contains_type_param() || err.contains_type_param(),
             Type::Fn(params, ret) => params.iter().any(|t| t.contains_type_param()) || ret.contains_type_param(),
             _ => false,
         }
@@ -243,6 +246,8 @@ pub enum ExprNode {
     TryCatch {
         body: Box<Expr>,
         err_name: String,
+        /// `catch e: Failure`; absent means the error is a `string`.
+        err_type: Option<Type>,
         handler: Box<Expr>,
     },
     // Enum support

@@ -492,7 +492,7 @@ impl Codegen {
             ExprNode::ErrLiteral(inner) | ExprNode::Propagate(inner) => {
                 self.get_free_vars_expr(inner, local_env, free_vars);
             }
-            ExprNode::TryCatch { body, err_name, handler } => {
+            ExprNode::TryCatch { body, err_name, handler, .. } => {
                 self.get_free_vars_expr(body, local_env, free_vars);
                 let mut handler_env = local_env.clone();
                 handler_env.insert(err_name.clone());
@@ -806,7 +806,7 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
             Type::Array(inner, _init_vals) => format!("Vec<{}>", self.compile_type(inner)),
             Type::Named(name) => name.clone(),
             Type::Option(inner) => format!("Option<{}>", self.compile_type(inner)),
-            Type::Result(inner) => format!("Result<{}, String>", self.compile_type(inner)),
+            Type::Result(ok, err) => format!("Result<{}, {}>", self.compile_type(ok), self.compile_type(err)),
             Type::Fn(params, ret) => {
                 let params_str = params.iter().map(|t| self.compile_type(t)).collect::<Vec<_>>().join(", ");
                 format!("impl Fn({}) -> {}", params_str, self.compile_type(ret))
