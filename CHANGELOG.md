@@ -9,6 +9,10 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-18
+
+Foreign Rust can depend on the host, and a frame can tick without a task hop.
+
 ### Added
 - Cargo dependencies for Rust foreign modules. A `.orch_ffi` sidecar declares what its
   `.rs` file needs under `[dependencies]`, in Cargo's inline form, and `build --lib`
@@ -399,7 +403,8 @@ First tagged release.
   `option` / `result`, `try` / `catch`, supervision, `check`, the language server, or the
   standard library. See `examples/` for working code.
 
-[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.5.0...v0.5.1
