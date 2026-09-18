@@ -1,686 +1,835 @@
 # OrchestrateLang
 
-> **A compiled, asynchronous orchestration language that transpiles to native Rust.**
+> A compiled language for coordinating concurrent work, long-lived services, events,
+> and code written in other languages.
 
-OrchestrateLang (`.orch`) is a purpose-built programming language for writing **concurrent system coordinators** — programs that manage multiple background workers, respond to events, and communicate with external processes, all in a clean and readable syntax. OrchestrateLang scripts compile directly to Rust source code and are executed via the Tokio async runtime, producing **native machine-speed binaries** with no interpreter overhead.
+OrchestrateLang (`.orch`) is for the part of a program that decides **what runs, when it
+runs, and how the pieces communicate**. Workers, event handlers, supervised processes,
+and stateful services are language constructs rather than patterns assembled from async
+libraries.
 
----
+The compiler turns an OrchestrateLang program into Rust, wires its concurrency through
+Tokio, and asks Cargo to produce a native binary. There is no OrchestrateLang VM or
+interpreter. A program can also be generated as a Rust library when an existing
+application needs to own the main loop.
 
-## Getting Started (For Beginners)
+## OrchestrateLang in 30 seconds
 
-If you're new to programming or command-line tools, don't worry! Follow these steps to get OrchestrateLang running on your computer.
+### 1. Orchestration is the program structure
 
-### Step 1: Install Rust (The Engine)
-OrchestrateLang runs on top of a language called Rust. You need to install Rust first.
-- **Windows:** Download and run the [Rust Installer for Windows (rustup-init.exe)](https://win.rustup.rs/). 
-  > *If it asks to install Visual Studio Build Tools, say yes, and make sure "Desktop development with C++" is checked.*
-- **Mac / Linux:** Open your "Terminal" app, paste the following command, and press Enter:
-  ```bash
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-  ```
+The lifecycle, recurring work, reactions, and stateful services are visible in the
+language instead of being hidden behind task and channel setup.
 
-*Note: After installing Rust, you must close and reopen your Terminal/Command Prompt for the changes to take effect.*
+```mermaid
+flowchart LR
+    O["orchestrator<br/>owns lifecycle"]
+    W["automatic<br/>recurring workers"]
+    E["on event<br/>typed reactions"]
+    S["serverlet<br/>stateful services"]
 
-*Requirements: library crates generated with `orchestrate build --lib` need Rust 1.89 or newer. Python landlines need Python 3.10 or newer. TypeScript landlines and FFI need TypeScript 7 and Bun; install their project dependencies with Bun.*
+    O -->|starts and stops| W
+    O -->|registers| E
+    O -->|owns| S
+    W -->|trigger| E
+    W -->|typed calls| S
+    E -->|update worker set| O
+```
 
-### Step 2: Download OrchestrateLang
-Next, you'll download the OrchestrateLang code. In your Terminal or Command Prompt, run:
+| Construct | What it makes explicit |
+|---|---|
+| `orchestrator` | Startup, shutdown, and the active process set |
+| `automatic` | Recurring work, restart policy, and crash handling |
+| `on` / `trigger` | Typed event producers and consumers |
+| `serverlet` | Long-lived state with serialized message handling |
+
+### 2. Asynchronous first, synchronous second
+
+OrchestrateLang models coordination as asynchronous work. When a synchronous application
+embeds it, blocking adapters drive the same generated async core—the sync API is a host
+boundary, not a second runtime model.
+
+```mermaid
+flowchart LR
+    L[".orch source"] --> A["task · process · parallel<br/>events · serverlets"]
+    A --> T["generated Tokio core"]
+    T --> N["native executable"]
+
+    AH["async Rust host"] -->|ready / tick / shutdown| T
+    SH["synchronous Rust host"] -->|blocking methods| T
+```
+
+| Execution path | Interface | Status |
+|---|---|---|
+| Standalone orchestration | Async tasks, processes, events, and services | Shipped |
+| Async Rust host | `ready().await`, `tick().await`, `shutdown().await` | Shipped |
+| Synchronous Rust host | `ready_blocking`, `tick_blocking`, `shutdown_blocking` | Shipped |
+| Deterministic host time | Host-driven ticks and ordered event handling | Shipped, with documented limits |
+
+### 3. Polyglot by choosing the right boundary
+
+Direct native functions stay cheap. Stateful or runtime-owned code becomes a service.
+The boundary is selected per module rather than forcing the entire application into one
+language or one transport.
+
+```mermaid
+flowchart LR
+    O["OrchestrateLang module"]
+    F["native FFI<br/>direct function call"]
+    P["persistent adapter<br/>checked protocol"]
+    L["landline serverlet<br/>state + lifecycle"]
+
+    O --> F
+    O --> P
+    O --> L
+
+    F --> R["Rust"]
+    F --> C["C / C++"]
+    F --> Z["Zig"]
+    F --> S["Swift"]
+    P --> TSF["TypeScript"]
+    L --> PY["Python"]
+    L --> TSL["TypeScript"]
+```
+
+| Language | Direct functions | Stateful service | Status |
+|---|---|---|---|
+| OrchestrateLang | Native module call | In-process or secret serverlet | Shipped |
+| Rust | In-module integration | Wrap with an OrchestrateLang serverlet | Shipped |
+| C / C++ | Native C ABI | Wrap with an OrchestrateLang serverlet | Shipped |
+| Zig | Native C ABI | Wrap with an OrchestrateLang serverlet | Shipped |
+| Swift | Native C ABI | Wrap with an OrchestrateLang serverlet | Shipped |
+| TypeScript | Persistent compiled adapter | Landline serverlet | Shipped |
+| Python | — | Landline serverlet | Shipped |
+| C# | Native AOT FFI | Landline / embedded runtime | Planned |
+| Go | C archive is possible, with runtime constraints | — | Exploring |
+| Additional embedded runtimes | Depends on a safe native boundary | Landline-style adapter | Exploring |
+
+“Planned” and “exploring” rows describe direction, not current compiler support. See the
+[roadmap](docs/roadmap.md) for the tradeoffs behind them.
+
+### 4. Serverlets are one service model with several boundaries
+
+Every serverlet presents the same idea to its caller: start a typed service, keep its
+state alive, and send it serialized calls. The variant decides where the implementation
+runs and what guarantee that boundary provides.
+
+```mermaid
+flowchart TB
+    API["typed serverlet client"] --> CORE["handlers + private state"]
+    CORE --> IN["in-process<br/>Tokio actor"]
+    CORE --> SEC["secret<br/>native child process"]
+    CORE --> LAND["landline<br/>foreign runtime process"]
+    CORE -. future containment .-> WASM["sandboxed<br/>WASM guest"]
+
+    LAND --> PY["Python"]
+    LAND --> TS["TypeScript"]
+```
+
+| Serverlet kind | Boundary | Best fit | Status |
+|---|---|---|---|
+| In-process | Tokio task and channel | Trusted state with the lowest overhead | Shipped |
+| Secret | Separate native executable | Process lifecycle, crash separation, hidden implementation | Shipped |
+| Python landline | Persistent Python process | Existing Python libraries and state | Shipped |
+| TypeScript landline | Compiled TypeScript process | Existing TypeScript code and state | Shipped |
+| Sandboxed | WASM containment | Untrusted or downloaded code | Declaration exists; isolation not shipped |
+| Secret + sandboxed | Process plus WASM containment | Defense in depth | Planned |
+| Serverlet files | Independently packaged/live-editable services | Modding and hot-reload workflows | Exploring |
+| More landlines | C#, C++, and embedded runtimes | Reuse another runtime behind the same client | Planned / exploring |
+
+The next major serverlet work is real containment and broader runtime support. A child
+process alone is not called a sandbox, and roadmap entries are not presented as finished
+features.
+
+OrchestrateLang is currently young and evolving. It is a good place to explore a more
+structural model of orchestration; read the [known limitations](#current-boundaries) before
+using it as production infrastructure.
+
+## The idea in one program
+
+```orchestrate
+fn read_sensor() -> int {
+    95
+}
+
+let monitor = automatic(restart: always) {
+    let reading = read_sensor()
+    if reading > 90 {
+        trigger overheated(reading)
+    }
+    sleep(500)
+} on_crash error {
+    print("monitor crashed: {error}")
+}
+
+let alarm = on overheated(reading: int) {
+    print("temperature is {reading}")
+}
+
+orchestrator main(workers: process[monitor]) {
+}
+```
+
+This describes three different responsibilities:
+
+- `automatic` owns recurring background work and its restart policy.
+- `on` owns a reaction to an event.
+- `orchestrator main` owns the application lifecycle and chooses which workers run.
+
+The compiler supplies the Tokio tasks, channels, event registries, process handles, and
+shutdown plumbing. The source stays focused on the topology of the system.
+
+## Why a language?
+
+Coordination code tends to hide its architecture inside library calls: spawn a task here,
+clone a sender there, wrap state in a lock, and remember which component is responsible
+for shutting everything down. It works, but the important shape of the program is only
+visible after reading its implementation.
+
+OrchestrateLang makes that shape syntax. A reader can identify workers, reactions,
+services, process boundaries, foreign code, and the lifecycle owner directly from the
+source. Rust remains underneath for native compilation and interoperability, but the
+orchestration model is expressed at a higher level.
+
+This is not intended to replace Rust, Python, TypeScript, C++, or another implementation
+language. It is meant to coordinate them.
+
+## Install and run
+
+You need [Rust and Cargo](https://rustup.rs/). Clone the repository and install the
+compiler:
+
 ```bash
 git clone https://github.com/Immanuel-Fowler/OrchestrateLang
 cd OrchestrateLang
-```
-*(If you get an error that `git` is not recognized, you'll need to [install Git](https://git-scm.com/downloads) first).*
-
-### Step 3: Install the Compiler
-Now, tell Rust to build and install the OrchestrateLang tool. Run this command:
-```bash
 cargo install --path .
 ```
-This might take a few minutes. Once it finishes, you'll have a new command available called `orchestrate`.
 
-To check if it worked, type:
-```bash
-orchestrate --help
-```
+Then run the smallest example:
 
-### Using it as a cargo subcommand
-
-The same install also registers OrchestrateLang with cargo, so if your hands already live in
-`cargo`, every command works there too:
-
-```bash
-cargo orch run examples/hello.orch          # same as: orchestrate run examples/hello.orch
-cargo orchestrate build main.orch -o myapp  # a longer spelling of the same thing
-```
-
-`cargo orch` and `cargo orchestrate` accept the same arguments and return the same exit
-codes as `orchestrate`; use whichever you prefer. They are thin wrappers, not a separate
-compiler — OrchestrateLang is its own language and `.orch` files stay the unit of
-compilation.
-
-### Step 4: Run Your First Program
-We've included several examples. To run the "Hello World" example, type:
 ```bash
 orchestrate run examples/hello.orch
 ```
-*Note: The very first time you run a program, it might take 30-60 seconds to set things up. After that, it will be lightning fast!*
 
-### Try the Other Examples
-
-The `examples/` folder contains more ready-to-run programs:
-```bash
-orchestrate run examples/pipeline.orch              # Pipeline operator
-orchestrate run examples/multi_process.orch         # Multiple concurrent workers
-orchestrate run examples/async_parallel.orch        # Parallel task execution
-orchestrate run examples/task_demo.orch             # Modules, tasks, and events together
-orchestrate run examples/serverlet.orch             # Serverlet actor model
-orchestrate run examples/persistent_serverlet.orch  # Serverlet state across loop iterations
-orchestrate run examples/resilient_serverlet.orch   # Recovering from handler panics with on_crash
-orchestrate run examples/secret_serverlet.orch      # Serverlet running in a separate process
-orchestrate run examples/supervised_process.orch    # Restart policies for automatic blocks
-orchestrate run examples/for_loops.orch             # for loops and ranges
-orchestrate run examples/closures.orch              # Closures with map, filter, reduce
-orchestrate run examples/enums.orch                 # Enums and match
-orchestrate run examples/error_handling.orch        # result, option, try/catch, and ?
-orchestrate run examples/generics.orch              # Generic functions
-orchestrate run examples/string_interpolation.orch  # "Hello, {name}!"
-orchestrate run examples/foreign_rust_math.orch     # Calling Rust from a module
-orchestrate run examples/foreign_c_math.orch        # Calling C from a module
-orchestrate run examples/foreign_zig_math.orch      # Calling Zig from a module
-orchestrate run examples/foreign_swift_math.orch    # Calling Swift from a module
-orchestrate run examples/foreign_typescript_math.orch # Calling TypeScript from a module
-orchestrate run examples/typescript_landline.orch   # Stateful TypeScript landline
-```
-
----
-
-## Why OrchestrateLang?
-
-Modern distributed systems require gluing together background workers, event listeners, service clients, database connectors, and real-time pipelines. In conventional languages this coordination logic becomes deeply nested async code littered with channels, mutexes, Arc clones, and task handles. OrchestrateLang treats **concurrency as a first-class language concept** — the syntax itself models workers, events, and service actors directly.
-
-```orchestrate
-let monitor = automatic {
-    let temp = sensor.read_temperature()
-    if temp > 90 {
-        trigger overheat_alert(temp)
-    }
-    sleep(500)
-}
-
-let alert_handler = on overheat_alert(temp: int) {
-    print("WARNING: Temperature critical at " + to_string(temp))
-    trigger update_orchestrator([])   // Shut down all workers
-}
-
-orchestrator main(procs: process[]) { }
-```
-
-This 14-line program starts a persistent polling loop, defines an event listener, and wires them together — with zero boilerplate for thread spawning, channel setup, or mutex management.
-
-> **Note:** The `process[]` parameter with explicit names like `process[monitor]` seeds those specific processes at startup. Use `trigger update_orchestrator([...])` at the top level for a more dynamic boot-time selection.
-
----
-
-## Tech Stack
-
-### Compiler
-
-The OrchestrateLang **compiler is itself written in Rust** and lives entirely in the `src/` directory. It is a classic single-pass pipeline:
-
-| Stage | File | Responsibility |
-| :--- | :--- | :--- |
-| **Lexer** | `src/lexer.rs` | Tokenizes raw `.orch` source text into a flat `Vec<Token>` stream |
-| **Parser** | `src/parser.rs` | Recursive-descent Pratt parser that builds a typed AST |
-| **AST** | `src/ast.rs` | Enum-based Abstract Syntax Tree node definitions |
-| **Typechecker** | `src/typechecker.rs` | Single-pass type inference and checking. Runs before codegen — catches type mismatches in `let` statements, binary operations, and function calls. Module and serverlet signatures are registered first so cross-module return types are correctly inferred. |
-| **Code Generator** | `src/codegen/` | Traverses the AST and emits valid Rust source code as a `String` (`core.rs`, `stmt.rs`, `expr.rs`), landline clients (`landline.rs`), and library-mode APIs (`library.rs`) |
-| **FFI bindings** | `src/ffi_parser.rs`, `src/ffi_rust.rs` | Read `.orch_ffi` sidecars: C-ABI `extern "C"` bindings for C, C++, Zig, and Swift, and typechecker registration for Rust |
-| **TypeScript** | `src/typescript.rs` | Checks TypeScript sources with TypeScript 7 and builds the scriptc or Bun executable for FFI and landlines |
-| **PROM** | `src/prom.rs` | The personal module registry and the embedded standard library |
-| **Diagnostics** | `src/errors.rs` | Turns `cargo` errors into OrchestrateLang hints |
-| **Driver** | `src/driver.rs` | Coordinates module resolution, `load` merging, native FFI compilation (C/C++ via `cc-rs`, Zig and Swift via their own compilers), TypeScript 7 scriptc/Bun bridges, sandbox guest builds, and invokes `cargo` |
-| **Foreign checks** | `src/foreign_check.rs` | Runs each foreign language's own checker for `orchestrate check-foreign` |
-| **CLI** | `src/cli.rs`, `src/main.rs` | The `orchestrate` command: `run`, `build`, `check`, `check-foreign`, and `prom`. `src/bin/cargo-orch.rs` and `src/bin/cargo-orchestrate.rs` expose the same dispatch as cargo subcommands |
-| **Language server** | `src/lsp_main.rs` | The `orchestrate-lsp` binary: hover type information for editors |
-
-### Runtime
-
-OrchestrateLang has **no custom runtime VM**. Generated Rust code is compiled by Cargo and executed directly on:
-
-- **[Tokio](https://tokio.rs/)** — Rust's industry-standard async runtime. All process blocks, serverlet actors, and event channels run as Tokio tasks.
-- **[Cargo](https://doc.rust-lang.org/cargo/)** — Used internally to compile and link generated Rust files into native binaries.
-- **Rust standard library** — `Arc`, `Mutex`, `OnceLock`, and `mpsc` channels power the event registry and process management system.
-
-### Dependency Graph
-
-```
-OrchestrateLang Compiler (Rust binary)
-    │
-    ├── Lexer  ─── produces ──→  Token Stream
-    ├── Parser ─── consumes ──→  Token Stream, produces ──→ AST
-    └── Codegen ── consumes ──→  AST, produces ──→  .rs file
-                                                         │
-                                            Cargo + rustc (compilation)
-                                                         │
-                                              Tokio runtime (execution)
-                                              ┌──────────────────────┐
-                                              │ tokio = { version =  │
-                                              │ "1.35", features =   │
-                                              │ ["full"] }           │
-                                              └──────────────────────┘
-```
-
----
-
-## Compilation Model
-
-When you run `orchestrate run main.orch`, the following happens:
-
-1. The `.orch` source is read from disk.
-2. The **Lexer** breaks it into tokens (identifiers, keywords, operators, literals).
-3. The **Parser** builds a recursive AST of `Stmt` and `Expr` nodes.
-4. Any `use module` imports trigger the **module compiler** — each referenced directory's `module.orch` (and any `load`-ed subfiles) is parsed separately and code-generated into its own `.rs` file.
-5. The **Codegen** traverses the main AST and emits a `main.rs` file with all Tokio infrastructure wired up.
-6. All generated `.rs` files are written into a hidden `.orch_cache/` Cargo project.
-7. `cargo run` (or `cargo build --release` for the `build` subcommand) is invoked automatically.
-8. The resulting native binary runs directly.
-
-```
-orchestrate run main.orch
-        │
-        ├─[Lex]──→ Tokens
-        ├─[Parse]──→ AST
-        ├─[Codegen]──→ .orch_cache/src/main.rs
-        │              .orch_cache/src/counter.rs   (module)
-        │              .orch_cache/Cargo.toml
-        └─[cargo run]──→ Native Binary Output
-```
-
----
-
-## Language Overview
-
-### Expression-Oriented
-
-OrchestrateLang is fully **expression-oriented**. Blocks, `if` expressions, and pipelines all return values. There are no statement/expression splits — everything evaluates to something.
-
-```orchestrate
-let result = if score > 100 { "Pass" } else { "Fail" }
-```
-
-### Static Type System
-
-OrchestrateLang is **statically typed**. All variables and parameters carry a type at compile time. Types are inferred from context or explicitly annotated:
-
-| Type | Description | Rust Equivalent |
-| :--- | :--- | :--- |
-| `int` | 64-bit signed integer | `i64` |
-| `float` | 64-bit floating point | `f64` |
-| `string` | UTF-8 text value | `String` |
-| `bool` | Boolean true/false | `bool` |
-| `void` | No return value | `()` |
-| `process` | First-class process block handle | `Arc<dyn Fn() -> JoinHandle<()> + Send + Sync>` |
-| `process[]` | Managed array of process handles | `Vec<ProcessRef>` |
-
-### Built-in Functions
-
-| Function | Description |
-| :--- | :--- |
-| `print(val)` | Prints any value to stdout (in library mode, to `Host::log`) |
-| `to_string(val)` | Converts any value to a string |
-| `to_int(val)` / `to_float(val)` | Numeric conversions |
-| `parse_int(s)` / `parse_float(s)` | Parse a string into a number (see the language reference) |
-| `sleep(ms)` | Asynchronously sleeps for N milliseconds |
-| `clock_micros()` | Microseconds on a monotonic clock, for measuring elapsed time |
-| `stop_orch()` | Exits the program (in library mode, asks the host to stop) |
-| `length(arr)` | Returns the number of elements in an array |
-| `append(arr, val)` | Appends a value to the end of an array in place |
-| `remove(arr, index)` | Removes the element at the given index from an array in place |
-| `range(n)` / `range(a, b)` | Integers for `for` loops |
-| `map`, `filter`, `reduce`, `find`, `any`, `all` | Higher-order array functions that take closures |
-
-### Debugging Tip: `ORCH_SHOW_GENERATED`
-
-When the compiler reports a Rust-level error you can't immediately decipher, set `ORCH_SHOW_GENERATED=1` to dump the full cargo output and the generated `.orch_cache/src/main.rs`:
+The same CLI is available as a Cargo subcommand:
 
 ```bash
-# PowerShell
-$env:ORCH_SHOW_GENERATED=1; orchestrate run main.orch
-
-# bash / zsh
-ORCH_SHOW_GENERATED=1 orchestrate run main.orch
+cargo orch run examples/hello.orch
+cargo orchestrate check examples/hello.orch
 ```
 
----
+The first run builds a generated Cargo project and may take longer. Later runs reuse
+`.orch_cache/`.
 
-## Syntax Reference
+Useful commands:
 
-### Variables
+| Command | What it does |
+|---|---|
+| `orchestrate run main.orch` | Compile and run a program |
+| `orchestrate build main.orch -o app` | Build a release binary |
+| `orchestrate check main.orch` | Parse and type-check without building |
+| `orchestrate check-foreign main.orch` | Run each foreign language's own checker |
+| `orchestrate check-foreign main.orch --deep` | Also run mypy and check generated Rust |
+| `orchestrate build --lib main.orch -o generated/scripts` | Generate an embeddable Rust crate |
+| `orchestrate prom add name ./module` | Register a local module under a short name |
 
-```orchestrate
-let name = "Orchestrate"         // inferred type: string
-let count: int = 0               // explicit type annotation
-let active: bool = true
+`cargo orch` and `cargo orchestrate` accept the same commands and arguments.
+
+## How a program runs
+
+When you run `orchestrate run main.orch`, the compiler:
+
+1. lexes and parses the `.orch` source;
+2. resolves directory modules and merges files named by `load`;
+3. registers types and checks the program;
+4. generates Rust for the program, modules, events, and service clients;
+5. prepares any foreign-language adapters or child processes;
+6. writes a Cargo project under `.orch_cache/`; and
+7. invokes Cargo to build and run a native executable.
+
+```text
+main.orch + module directories + foreign sources
+                       │
+              Orchestrate compiler
+                       │
+             generated Rust project
+                       │
+                 Cargo + rustc
+                       │
+                 native program
 ```
 
-### Functions
+Most OrchestrateLang concurrency becomes Tokio tasks and channels. Native foreign
+functions are linked into the executable. Secret and landline serverlets communicate
+with child processes using a checked wire protocol.
+
+## Design principles
+
+### Concurrency should be structural
+
+Workers, handlers, and services are declarations with different lifetimes—not anonymous
+tasks that happen to follow a convention. `automatic`, `on`, `serverlet`, and
+`orchestrator` each say who owns looping, reactions, state, and lifecycle.
+
+### Compile to Rust; do not hide a runtime
+
+OrchestrateLang uses the Rust ecosystem instead of building a VM, garbage collector, or
+async executor. The generated program is ordinary compiled Rust. A foreign boundary may
+bring its own runtime—Python and TypeScript do—and the documentation treats that cost as
+part of the chosen boundary.
+
+### Use the cheapest boundary that works
+
+Not every dependency needs an actor or a child process:
+
+| Need | Mechanism |
+|---|---|
+| A direct, stateless function | Module function or `load_foreign` |
+| Persistent state with serialized access | In-process serverlet |
+| A separate runtime or process-level crash isolation | Landline or secret serverlet |
+| Untrusted code | A real sandbox—not merely a process |
+
+This ladder keeps simple calls simple while leaving explicit tools for isolation and
+lifecycle.
+
+### State belongs to services
+
+Foreign function calls stay function calls. Persistent mutable state belongs to a
+serverlet, where ownership and call ordering are clear. A serverlet can still call direct
+foreign functions internally.
+
+### Boundaries should be visible
+
+A module directory has a `module.orch` boundary. Foreign functions have an
+`.orch_ffi` contract. Landlines declare the host functions they may call. These markers
+are intentionally explicit and easy to inspect.
+
+### The host stays in charge
+
+In library mode, the Rust host owns its runtime, loop, logging, and process lifetime.
+OrchestrateLang exposes lifecycle and tick methods; it does not quietly take over the
+application.
+
+### Be honest about guarantees
+
+A separate process is not a security sandbox. “Secret” means the implementation is built
+outside the orchestrator binary, not encrypted. A parsed sandbox declaration does not
+provide containment yet. The project aims to name these boundaries precisely and warn
+when an implementation cannot deliver the stronger guarantee.
+
+The full rationale is in [Design Philosophy](docs/design-philosophy.md).
+
+## Language features
+
+The sections below explain what each feature is for. They are a tour, not a grammar or
+complete API reference; exact syntax and edge cases belong in the
+[language reference](docs/language-reference.md).
+
+| Feature | The problem it owns |
+|---|---|
+| Static types, structs, enums, and generics | Describe data and check boundaries before execution |
+| Functions, tasks, processes, and `parallel` | Separate synchronous work, awaited work, and concurrent work |
+| Expressions, pipelines, pattern matching, and closures | Transform and route values clearly |
+| `option`, `result`, `?`, and `try` / `catch` | Make absence and failure explicit |
+| Orchestrators and lifecycle hooks | Define who owns startup, ticks, and shutdown |
+| Automatic workers and supervision | Run recurring work and recover from crashes |
+| Events and triggered handlers | Decouple typed producers from any number of consumers |
+| Serverlets | Give long-lived state one serialized owner |
+| Secret and landline serverlets | Move a service across a process or language boundary |
+| Directory modules, PROM, and the standard library | Organize and reuse capabilities behind visible boundaries |
+| Foreign functions and foreign checking | Reuse existing code without hiding its native toolchain |
+| Library and deterministic modes | Embed orchestration under a Rust host's lifecycle |
+| Host grants | Make callbacks from foreign services explicit |
+| LSP and VS Code support | Bring language information into an editor |
+
+### Static types and data
+
+OrchestrateLang is statically typed. Local types are often inferred, while function and
+service boundaries are explicit.
 
 ```orchestrate
-fn add(a: int, b: int) -> int {
-    return a + b
+let attempts = 3
+let label: string = "worker"
+
+struct Reading {
+    value: float,
+    source: string,
+}
+
+enum Status {
+    Idle,
+    Running(int),
+    Failed(string),
 }
 ```
 
-Compiles to a synchronous Rust `fn`. For async operations, use `task`:
+The built-in types include integers, floats, booleans, strings, arrays, `option<T>`,
+`result<T>`, and process handles.
+
+### Structs, enums, and pattern matching
+
+Structs group named fields. Enums describe a closed set of alternatives, optionally with
+payloads. `match` then makes the cases visible at the point where behavior diverges.
 
 ```orchestrate
-task fetch_data(url: string) -> string {
-    sleep(200)
-    return "data from " + url
+let description = match status {
+    Status::Idle => "waiting"
+    Status::Running(count) => "handled {count}"
+    Status::Failed(message) => "failed: {message}"
 }
 ```
 
-Compiles to `async fn`. Calls to tasks inside process blocks are automatically `.await`-ed.
+### Generics
 
-### Pipeline Operator (`|>`)
-
-The pipeline operator chains functions left-to-right, passing the result as the first argument:
+Generic functions preserve types while expressing reusable behavior:
 
 ```orchestrate
-let cleaned = raw_input |> trim() |> to_uppercase() |> validate()
-// equivalent to: validate(to_uppercase(trim(raw_input)))
-```
-
-### Control Flow
-
-```orchestrate
-if count > 10 {
-    print("High")
-} else {
-    print("Low")
-}
-
-while active {
-    let val = poll()
-    count = count + 1
+fn identity<T>(value: T) -> T {
+    value
 }
 ```
 
-### Parallel Execution
+### Functions, tasks, and processes
+
+The callable forms communicate intent:
+
+- `fn` is synchronous computation.
+- `task` is asynchronous computation.
+- `process` is an async callable intended for orchestration work.
+- `parallel` waits for several operations together instead of running them in sequence.
 
 ```orchestrate
+fn normalize(value: int) -> int {
+    value * 10
+}
+
+task fetch(id: int) -> string {
+    sleep(100)
+    "item {id}"
+}
+
 parallel {
-    let a = fetch_service_a()
-    let b = fetch_service_b()
-    let c = fetch_service_c()
-}
-// a, b, c are resolved concurrently via tokio::join!
-```
-
-### Array Literals
-
-```orchestrate
-trigger update_orchestrator([worker_a, worker_c])
-```
-
-Array literals (`[expr, expr, ...]`) compile to Rust `vec![...]`. They are primarily used with the built-in `update_orchestrator` trigger.
-
----
-
-## Process Blocks
-
-Process blocks are **the core concurrency primitive** of OrchestrateLang. There are two kinds.
-
-### Automatic Process Blocks
-
-Declared at the **top level** (outside any function). The compiler automatically collects all automatic blocks and passes them into the orchestrator's managed process array at startup. Each one runs in an **infinite loop** on its own Tokio task.
-
-```orchestrate
-let data_poller = automatic {
-    let result = db.query("SELECT * FROM events")
-    print("Got: " + result)
-    sleep(1000)   // wait 1 second between iterations
+    let first = fetch(1)
+    let second = fetch(2)
 }
 ```
 
-**Compiled to (approximately):**
-```rust
-let data_poller: ProcessRef = std::sync::Arc::new(move || {
-    tokio::spawn(async move {
-        loop {
-            // ... body ...
-        }
-    })
-});
-```
+The compiler inserts the async plumbing where these forms are used from orchestration
+code.
 
-### Triggered Process Blocks
+### Parallel execution
 
-Declared at the **top level**. Auto-register their event listener on boot — no `start` needed. Execute concurrently each time the named event fires.
+`parallel` gives a group of independent operations one join point. Each binding becomes
+available after the whole group completes, while the operations themselves run
+concurrently. It is useful when the work is independent but the next step needs all of
+its results.
+
+### Expression-oriented control flow
+
+Blocks, conditionals, `match`, and `try` can produce values. The language also supports
+`while`, `for`, ranges, closures, and higher-order array operations.
+
+### Pipelines
+
+The pipeline operator, `|>`, passes a value through a readable left-to-right sequence:
 
 ```orchestrate
-let on_error = on error_event(code: int, msg: string) {
-    print("Error " + to_string(code) + ": " + msg)
+let result = input |> normalize() |> validate()
+```
+
+### Errors and optional values
+
+`result<T>` represents success or an error string; `option<T>` represents a value that
+may be absent. `?` propagates errors, and `try` / `catch` handles them at a chosen
+boundary.
+
+```orchestrate
+fn load_count(text: string) -> result<int> {
+    let count = parse_int(text)?
+    ok(count)
+}
+
+let count = try {
+    load_count(raw)?
+} catch error {
+    print("using zero: {error}")
+    0
 }
 ```
 
-**Compiled to (approximately):**
-```rust
-let (tx, mut rx) = tokio::sync::mpsc::channel::<(i64, String)>(100);
-get_registry_error_event().lock().unwrap().push(tx);
-tokio::spawn(async move {
-    while let Some((code, msg)) = rx.recv().await {
-        tokio::spawn(async move {
-            // ... body ...
-        });
+### String interpolation
+
+Values can be embedded directly in strings with `{name}`. Interpolation keeps logging and
+diagnostic messages readable without repeated `to_string` calls and concatenation.
+
+### Arrays and closures
+
+Arrays support indexing and mutation. Closures make collection transformations local to
+the operation that uses them, and built-ins cover `length`, `append`, `remove`, `map`,
+`filter`, `reduce`, `find`, `any`, and `all`.
+
+### The orchestrator
+
+`orchestrator main` is the standalone program entry point. It initializes event
+listeners, starts the selected workers, runs lifecycle hooks, and keeps the program alive.
+
+```orchestrate
+orchestrator main(workers: process[poller, reporter]) {
+    on_start {
+        print("ready")
     }
-});
-```
 
-### The Managed Process Array (`process[]`)
-
-When the orchestrator declares a `process[]` parameter, you control which processes start by either:
-
-1. **Naming them explicitly** in the brackets: `process[alpha, beta]`
-2. **Firing a top-level trigger** before the orchestrator body runs: `trigger update_orchestrator([alpha, beta])`
-
-The orchestrator then:
-
-3. Spawns each seeded process as a Tokio task
-4. Registers a listener for the built-in `update_orchestrator` event to hot-swap the running set
-
-```orchestrate
-let alpha = automatic { print("alpha") sleep(500) }
-let beta  = automatic { print("beta")  sleep(500) }
-
-orchestrator main(procs: process[alpha, beta]) {
-    // Both alpha and beta are running — named explicitly in the type annotation
+    on_stop {
+        print("shutting down")
+    }
 }
 ```
 
----
+Named orchestrators can also be called as async coordinators. In a standalone program,
+`stop_orch()` requests termination; in library mode it asks the host to stop without
+exiting the host process.
 
-## The Orchestrator
+### Lifecycle hooks
 
-The `orchestrator main()` declaration is the **entry point** of every OrchestrateLang program. It compiles to a Rust `#[tokio::main]` async function that:
+`on_start` performs setup after the runtime is ready. `on_stop` performs coordinated
+cleanup when that lifecycle path is available. In library mode the host explicitly
+awaits both ends of the lifecycle; in a standalone binary, Ctrl+C runs `on_stop`, while
+`stop_orch()` exits immediately.
 
-- Sets up all event registries (`OnceLock<Mutex<Vec<Sender<T>>>>`)
-- Initializes and auto-registers all top-level triggered blocks
-- Starts the process array and spawns the `update_orchestrator` watcher
-- Runs the orchestrator body
-- Blocks forever in a keep-alive loop (`loop { sleep(3600s) }`)
+### Automatic workers and supervision
 
-Non-main orchestrators compile to plain `async fn` and can be called by other orchestrators.
-
-### Built-in: `update_orchestrator`
-
-Any code can fire `trigger update_orchestrator([...])` to atomically replace the running process set:
+An `automatic` block is recurring background work. It owns its loop and runs as a Tokio
+task when included in the orchestrator's process set.
 
 ```orchestrate
-let cleanup = on shutdown() {
-    // Remove beta — only alpha continues
-    trigger update_orchestrator([alpha])
+let poller = automatic(restart: 3) {
+    poll_once()
+    sleep(1000)
+} on_crash error {
+    print("poller crashed: {error}")
 }
 ```
 
-**Behavior:**
-- Processes **removed** from the new array → `JoinHandle::abort()` called immediately
-- Processes **added** to the new array and not already running → new Tokio task spawned
-- Processes in **both** arrays → continue uninterrupted (identified by `Arc::ptr_eq`)
+Restart policies are `never`, a retry count, or `always` with backoff. The built-in
+`update_orchestrator` event replaces the active worker set at runtime: removed workers
+are stopped, new workers start, and unchanged workers continue.
 
----
+### Dynamic worker sets
 
-## Event System
+The `process[...]` annotation seeds the workers an orchestrator owns. Triggering
+`update_orchestrator([...])` replaces that set while the program is running, which makes
+the desired topology explicit instead of spreading spawn and abort handles throughout
+application code.
 
-Events are declared implicitly by triggered blocks. The compiler **scans the AST** and generates a global `OnceLock<Mutex<Vec<Sender<T>>>>` registry for each unique event name discovered. Any number of listeners can subscribe to the same event and all receive each payload simultaneously (multicast).
+### Events and triggered handlers
 
-```orchestrate
-// Two listeners on the same event:
-let log_handler = on data_ready(payload: string) {
-    print("LOG: " + payload)
-}
-let cache_handler = on data_ready(payload: string) {
-    print("CACHE: storing " + payload)
-}
-
-// Firing it:
-trigger data_ready("sensor_reading_42")
-// Both log_handler and cache_handler execute concurrently
-```
-
-**Generated registry (per event):**
-```rust
-static REGISTRY_DATA_READY: OnceLock<Mutex<Vec<Sender<String>>>> = OnceLock::new();
-fn get_registry_data_ready() -> &'static Mutex<Vec<Sender<String>>> {
-    REGISTRY_DATA_READY.get_or_init(|| Mutex::new(Vec::new()))
-}
-```
-
----
-
-## Module System
-
-Modules are **directories** containing a `module.orch` entry file. They are imported with:
+An `on` block subscribes to an event. `trigger` broadcasts a typed payload to every
+listener for that event.
 
 ```orchestrate
-use module alias: "./path/to/dir"
+let audit = on user_created(id: int, name: string) {
+    print("created {id}: {name}")
+}
+
+trigger user_created(42, "Mina")
 ```
 
-Or by using **PROM** (the Personal Registry for Orchestrator Modules), which allows you to import registered modules by a short name:
+Handlers register automatically. Event registries are local to one compiled process;
+events do not silently cross into another executable.
+
+### Serverlets: stateful actors
+
+A serverlet is a long-lived service with private state. Starting one returns a typed
+client. Calls are handled one at a time, so the service owns its mutable state without
+making callers manage locks.
 
 ```orchestrate
-use module alias: "short_name"
+serverlet Counter {
+    let value = 0
+
+    on add(amount: int) -> int {
+        value = value + amount
+        value
+    }
+}
+
+orchestrator main() {
+    let counter = start Counter()
+    print(to_string(counter.add(5)))
+    stop_orch()
+}
 ```
-*(See `docs/language-reference.md` for full details on registering modules with `orchestrate prom add`)*
 
-### Combined Process (No Serverlet)
+There are several serverlet boundaries:
 
-Module functions are compiled into a sibling `.rs` file and linked directly into the binary. Zero call overhead.
+| Kind | Where it runs | Why to choose it |
+|---|---|---|
+| `serverlet X { ... }` | In-process Tokio task | Trusted stateful service with the lowest overhead |
+| `serverlet X secret { ... }` | Separate native child process | Keep implementation out of the main binary and isolate crashes |
+| `serverlet X via python(...)` | Persistent Python process | Stateful Python service and host callbacks |
+| `serverlet X via typescript(...)` | Persistent compiled TypeScript process | Stateful TypeScript service and host callbacks |
+| `serverlet X sandbox(...)` | Currently in-process | Reserved for WASM containment; **not isolated yet** |
 
-```
-my_project/
+Secret and landline serverlets perform a startup handshake that checks protocol and
+handler signatures. Landlines also support call budgets and policies for late replies.
+See the [Python SDK](sdk/python/README.md), [TypeScript SDK](sdk/typescript/README.md), and
+[landline design](docs/design/landline-serverlets.md).
+
+### Secret serverlets
+
+A secret serverlet is compiled as a separate native executable. Its state and handler
+implementation live in that child, while the orchestrator holds a typed client mirror.
+This provides process lifecycle and crash separation and keeps the implementation out of
+the main executable. It does not encrypt the child or turn it into a security boundary.
+
+### Python and TypeScript landlines
+
+A landline keeps foreign code alive behind the same typed serverlet interface. Python
+runs through its interpreter; TypeScript is compiled to an executable. Calls travel over
+framed stdin/stdout messages, state persists between calls, and startup validates the
+declared interface. Budgets bound how long a caller waits, while `late: "drop"` and
+`late: "latest"` choose what happens to a delayed result.
+
+### Directory-based modules
+
+A module is a directory whose public boundary is `module.orch`. This is more than a file
+naming convention: the directory is the unit a program consents to load, and paths inside
+the module resolve from that boundary.
+
+```text
+my_app/
 ├── main.orch
-└── utils/
+└── inventory/
     ├── module.orch
-    └── math.orch       ← merged via `load "math.orch"`
+    ├── models.orch
+    └── scoring.rs
 ```
 
 ```orchestrate
-// utils/math.orch
-fn square(n: int) -> int { return n * n }
-
-// utils/module.orch
-load "math.orch"
-fn hypotenuse(a: int, b: int) -> int { return square(a) + square(b) }
-
 // main.orch
-use module utils: "./utils"
-let result = utils.hypotenuse(3, 4)   // direct native function call
+use module inventory: "./inventory"
+let score = inventory.score(42)
+
+// inventory/module.orch
+load "models.orch"
+load_foreign "rust" "scoring.rs"
 ```
 
-### Foreign Functions (`load_foreign`)
+`load` merges another OrchestrateLang file into the module. Plain module functions are
+compiled alongside the caller and called directly. A module can also contain serverlets
+and foreign implementations.
 
-Module files can load functions from Rust, C, C++, Zig, Swift, or TypeScript source files directly into the module's namespace. Native C-ABI FFI is a plain in-process function call; TypeScript uses a generated executable bridge. Both stay stateless, so keep state in a serverlet.
+Modules may be addressed by relative directory path or through PROM, the Personal
+Registry for Orchestrator Modules:
+
+```bash
+orchestrate prom add inventory ../shared/inventory
+orchestrate prom list
+```
+
+```orchestrate
+use module inventory: "inventory"
+```
+
+PROM entries are local to the machine. The bundled `lists` and `strings` modules use the
+same module mechanism.
+
+### Standard library modules
+
+The standard library intentionally uses the ordinary module system rather than a hidden
+privileged path. The compiler embeds the current `lists` and `strings` modules so they
+remain available after installation, and programs import them with `use module` like any
+other registered capability.
+
+### Polyglot functions and FFI
+
+Inside a module, `load_foreign` makes functions written in Rust, C, C++, Zig, Swift, or
+TypeScript available under the module namespace. An adjacent `.orch_ffi` file declares
+the contract that OrchestrateLang type-checks.
 
 ```orchestrate
 // math/module.orch
-load_foreign "rust"  "./geometry.rs"    // requires geometry.orch_ffi sidecar
-load_foreign "c"     "./fastmath.c"     // requires fastmath.orch_ffi sidecar
-load_foreign "cpp"   "./stats.cpp"      // requires stats.orch_ffi sidecar
-load_foreign "zig"   "./vectors.zig"    // requires vectors.orch_ffi sidecar
-load_foreign "swift" "./calendar.swift" // requires calendar.orch_ffi sidecar
-load_foreign "typescript" "./math.ts"   // requires math.orch_ffi sidecar
+load_foreign "zig" "vectors.zig"
+
+// math/vectors.orch_ffi
+dot(x: int, y: int) -> int
 ```
 
-- **Rust:** `pub fn`s are injected verbatim; the sidecar declares signatures and may use `string`, arrays, `option<T>`, and `result<T>`.
-- **C, C++, Zig, Swift:** the sidecar declares signatures using `int`, `float`, `bool`, and `void`; the compiler generates `unsafe extern "C"` bindings. C and C++ compile via `cc-rs`; Zig (`export fn`) compiles with `zig build-obj` into a static library, and Swift (`@_cdecl`, or `@c` on Swift 6.3+) with `swiftc`, which also links the Swift runtime. Zig and Swift need their compiler on `PATH` and build for the host target only.
-- **TypeScript:** TypeScript 7 checks the source, then scriptc is attempted for eligible scalar calls and Bun compiles the bridge when required. `int` maps to `bigint`; the Bun bridge also supports strings, arrays, and same-file structs. See [`sdk/typescript/README.md`](sdk/typescript/README.md) for setup and limits.
-- FFI calls are stateless. Keep state in a serverlet, which can call these functions.
+Rust source is incorporated into generated module code. C, C++, Zig, and Swift use native
+C-ABI linking. TypeScript 7 checks a generated protocol adapter, then scriptc is attempted
+and Bun is used when required; one process is reused per imported TypeScript module.
 
-**Checking foreign code:** `orchestrate check-foreign main.orch` runs each foreign source
-through its own language's checker, without generating code or invoking Cargo. Errors
-come back in that language's own words:
+FFI is the direct-call boundary. Use it for functions, not for modeling a service. When
+state, independent lifetime, host callbacks, budgets, or serialized message handling
+matter, put that behavior behind a serverlet.
 
+### Foreign-language checking
+
+`check-foreign` lets the language that owns a source file diagnose it:
+
+```bash
+orchestrate check-foreign main.orch
+orchestrate check-foreign main.orch --deep
 ```
-$ orchestrate check-foreign main.orch
-[orchestrate] Checking 4 foreign source(s)...
-  ok    c          fastmath.c
-  ok    typescript math.ts
-  FAIL  zig        vectors.zig
-  skip  rust       geometry.rs  (checked by cargo, during build)
+
+C and C++ use the platform compiler, Zig uses `zig`, Swift uses `swiftc`, TypeScript uses
+TypeScript 7, and Python landlines use `py_compile`. The deep pass adds mypy for Python
+and checks generated Rust in its complete Cargo context. TypeScript is checked against
+the declared OrchestrateLang interface, not only as an isolated `.ts` file.
+
+### Library mode: embedding in a Rust host
+
+Standalone mode lets the orchestrator own the process. Library mode reverses that
+relationship: an existing Rust application owns the main loop and embeds generated
+OrchestrateLang code.
+
+```bash
+orchestrate build --lib scripts/main.orch -o generated/scripts
 ```
 
-| Language | Checker | Catches |
-| :--- | :--- | :--- |
-| C, C++ | `cc -fsyntax-only` | syntax and type errors |
-| Zig | `zig build-obj -fno-emit-bin` | syntax and type errors |
-| Swift | `swiftc -typecheck` | syntax and type errors |
-| TypeScript | `tsc` | syntax and type errors, **and contract mismatches** |
-| Python | `python -m py_compile` | syntax errors; types with `--deep` |
-| Rust | — | `--deep` only |
+The output is a Rust crate that the host can use as a path dependency. It exposes a
+`Scripts` instance with lifecycle methods such as `ready`, `tick`, `fixed_tick`, and
+`shutdown`, plus typed methods for events declared in the script.
 
-TypeScript is checked against its contract, not just on its own: the adapter declares an
-interface built from the `.orch_ffi` sidecar or the serverlet's handlers, so an
-implementation that compiles but returns the wrong type — or omits a declared function —
-fails the check.
-
-### `--deep`
-
-`orchestrate check-foreign main.orch --deep` adds the two checks that cannot be done
-cheaply:
-
-- **Python** is checked with `mypy` instead of only `py_compile`, which parses but infers
-  nothing. The landline SDK is staged where mypy can resolve it, so a handler's
-  annotations are checked against how the SDK uses them. `--deep` requires mypy to be
-  installed rather than skipping when it is missing.
-- **Rust** is checked by generating the program's Rust and running `cargo check` on it.
-
-Rust needs the deep pass because a `load_foreign` file is concatenated with its module's
-generated code and may call into it. Checking the file alone would report those calls as
-undefined, so the deep pass checks it in the context a build would give it — which is
-also why it cannot be fast. The first run pays for compiling dependencies; later runs
-reuse the `.orch_cache/` build cache.
-
-Everything else is unchanged by `--deep`, so the default stays edit-loop fast.
-
-- More C-ABI languages (C# via Native AOT) and richer C-ABI types are planned; see [`docs/roadmap.md`](docs/roadmap.md) §1b.
-
-See [`docs/language-reference.md §6.4`](docs/language-reference.md) for the full sidecar format and type mappings.
-
-### Serverlets (Stateful Services)
-
-A **serverlet** is a long-lived actor with its own state: you `start` it once and send it messages, which it handles one at a time. Serverlets can call their module's FFI functions.
+OrchestrateLang code can declare functions that the host must implement:
 
 ```orchestrate
-// database/module.orch
-serverlet DatabaseConnector {
-    let connected = false
-
-    on connect(url: string) -> bool {
-        connected = true
-        return true
-    }
-
-    on query(sql: string) -> string {
-        return "rows for: " + sql
-    }
+host engine {
+    fn entity_count() -> int
+    fn set_paused(paused: bool)
 }
 
-// main.orch
-use module db: "./database"
-
-let worker = automatic {
-    let client = start db.DatabaseConnector()
-    let ok = client.connect("postgres://localhost/prod")
-    let rows = client.query("SELECT * FROM logs")
-    print(rows)
-    stop_orch()
+on_tick(dt: float) {
+    print("tick {dt}")
 }
-
-orchestrator main(procs: process[]) { }
 ```
 
-**Serverlet internals (generated Rust):**
-- An enum `DatabaseConnectorMsg` with one variant per handler
-- A `DatabaseConnectorClient` struct with `async fn` methods wrapping `Sender` + `oneshot::channel` reply
-- A `start_DatabaseConnector()` function that spawns the message-loop Tokio task and returns the client
+The generated Rust API includes the corresponding `Host` trait. Logging is routed to the
+host, and `stop_orch()` sets a stop request instead of terminating the application.
+Synchronous wrappers are available for hosts that already own a Tokio runtime.
 
-Where a serverlet's handlers run depends on its kind:
+Library mode also supports:
 
-| Kind | Declared as | Runs in | Use it for |
-| :--- | :--- | :--- | :--- |
-| Serverlet | `serverlet X { ... }` | The program, as a Tokio task | State and services you trust |
-| Secret serverlet | `serverlet X secret { ... }` | A separate process | Keeping code out of the main binary; crash isolation |
-| Landline serverlet | `serverlet X via python(source: "x.py") { ... }` or `via typescript(source: "x.ts")` | A Python process or compiled TypeScript executable over stdin/stdout | Stateful foreign code; supports `budget` and `late` |
-| Sandboxed serverlet | `serverlet X sandbox(...) { ... }` | Planned: a WASM sandbox | Untrusted code (no isolation yet) |
+- typed tick input and output;
+- fixed-step ticks;
+- host-triggered OrchestrateLang events;
+- per-instance state;
+- configurable shutdown grace periods and Python executables;
+- packaging landline and secret-serverlet assets with the generated crate; and
+- deterministic, host-driven execution for lifecycle and event hooks.
 
-See [`sdk/python/README.md`](sdk/python/README.md), [`sdk/typescript/README.md`](sdk/typescript/README.md), and [`docs/design/landline-serverlets.md`](docs/design/landline-serverlets.md).
+Deterministic mode deliberately excludes spawned workers, serverlets, landlines, and
+uncontrolled sleeps. It makes the supported host-driven portion reproducible rather than
+claiming determinism for work the host cannot schedule.
 
-## Embedding in a Rust Host (Library Mode)
+See [Library mode and host integration](docs/library-mode.md) for the generated API,
+lifecycle order, grants, packaging, and examples.
 
-`orchestrate build --lib main.orch -o generated/scripts` generates a Rust crate that another Rust application links. The host keeps its own main loop and Tokio runtime and drives the scripts with `tick`, `fixed_tick`, and `trigger_<event>`; OrchestrateLang code calls back through declared `host` functions. See [`docs/library-mode.md`](docs/library-mode.md).
+### Deterministic mode
 
-## Documentation
+With deterministic start options, tick values supplied by the host become the source of
+time for lifecycle and event work. Events are drained in a defined order and sleeping
+handlers resume only after enough host-driven time has passed. The same tick and event
+sequence can therefore produce the same host calls, provided the host functions are also
+deterministic.
 
-- **[`README.md`](README.md)** — this file; overview, syntax reference, and architecture
-- **[`docs/design-philosophy.md`](docs/design-philosophy.md)** — the principles behind the language
-- **[`docs/language-reference.md`](docs/language-reference.md)** — complete language specification including all generated Rust patterns, the event system internals, serverlet actor model, and operator precedence
-- **[`docs/library-mode.md`](docs/library-mode.md)** — embedding in a Rust host, lifecycle, and host callbacks
-- **[`sdk/python/README.md`](sdk/python/README.md)** — Python landlines, types, and packaging
-- **[`sdk/typescript/README.md`](sdk/typescript/README.md)** — TypeScript 7 FFI and landlines, tool setup, and packaging
-- **[`benchmarks/README.md`](benchmarks/README.md)** — how to measure serverlet call latency
-- **[`docs/roadmap.md`](docs/roadmap.md)** — planned features and their status
-- **[`docs/design/`](docs/design/)** — design docs for secret serverlets, sandboxed serverlets, and serverlet files
-- **[`CHANGELOG.md`](CHANGELOG.md)** — what changed in each release
-- **[`CONTRIBUTING.md`](CONTRIBUTING.md)** — naming, commit, branch, and release conventions
+### Host grants for landlines
 
----
+In library mode, Python and TypeScript landlines can call functions implemented by the
+Rust host. Each landline explicitly lists the calls it is granted. Grants constrain the
+generated host-call interface; they do **not** restrict the foreign process's filesystem,
+network, or operating-system permissions.
 
+### Editor support
 
+The repository includes a VS Code language definition with highlighting and snippets.
+The `orchestrate-lsp` binary provides hover type information. Editor support is useful but
+still much smaller than the compiler itself; it should not be read as a complete IDE
+experience yet.
 
-## Cross-Process Event Isolation
+## Choosing a boundary
 
-Event registries are **process-local** — each compiled binary has its own isolated `OnceLock` singletons. Two separately compiled OrchestrateLang programs running as different OS processes cannot directly trigger each other's events. To communicate across process boundaries, use a Serverlet as an IPC bridge.
+If several features seem capable of the same job, start here:
 
----
+- Keep pure OrchestrateLang helpers in a directory module.
+- Use native FFI for a stateless function already written in another compiled language.
+- Use an in-process serverlet for owned state or serialized access.
+- Use a landline when a Python or TypeScript runtime should stay alive as a service.
+- Use a secret serverlet when the implementation should be a separate native executable.
+- Do not use `sandbox(...)` for untrusted code yet; containment is not implemented.
+- Use library mode when a Rust application, rather than the script, must own time and
+  lifecycle.
 
-## Design Philosophy
+## A typical project
 
-| Principle | In short |
-| :--- | :--- |
-| **Concurrency is structural** | Workers, event handlers, and services are language constructs; the compiler writes the async plumbing |
-| **General-purpose first** | Projects that adopt the language set priorities, not designs |
-| **Compile to Rust, no hidden runtime** | OrchestrateLang code is native; other languages bring their own runtimes |
-| **Cheapest boundary that works** | FFI first, then serverlets, then separate processes, then sandboxes |
-| **FFI is stateless; serverlets own state** | A new serverlet kind needs a reason |
-| **Wrap, don't build** | Tokio, Cargo, `cc-rs`, wasmtime, and each language's own toolchain |
-| **Honest guarantees** | Names and docs never promise more than the implementation delivers |
-| **The host is in charge** | Embedded, the library never owns the loop, runtime, logs, or process |
-| **Measure before promising** | Performance claims come from benchmarks |
-
-The full version, with the reasoning behind each principle: [`docs/design-philosophy.md`](docs/design-philosophy.md).
-
----
-
-## File Structure of a Typical Project
-
+```text
+my_project/
+├── main.orch                 # standalone entry point
+├── analytics/
+│   ├── module.orch           # module boundary
+│   └── helpers.orch          # merged with load
+├── database/
+│   └── module.orch           # may declare serverlets
+├── scripts/
+│   └── worker.py             # landline implementation
+└── .orch_cache/              # generated; do not edit
 ```
-my_orchestration_project/
-│
-├── main.orch                   ← Entry point
-│
-├── analytics/                  ← Module (no serverlet)
-│   ├── module.orch
-│   └── helpers.orch
-│
-├── database/                   ← Module (with serverlet)
-│   ├── module.orch
-│   └── query_builder.orch
-│
-└── .orch_cache/                ← Auto-generated, do not edit
-    ├── Cargo.toml
-    └── src/
-        ├── main.rs             ← Generated from main.orch
-        ├── analytics.rs        ← Generated from analytics/module.orch
-        └── database.rs         ← Generated from database/module.orch
+
+For an embedded project, `main.orch` may instead be the input to `build --lib`, and the
+generated crate lives wherever the host project expects path dependencies.
+
+## Current boundaries
+
+The most important limitations are behavioral, not cosmetic:
+
+- Sandboxed serverlets do not provide isolation yet; the compiler warns about this.
+- A separate process provides lifecycle and crash separation, not a security boundary.
+- Python and TypeScript are the supported landline runtimes today.
+- Cross-process serverlet and TypeScript values use an explicit protocol and therefore
+  cost more than direct in-process calls.
+- Deterministic library mode covers lifecycle and event hooks, not spawned workers or
+  serverlets.
+- Outside library mode, `on_stop` runs on Ctrl+C; `stop_orch()` exits immediately.
+- Cross-compilation of foreign code depends on each foreign toolchain and is limited.
+- Some diagnostics can still surface from generated Rust. Set `ORCH_SHOW_GENERATED=1`
+  to print the generated source and full Cargo output.
+
+Release-specific limitations and compatibility notes are maintained in the
+[changelog](CHANGELOG.md).
+
+## Explore the examples
+
+```bash
+orchestrate run examples/async_parallel.orch
+orchestrate run examples/task_demo.orch
+orchestrate run examples/serverlet.orch
+orchestrate run examples/secret_serverlet.orch
+orchestrate run examples/python_landline.orch
+orchestrate run examples/typescript_landline.orch
+orchestrate run examples/error_handling.orch
+orchestrate run examples/enums.orch
+orchestrate run examples/generics.orch
+orchestrate run examples/supervised_process.orch
 ```
+
+Foreign-language examples may require their language toolchain. Python landlines require
+Python 3.10 or newer. TypeScript FFI and landlines require TypeScript 7 and Bun; Zig and
+Swift examples require their respective compilers.
+
+## Documentation map
+
+- [Language reference](docs/language-reference.md) — syntax, types, compiler behavior,
+  and generated-code details
+- [Design philosophy](docs/design-philosophy.md) — the principles used to evaluate new
+  features
+- [Library mode](docs/library-mode.md) — host lifecycle, ticks, events, callbacks,
+  deterministic execution, and packaging
+- [Python SDK](sdk/python/README.md) — Python landline implementation and setup
+- [TypeScript SDK](sdk/typescript/README.md) — TypeScript FFI and landlines
+- [Benchmarks](benchmarks/README.md) — measuring serverlet latency
+- [Roadmap](docs/roadmap.md) — proposed work, clearly separated from shipped behavior
+- [Changelog](CHANGELOG.md) — release history and known limitations
+- [Contributing](CONTRIBUTING.md) — development and release conventions
+
+## License
+
+OrchestrateLang is available under the [MIT License](LICENSE).
