@@ -98,6 +98,32 @@ loops, blocking host methods, or a stuck `on_start`/`on_stop` hook can delay a t
 shutdown. A landline `budget` bounds slow Python or TypeScript calls, but not Rust host methods or the
 hooks themselves.
 
+### Ticking on the calling thread
+
+`tick_blocking` sends a command to the library's coordinator task and parks until the reply
+arrives: a runtime entry, a task wake, a channel send, and a oneshot per frame, plus the
+runtime's poll syscall when it parks. `tick_sync` runs the same tick on the calling thread
+instead:
+
+```rust
+let output = scripts.tick_sync(&runtime, dt)?;   // tick_sync(&runtime, dt, input) for a typed tick
+scripts.fixed_tick_sync(&runtime, step)?;
+```
+
+The hooks run inside the caller, under the runtime's context. When the body finishes
+without waiting on anything — no serverlet or landline round trip, no `sleep` — the call
+returns with no task, channel, or park involved. When it has to wait, the rest of the tick
+finishes under `runtime.block_on`, so the result and the side effects are the same as
+`tick_blocking` would produce; only where the work runs differs. Events queued before the
+tick, events the hooks queue, deterministic mode, and `stop_orch()` behave exactly as they
+do through `tick_blocking`. Idle ticks no longer touch the event queues at all: a queue is
+inspected only after something was put on it.
+
+`tick_sync` is for hosts that drive the library from synchronous code, like the blocking
+methods; call it from outside any Tokio context, since a waiting body blocks the caller.
+The channel path stays available and unchanged for hosts that prefer it, including hosts
+that need to cancel a tick with `shutdown()`.
+
 ## Runtime drivers
 
 Every library needs Tokio's time driver: `sleep`, landline budgets, and the shutdown grace

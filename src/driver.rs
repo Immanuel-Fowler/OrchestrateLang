@@ -434,6 +434,10 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
     generator.library = library.is_some();
     generator.host_functions = host_functions;
     generator.io_driver_users = io_driver_users;
+    generator.state_types = ast.iter().filter_map(|stmt| match &stmt.node {
+        ast::StmtNode::Let { name, .. } => type_checker.global_var_type(name).map(|ty| (name.clone(), ty)),
+        _ => None,
+    }).collect();
     if library.is_some() { generator.scan_events(&module_event_stmts); }
     let main_rust = generator.generate(&ast, true);
     all_secret_programs.append(&mut generator.secret_programs);

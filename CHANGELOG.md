@@ -17,6 +17,13 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   working directory, never the output directory, and is recorded absolute. The same crate
   declared twice must be identical, and the generated manifest lists dependencies in name
   order. Until now a foreign Rust file could use only std and tokio.
+- `tick_sync` and `fixed_tick_sync` on generated library crates run the tick on the
+  calling thread. A body that finishes without waiting returns with no coordinator task,
+  command channel, reply, or park; one that has to wait finishes under `block_on`, so the
+  outcome matches `tick_blocking`. The program's top-level bindings now live in a struct
+  the instance owns rather than on the coordinator task's stack, which is what lets both
+  paths reach them; `tick`, `fixed_tick`, shutdown, and deterministic mode are unchanged.
+  An idle tick no longer takes the event-queue locks.
 
 ## [0.6.1] - 2026-09-18
 

@@ -18,6 +18,7 @@ impl Codegen {
         match &stmt.node {
             StmtNode::Let { name, ty, value } => {
                 let val_str = self.compile_expr(value);
+                self.define_local(name);
                 if let Some(t) = ty {
                     // Closure types can't be annotated directly — let Rust infer
                     if matches!(t, Type::Fn(_, _)) {
@@ -338,7 +339,7 @@ impl Codegen {
                     format!("({})", compiled_args)
                 };
                 if self.library && event_name != "update_orchestrator" {
-                    return format!("let context = crate::__orch_context(); let value = std::sync::Arc::new({payload}); let handlers = {func_name}().lock().unwrap().clone(); for handler in handlers {{ context.events.lock().unwrap().push_back(handler(value.clone())); }}");
+                    return format!("let context = crate::__orch_context(); let value = std::sync::Arc::new({payload}); let handlers = {func_name}().lock().unwrap().clone(); for handler in handlers {{ context.queue_event(handler(value.clone())); }}");
                 }
                 format!(
                     "let payload_eval = std::sync::Arc::new({});\nif let Ok(handlers) = {}().lock() {{\n    for tx in handlers.iter() {{\n        if tx.try_send(std::sync::Arc::clone(&payload_eval)).is_err() {{\n            eprintln!(\"[orchestrate] warning: dropped event '{}' — subscriber channel full\");\n        }}\n    }}\n}}",
@@ -367,6 +368,9 @@ impl Codegen {
                         }
                     }
                 }
+                for bind in &binds {
+                    if bind != "_" { self.define_local(bind); }
+                }
 
                 if futures.is_empty() {
                     "()".to_string()
@@ -394,7 +398,10 @@ impl Codegen {
                     format!("({}).clone().into_iter()", self.compile_expr(iter))
                 };
 
-                if let Some(idx) = index_var {
+                self.push_scope();
+                self.define_local(var);
+                if let Some(idx) = index_var { self.define_local(idx); }
+                let compiled = if let Some(idx) = index_var {
                     let inner = self.compile_block_inner(body, true);
                     format!(
                         "for (__orch_enum_i, {}) in ({}).enumerate() {{\n    let {} = __orch_enum_i as i64;\n    {}\n}}",
@@ -403,7 +410,9 @@ impl Codegen {
                 } else {
                     let body_str = self.compile_expr(body);
                     format!("for {} in {} {}", var, iter_str, body_str)
-                }
+                };
+                self.pop_scope();
+                compiled
             }
             StmtNode::While { cond, body } => {
                 let cond_str = self.compile_expr(cond);
