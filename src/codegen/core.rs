@@ -244,7 +244,6 @@ pub fn pascal_case(s: &str) -> String {
 
 pub struct Codegen {
     pub tasks: HashSet<String>,
-    pub in_parallel: bool,
     pub modules: HashSet<String>,
     pub is_main: bool,
     pub library: bool,
@@ -265,7 +264,6 @@ impl Codegen {
         tasks.insert("sleep".to_string());
         Codegen {
             tasks,
-            in_parallel: false,
             modules: HashSet::new(),
             is_main: false,
             library: false,

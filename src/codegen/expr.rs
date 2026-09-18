@@ -104,12 +104,8 @@ impl Codegen {
                 } else if callee == "parse_float" && args.len() == 1 {
                     format!("({}).parse::<f64>().map_err(|e| e.to_string())", self.compile_expr(&args[0]))
                 } else if callee == "sleep" {
-                    if self.in_parallel {
-                        format!("tokio::time::sleep(std::time::Duration::from_millis({} as u64))", args_str)
-                    } else {
-                        format!("tokio::time::sleep(std::time::Duration::from_millis({} as u64)).await", args_str)
-                    }
-                } else if self.tasks.contains(callee) && !self.in_parallel {
+                    format!("tokio::time::sleep(std::time::Duration::from_millis({} as u64)).await", args_str)
+                } else if self.tasks.contains(callee) {
                     format!("{}({}).await", callee, args_str)
                 } else {
                     format!("{}({})", callee, args_str)
@@ -122,12 +118,8 @@ impl Codegen {
                         if name == "print" {
                             format!("print_val({})", val_str)
                         } else if name == "sleep" {
-                            if self.in_parallel {
-                                format!("tokio::time::sleep(std::time::Duration::from_millis({} as u64))", val_str)
-                            } else {
-                                format!("tokio::time::sleep(std::time::Duration::from_millis({} as u64)).await", val_str)
-                            }
-                        } else if self.tasks.contains(name) && !self.in_parallel {
+                            format!("tokio::time::sleep(std::time::Duration::from_millis({} as u64)).await", val_str)
+                        } else if self.tasks.contains(name) {
                             format!("{}({}).await", name, val_str)
                         } else {
                             format!("{}({})", name, val_str)
@@ -148,12 +140,8 @@ impl Codegen {
                         } else if callee == "remove" && all_args.len() == 2 {
                             format!("{}.remove({} as usize)", all_args[0], all_args[1])
                         } else if callee == "sleep" {
-                            if self.in_parallel {
-                                format!("tokio::time::sleep(std::time::Duration::from_millis({} as u64))", all_args_str)
-                            } else {
-                                format!("tokio::time::sleep(std::time::Duration::from_millis({} as u64)).await", all_args_str)
-                            }
-                        } else if self.tasks.contains(callee) && !self.in_parallel {
+                            format!("tokio::time::sleep(std::time::Duration::from_millis({} as u64)).await", all_args_str)
+                        } else if self.tasks.contains(callee) {
                             format!("{}({}).await", callee, all_args_str)
                         } else {
                             format!("{}({})", callee, all_args_str)
@@ -184,13 +172,11 @@ impl Codegen {
                 }
                 if self.modules.contains(module_local_name) {
                     let full_name = format!("{}::{}", module_local_name, function);
-                    if self.tasks.contains(&full_name) && !self.in_parallel {
+                    if self.tasks.contains(&full_name) {
                         format!("{}::{}({}).await", module_local_name, function, args_str)
                     } else {
                         format!("{}::{}({})", module_local_name, function, args_str)
                     }
-                } else if self.in_parallel {
-                    format!("{}.{}({})", module_local_name, function, args_str)
                 } else {
                     format!("{}.{}({}).await", module_local_name, function, args_str)
                 }

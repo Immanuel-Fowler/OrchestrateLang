@@ -88,7 +88,7 @@ async fn slow_add(a: i64, b: i64) -> i64 {
 // orch:5:1
 async fn orchestrator_main() {
     // orch:6:5
-        let (x, y) = tokio::join!(slow_add(1, 2), slow_add(3, 4));
+        let (x, y) = tokio::join!(async { slow_add(1, 2).await }, async { slow_add(3, 4).await });
 }
 
 #[tokio::main]

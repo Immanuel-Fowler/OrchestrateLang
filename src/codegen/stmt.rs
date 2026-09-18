@@ -349,32 +349,29 @@ impl Codegen {
                 let mut binds = Vec::new();
                 let mut futures = Vec::new();
 
-                let old_parallel = self.in_parallel;
-                self.in_parallel = true;
-
+                // Each branch is its own future, so a synchronous call such as a
+                // foreign function joins alongside an awaited task.
                 for s in stmts {
                     match &s.node {
                         StmtNode::Let { name, value, .. } => {
                             binds.push(name.clone());
-                            futures.push(self.compile_expr(value));
+                            futures.push(format!("async {{ {} }}", self.compile_expr(value)));
                         }
                         StmtNode::Expr(expr) => {
                             binds.push("_".to_string());
-                            futures.push(self.compile_expr(expr));
+                            futures.push(format!("async {{ {} }}", self.compile_expr(expr)));
                         }
                         _ => {
                             binds.push("_".to_string());
-                            futures.push(format!("async move {{ {} }}", self.compile_stmt(s)));
+                            futures.push(format!("async {{ {} }}", self.compile_stmt(s)));
                         }
                     }
                 }
 
-                self.in_parallel = old_parallel;
-
                 if futures.is_empty() {
                     "()".to_string()
                 } else if futures.len() == 1 {
-                    format!("let {} = {};", binds[0], futures[0])
+                    format!("let {} = ({}).await;", binds[0], futures[0])
                 } else {
                     format!("let ({}) = tokio::join!({});", binds.join(", "), futures.join(", "))
                 }
