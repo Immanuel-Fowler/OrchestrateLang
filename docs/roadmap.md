@@ -68,6 +68,16 @@ load_foreign "typescript" "./math.ts"   // requires math.orch_ffi sidecar
 
 **Next FFI work** (preferred over landlines; see the [design philosophy](design-philosophy.md) §4):
 
+- **TypeScript in-process, through scriptc's library mode.** `scriptc build --lib
+  --profile` (scriptc 0.1.1) emits a C-ABI static archive from a TypeScript module. A
+  probe on 2026-09-18 linked one into a C program: module state persisted in-process and a
+  call cost **5.1 ns**, the Zig/Swift class, against ~60 µs over today's pipe bridge.
+  Constraints found: the static tier has no `bigint` (an `int` crosses as `i64`
+  parameters, while an `i64` return needs a range scriptc can prove at compile time),
+  strings cross as pointer + length with out-parameters, arrays and structs are deferred
+  by scriptc, and `wasm32-wasi` rejects library mode. This would ship as
+  `load_foreign "typescript" "math.ts" (backend: "native")`; the plan is
+  [plans/typescript-native-backend.md](plans/typescript-native-backend.md).
 - `string`, arrays, and structs across the C ABI (C, C++, Zig, and Swift sidecars accept only `int`, `float`, and `bool` today), and an opaque handle type for native objects.
 - **C#** via .NET Native AOT exports (`[UnmanagedCallersOnly]`).
 - Cross-compiling Zig and Swift sources for `build --lib --target`.
