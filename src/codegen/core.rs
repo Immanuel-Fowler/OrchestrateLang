@@ -579,7 +579,11 @@ impl Codegen {
             code.push_str("#![allow(unused_mut)]\n");
             code.push_str("#![allow(unreachable_code)]\n\n");
 
-            for (event_name, types) in &self.events {
+            // In name order: a HashMap walks in a different order each run, and generated
+            // code that moves between builds defeats every build cache above it.
+            let mut events: Vec<_> = self.events.iter().collect();
+            events.sort_by(|a, b| a.0.cmp(b.0));
+            for (event_name, types) in events {
                 let type_str = if types.is_empty() {
                     "()".to_string()
                 } else if types.len() == 1 {
