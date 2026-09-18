@@ -148,6 +148,30 @@ The compiler resolves bare (non-path) module names against the local registry au
 
 ---
 
+## 5. Core language gaps (found in the 2026-09-18 review)
+
+Each is small enough to land on its own; the plan with a design and steps for all four
+is [plans/language-gaps.md](plans/language-gaps.md).
+
+- **`result<T, E>`.** Today `result<T>` always carries a `string` error (`err()` accepts
+  nothing else, `catch e` binds a string). Plan: an optional second parameter that
+  defaults to `string`, so every existing program keeps compiling. About a day.
+- **`string` across the C ABI, then opaque handles.** C, C++, Zig, and Swift sidecars
+  accept only `int`, `float`, and `bool`; TypeScript, the slowest boundary, has the
+  richest types. Plan: `string` first with one ownership rule, then a `handle` type whose
+  native object is released when its owner is dropped — stateful native objects without a
+  serverlet. A day each; arrays and structs after.
+- **The standard library beyond `int`.** `lists` is `int[]`-only because Rust sidecars
+  are monomorphic, although the language has generics. Plan: type parameters in `.orch_ffi`
+  signatures, so `reverse<T>(items: T[]) -> T[]` registers as the generic it already is in
+  Rust. Half a day to a day.
+- **Sandboxed serverlets still run without isolation.** Steps 3–7 of
+  [design/sandboxed-serverlets.md](design/sandboxed-serverlets.md) remain. Plan: first make
+  `sandbox(...)` an error unless a flag opts into the unsandboxed run, so the syntax cannot
+  promise containment it does not deliver; then the wasmtime steps in the design doc.
+
+---
+
 ## How the Pieces Fit Together
 
 A possible overall narrative for the ecosystem:
