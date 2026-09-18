@@ -51,6 +51,33 @@ fn write_foreign_module(test_name: &str, module: &str, language: &str, file: &st
     fs::write(dir.join(file).with_extension("orch_ffi"), sidecar).unwrap();
 }
 
+/// The list functions are generic over the element type: strings, floats, and nested
+/// arrays go through the same sidecar signatures the int versions used to own.
+#[test]
+fn runtime_stdlib_lists_are_generic() {
+    let out = run_orch("stdlib_generic_lists", r#"
+use module lists: "lists"
+
+orchestrator main() {
+    let names = lists.reverse(["b", "a", "c"])
+    print(names[0])
+    let sorted = lists.sort(["pear", "apple"])
+    print(sorted[0])
+    match lists.head([2.5, 1.0]) {
+        option::Some(v) => print(to_string(v))
+        option::None => print("none")
+    }
+    let flat = lists.flatten([["x"], ["y", "z"]])
+    print(to_string(length(flat)))
+    print(to_string(length(lists.unique([1, 1, 2]))))
+    print(to_string(lists.sum_float([0.5, 0.25])))
+    print(to_string(lists.max([4, 9, 2])))
+    stop_orch()
+}
+"#);
+    assert_eq!(out.trim(), "c\napple\n2.5\n3\n2\n0.75\n9");
+}
+
 #[test]
 fn runtime_ffi_zig() {
     if !has_tool("zig", "version") { return; }

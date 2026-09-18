@@ -7,8 +7,11 @@ use crate::typechecker::TypeChecker;
 ///
 ///   add(a: int, b: int) -> int
 ///   greet(name: string) -> void
+///   reverse<T>(items: T[]) -> T[]
 ///
-/// Supported types: int, float, bool, void, string.
+/// Supported types: int, float, bool, void, string, option, result, arrays, and the
+/// function's own type parameters. A generic signature registers as a generic function,
+/// so a call infers `T` from its arguments and the Rust implementation infers it too.
 /// The corresponding Rust file is included verbatim in the generated module (handled by driver.rs).
 pub fn register_rust_ffi_from_sidecar(
     sidecar_content: &str,
@@ -28,6 +31,24 @@ pub fn register_rust_ffi_from_sidecar(
                 sidecar_file_name, tokens[pos].line, tokens[pos].kind)),
         };
         pos += 1;
+
+        let mut type_params: Vec<String> = Vec::new();
+        if tokens.get(pos).map(|t| &t.kind) == Some(&TokenKind::Lt) {
+            pos += 1;
+            loop {
+                match tokens.get(pos).map(|t| &t.kind) {
+                    Some(TokenKind::Identifier(n)) => { type_params.push(n.clone()); pos += 1; }
+                    _ => return Err(format!("Error in {} at line {}: expected a type parameter name after '<'",
+                        sidecar_file_name, tokens.get(pos).map(|t| t.line).unwrap_or(0))),
+                }
+                match tokens.get(pos).map(|t| &t.kind) {
+                    Some(TokenKind::Comma) => pos += 1,
+                    Some(TokenKind::Gt) => { pos += 1; break; }
+                    _ => return Err(format!("Error in {} at line {}: expected ',' or '>' after type parameter",
+                        sidecar_file_name, tokens.get(pos).map(|t| t.line).unwrap_or(0))),
+                }
+            }
+        }
 
         if tokens.get(pos).map(|t| &t.kind) != Some(&TokenKind::LParen) {
             let line = tokens.get(pos).map(|t| t.line).unwrap_or(0);
@@ -54,7 +75,7 @@ pub fn register_rust_ffi_from_sidecar(
             }
             pos += 1;
 
-            let orch_ty = parse_sidecar_type(&tokens, &mut pos, sidecar_file_name)?;
+            let orch_ty = parse_sidecar_type(&tokens, &mut pos, sidecar_file_name, &type_params)?;
             param_types.push(orch_ty);
 
             match tokens.get(pos).map(|t| &t.kind) {
@@ -70,28 +91,36 @@ pub fn register_rust_ffi_from_sidecar(
 
         let ret_ty = if tokens.get(pos).map(|t| &t.kind) == Some(&TokenKind::Arrow) {
             pos += 1;
-            parse_sidecar_type(&tokens, &mut pos, sidecar_file_name)?
+            parse_sidecar_type(&tokens, &mut pos, sidecar_file_name, &type_params)?
         } else {
             ast::Type::Void
         };
 
-        tc.register_foreign_function(alias, &fn_name, param_types, ret_ty);
+        if type_params.is_empty() {
+            tc.register_foreign_function(alias, &fn_name, param_types, ret_ty);
+        } else {
+            tc.register_generic_foreign_function(alias, &fn_name, type_params, param_types, ret_ty);
+        }
     }
 
     Ok(())
 }
 
-pub(crate) fn parse_sidecar_type(tokens: &[crate::lexer::Token], pos: &mut usize, file: &str) -> Result<ast::Type, String> {
+/// `type_params` are the enclosing signature's own parameters, which read as type
+/// variables rather than as unknown type names.
+pub(crate) fn parse_sidecar_type(tokens: &[crate::lexer::Token], pos: &mut usize, file: &str, type_params: &[String]) -> Result<ast::Type, String> {
     let token = tokens.get(*pos).ok_or_else(|| format!("Error in {}: expected type", file))?;
     let name = match &token.kind { TokenKind::Identifier(name) => name, _ => return Err(format!("Error in {}: expected type", file)) };
     *pos += 1;
     let mut ty = if name == "option" || name == "result" {
         if tokens.get(*pos).map(|t| &t.kind) != Some(&TokenKind::Lt) { return Err(format!("Error in {}: expected '<'", file)); }
         *pos += 1;
-        let inner = parse_sidecar_type(tokens, pos, file)?;
+        let inner = parse_sidecar_type(tokens, pos, file, type_params)?;
         if tokens.get(*pos).map(|t| &t.kind) != Some(&TokenKind::Gt) { return Err(format!("Error in {}: expected '>'", file)); }
         *pos += 1;
         if name == "option" { ast::Type::Option(Box::new(inner)) } else { ast::Type::Result(Box::new(inner)) }
+    } else if type_params.iter().any(|p| p == name) {
+        ast::Type::TypeParam(name.clone())
     } else { sidecar_type_to_orch(name, file, token.line)? };
     while tokens.get(*pos).map(|t| &t.kind) == Some(&TokenKind::LBracket) {
         *pos += 1;
@@ -129,6 +158,25 @@ mod tests {
         assert!(tc.has_function("mylib::add"));
         assert!(tc.has_function("mylib::greet"));
         assert!(tc.has_function("mylib::scale"));
+    }
+
+    #[test]
+    fn test_rust_ffi_sidecar_generic_signature_infers_at_the_call() {
+        use crate::{lexer::Lexer, parser::Parser};
+        let sidecar = "reverse<T>(items: T[]) -> T[]\nhead<T>(items: T[]) -> option<T>\n";
+        let mut tc = TypeChecker::new();
+        register_rust_ffi_from_sidecar(sidecar, "lists", "impl.orch_ffi", &mut tc).unwrap();
+        assert!(tc.has_function("lists::reverse"));
+        let check = |src: &str, tc: &mut TypeChecker| {
+            let ast = Parser::new(Lexer::new(src).tokenize().unwrap()).parse().unwrap();
+            tc.type_check(&ast)
+        };
+        assert!(check("let names: string[] = lists.reverse([\"b\", \"a\"])", &mut tc).is_ok());
+        assert!(check("let first: option<float> = lists.head([1.5])", &mut tc).is_ok());
+        let error = check("let wrong: int[] = lists.reverse([\"b\"])", &mut tc).unwrap_err();
+        assert!(error.contains("type mismatch"), "{error}");
+        let error = register_rust_ffi_from_sidecar("bad<T(x: T) -> T", "l", "l.orch_ffi", &mut tc).unwrap_err();
+        assert!(error.contains("expected ',' or '>'"), "{error}");
     }
 
     #[test]

@@ -1,28 +1,32 @@
-pub fn head(items: Vec<i64>) -> Option<i64> {
+pub fn head<T>(items: Vec<T>) -> Option<T> {
     items.into_iter().next()
 }
 
-pub fn tail(items: Vec<i64>) -> Vec<i64> {
-    if items.is_empty() { return Vec::new(); }
-    items[1..].to_vec()
+pub fn tail<T>(items: Vec<T>) -> Vec<T> {
+    items.into_iter().skip(1).collect()
 }
 
-pub fn reverse(items: Vec<i64>) -> Vec<i64> {
+pub fn reverse<T>(items: Vec<T>) -> Vec<T> {
     items.into_iter().rev().collect()
 }
 
-pub fn sort(mut items: Vec<i64>) -> Vec<i64> {
-    items.sort();
+pub fn sort<T: PartialOrd>(mut items: Vec<T>) -> Vec<T> {
+    items.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     items
 }
 
-pub fn flatten(lists: Vec<Vec<i64>>) -> Vec<i64> {
+pub fn flatten<T>(lists: Vec<Vec<T>>) -> Vec<T> {
     lists.into_iter().flatten().collect()
 }
 
-pub fn unique(items: Vec<i64>) -> Vec<i64> {
-    let mut seen = std::collections::HashSet::new();
-    items.into_iter().filter(|x| seen.insert(*x)).collect()
+pub fn unique<T: PartialEq>(items: Vec<T>) -> Vec<T> {
+    let mut kept: Vec<T> = Vec::new();
+    for item in items {
+        if !kept.contains(&item) {
+            kept.push(item);
+        }
+    }
+    kept
 }
 
 pub fn sum(items: Vec<i64>) -> i64 {
@@ -35,4 +39,16 @@ pub fn max(items: Vec<i64>) -> i64 {
 
 pub fn min(items: Vec<i64>) -> i64 {
     items.iter().copied().min().unwrap_or(0)
+}
+
+pub fn sum_float(items: Vec<f64>) -> f64 {
+    items.iter().sum()
+}
+
+pub fn max_float(items: Vec<f64>) -> f64 {
+    items.iter().copied().fold(None, |best: Option<f64>, x| Some(best.map_or(x, |b| b.max(x)))).unwrap_or(0.0)
+}
+
+pub fn min_float(items: Vec<f64>) -> f64 {
+    items.iter().copied().fold(None, |best: Option<f64>, x| Some(best.map_or(x, |b| b.min(x)))).unwrap_or(0.0)
 }

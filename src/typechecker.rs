@@ -161,6 +161,14 @@ impl TypeChecker {
         self.functions.insert(full_name, (params, ret_ty));
     }
 
+    /// A foreign function with its own type parameters: calls infer them from the
+    /// arguments, as calls to a generic `fn` do.
+    pub fn register_generic_foreign_function(&mut self, alias: &str, name: &str, type_params: Vec<String>, params: Vec<Type>, ret_ty: Type) {
+        let full_name = format!("{}::{}", alias, name);
+        self.functions.insert(full_name.clone(), (params, ret_ty));
+        self.generic_functions.insert(full_name, type_params);
+    }
+
     fn push_env(&mut self) {
         self.env.push(HashMap::new());
     }
@@ -776,6 +784,13 @@ impl TypeChecker {
                         for (expected, actual) in expected_args.iter().zip(&arg_types) {
                             if !self.types_compatible(expected, actual) { return Err(format!("Host argument type mismatch for {}.{}", module_local_name, function)); }
                         }
+                    }
+                    if let Some(type_params) = self.generic_functions.get(&alias_key).cloned() {
+                        let mut subst = HashMap::new();
+                        for (param_ty, arg_ty) in expected_args.iter().zip(arg_types.iter()) {
+                            self.unify_type_param(param_ty, arg_ty, &type_params, &mut subst);
+                        }
+                        return Ok(self.substitute_type_params(&ret_ty, &subst));
                     }
                     return Ok(ret_ty);
                 }

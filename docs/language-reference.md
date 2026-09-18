@@ -1265,6 +1265,45 @@ spawn it on first use and shut it down when the orchestrator stops.
 ---
 ---
 
+### 6.9 The Standard Library
+
+Two modules ship inside the compiler and resolve by name, so they work from an installed
+`orchestrate` in any directory:
+
+```orchestrate
+use module lists: "lists"
+use module strings: "strings"
+
+let names = lists.reverse(["b", "a", "c"])   // string[]
+let first = lists.head([2.5, 1.0])           // option<float>
+let shout = strings.upper("hi")              // "HI"
+```
+
+`lists` is generic over the element type where the operation is structural, and typed
+where it is numeric:
+
+| Function | Signature |
+| :--- | :--- |
+| `head` | `head<T>(items: T[]) -> option<T>` |
+| `tail` | `tail<T>(items: T[]) -> T[]` |
+| `reverse` | `reverse<T>(items: T[]) -> T[]` |
+| `sort` | `sort<T>(items: T[]) -> T[]` — `int`, `float`, and `string` elements |
+| `unique` | `unique<T>(items: T[]) -> T[]` — keeps the first of each equal element |
+| `flatten` | `flatten<T>(lists: T[][]) -> T[]` |
+| `sum`, `max`, `min` | `(items: int[]) -> int`; `0` for an empty array |
+| `sum_float`, `max_float`, `min_float` | `(items: float[]) -> float`; `0.0` for an empty array |
+
+`strings` has `split`, `join`, `contains`, `upper`, `lower`, `trim`, `starts_with`,
+`ends_with`, `replace`, and `len`, all on `string` values.
+
+Both are ordinary Rust foreign modules (`load_foreign "rust"`) with `.orch_ffi` sidecars,
+so the same mechanism is open to your own modules: a sidecar signature may declare type
+parameters after the function name, `reverse<T>(items: T[]) -> T[]`, and the Rust
+function is written generically. A call infers `T` from its arguments, as calls to a
+generic `fn` do. The typechecker treats a type parameter as compatible with any argument,
+so a Rust bound the element type does not meet (`sort` on structs, say) is reported by the
+Rust compiler rather than by `orchestrate check`.
+
 ## Landline Serverlets
 
 A landline declares handlers whose implementations run in a long-lived foreign process.

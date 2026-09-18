@@ -64,7 +64,7 @@ pub fn sidecar(source: &str) -> Result<Vec<Handler>, String> {
                 return Err("Expected ':' in TypeScript sidecar".into());
             }
             pos += 1;
-            let ty = crate::ffi_rust::parse_sidecar_type(&tokens, &mut pos, "TypeScript sidecar")?;
+            let ty = crate::ffi_rust::parse_sidecar_type(&tokens, &mut pos, "TypeScript sidecar", &[])?;
             ts_type(&ty)?;
             if ty == Type::Void {
                 return Err("void parameters are unsupported".into());
@@ -82,7 +82,7 @@ pub fn sidecar(source: &str) -> Result<Vec<Handler>, String> {
         pos += 1;
         let return_type = if tokens.get(pos).map(|t| &t.kind) == Some(&K::Arrow) {
             pos += 1;
-            crate::ffi_rust::parse_sidecar_type(&tokens, &mut pos, "TypeScript sidecar")?
+            crate::ffi_rust::parse_sidecar_type(&tokens, &mut pos, "TypeScript sidecar", &[])?
         } else {
             Type::Void
         };
