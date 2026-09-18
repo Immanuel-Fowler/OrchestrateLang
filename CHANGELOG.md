@@ -25,6 +25,12 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   paths reach them; `tick`, `fixed_tick`, shutdown, and deterministic mode are unchanged.
   An idle tick no longer takes the event-queue locks.
 
+### Fixed
+- `check-foreign` reports a call to an undeclared function in a C source as an error
+  with gcc as well as clang. gcc only warned, so the check passed a file that could not
+  link; the check now passes `-Werror=implicit-function-declaration`, and the CI job on
+  Linux, which had failed on exactly that test since 0.5.1, passes.
+
 ## [0.6.1] - 2026-09-18
 
 Generated code that never changes on its own, and a library that says which Tokio
