@@ -110,6 +110,8 @@ pub struct LandlineConfig {
     pub budget_micros: Option<u64>,
     /// What a call that misses its budget returns.
     pub late: LatePolicy,
+    /// TypeScript only: `auto`, `scriptc`, or `bun`.
+    pub backend: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -326,6 +328,8 @@ pub enum StmtNode {
     LoadForeign {
         language: String,
         path: String,
+        /// TypeScript only: `auto`, `scriptc`, or `bun`.
+        backend: Option<String>,
     },
     Serverlet {
         name: String,

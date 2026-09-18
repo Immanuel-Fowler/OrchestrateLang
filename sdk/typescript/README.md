@@ -12,13 +12,23 @@ bun add --dev typescript scriptc @types/bun
 ```
 
 The compiler finds `node_modules/.bin` by walking from the source directory. Set
-`ORCH_TSC`, `ORCH_SCRIPTC`, or `ORCH_BUN` to override a tool path. `ORCH_TS_BACKEND`
-accepts `auto` (default), `scriptc`, or `bun`. A forced `scriptc` build fails instead of
-falling back. OrchestrateLang never installs packages while compiling.
+`ORCH_TSC`, `ORCH_SCRIPTC`, or `ORCH_BUN` to override a tool path. OrchestrateLang never
+installs packages while compiling.
 
-> **Note:** `ORCH_TS_BACKEND` is a project-wide environment variable. Selecting the
-> backend per-file or per-serverlet directly in `.orch` source is planned for a future
-> release.
+The backend is chosen where the source is declared, so a file that needs Bun's runtime
+says so beside its path rather than in the environment:
+
+```orchestrate
+load_foreign "typescript" "math.ts" (backend: "bun")
+
+serverlet Tools via typescript(source: "tools.ts", backend: "scriptc") {
+    on run() -> int
+}
+```
+
+`backend` accepts `auto` (the default), `scriptc`, or `bun`. A forced `scriptc` build
+fails instead of falling back. When a declaration says nothing, `ORCH_TS_BACKEND` sets the
+project-wide default.
 
 ## Landline serverlets
 
@@ -95,7 +105,8 @@ export function twice(value: number): number {
 }
 ```
 
-TypeScript FFI calls are synchronous. The native `scriptc` fast path supports scalar
-`float`, `bool`, and `void` functions. The Bun transport handles full-width `int` values
-as `bigint`, strings, arrays, and structs. A fresh process serves each FFI call, so use a
-landline for persistent state, asynchronous work, or calls that need budgets.
+TypeScript FFI calls are synchronous and serialized through one protocol process per
+imported module. That process is reused across calls, so module-level state persists and
+process startup is paid only on the first call. The transport supports full-width `int`
+values as `bigint`, strings, arrays, and structs with either compiled backend. Use a
+landline for host callbacks, independently started instances, ticks, or call budgets.

@@ -110,8 +110,6 @@ pub fn sidecar(source: &str) -> Result<Vec<Handler>, String> {
 struct Staged {
     source: PathBuf,
     work: PathBuf,
-    /// The adapter's import specifier for the user's source.
-    import: String,
 }
 
 /// Stage the whole adapter and type-check it. Checking the generated adapter rather
@@ -266,7 +264,7 @@ fn stage_and_check(
             String::from_utf8_lossy(&checked.stderr)
         ));
     }
-    Ok(Staged { source, work, import })
+    Ok(Staged { source, work })
 }
 
 /// Type-check a TypeScript source against its contract, without building an executable.
@@ -288,10 +286,14 @@ pub fn build(
     handlers: &[Handler],
     stmts: &[Stmt],
     ffi: bool,
-) -> Result<bool, String> {
-    let Staged { source, work, import } =
-        stage_and_check(source, destination, handlers, stmts, ffi)?;
-    let selection = std::env::var("ORCH_TS_BACKEND").unwrap_or_else(|_| "auto".into());
+    backend: Option<&str>,
+) -> Result<(), String> {
+    let Staged { source, work } = stage_and_check(source, destination, handlers, stmts, ffi)?;
+    // The declaration in source wins; the environment is only a project-wide default.
+    let selection = match backend {
+        Some(backend) => backend.to_string(),
+        None => std::env::var("ORCH_TS_BACKEND").unwrap_or_else(|_| "auto".into()),
+    };
     if !matches!(selection.as_str(), "auto" | "scriptc" | "bun") {
         return Err("ORCH_TS_BACKEND must be auto, scriptc, or bun".into());
     }
@@ -301,66 +303,6 @@ pub fn build(
         "serverlet"
     });
     let mut native_error = String::new();
-    if ffi
-        && selection != "bun"
-        && handlers.iter().all(|h| {
-            h.params
-                .iter()
-                .all(|p| matches!(p.ty, Type::Float | Type::Bool))
-                && matches!(h.return_type, Type::Float | Type::Bool | Type::Void)
-        })
-    {
-        let mut native = format!(
-            "import * as implementation from {import};\nconst id = Number(process.argv[2]);\n"
-        );
-        for (id, h) in handlers.iter().enumerate() {
-            let args = h
-                .params
-                .iter()
-                .enumerate()
-                .map(|(i, p)| {
-                    if p.ty == Type::Bool {
-                        format!("process.argv[{}] === 'true'", i + 3)
-                    } else {
-                        format!("Number(process.argv[{0}] === 'inf' ? 'Infinity' : process.argv[{0}] === '-inf' ? '-Infinity' : process.argv[{0}])", i + 3)
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(",");
-            let render = if h.return_type == Type::Float {
-                "result === 0 && 1 / result === -Infinity ? '-0' : String(result)"
-            } else {
-                "String(result)"
-            };
-            native.push_str(&format!("if (id === {id}) {{ const result: {} = implementation.{}({args}); console.log('__ORCH_RESULT__' + ({render})); }}\n", ts_type(&h.return_type)?, h.name));
-        }
-        fs::write(work.join("native.ts"), native).map_err(|e| e.to_string())?;
-        match Command::new(tool(&source, "ORCH_SCRIPTC", "scriptc"))
-            .arg("build")
-            .arg(work.join("native.ts"))
-            .arg("-o")
-            .arg(&output)
-            .output()
-        {
-            Ok(result) if result.status.success() && output.is_file() => {
-                fs::write(destination.join("backend.txt"), "scriptc-scalar\n")
-                    .map_err(|e| e.to_string())?;
-                println!(
-                    "[orchestrate] TypeScript {}: scriptc native FFI",
-                    source.display()
-                );
-                return Ok(true);
-            }
-            Ok(result) => {
-                native_error = format!(
-                    "{}{}",
-                    String::from_utf8_lossy(&result.stdout),
-                    String::from_utf8_lossy(&result.stderr)
-                )
-            }
-            Err(e) => native_error = e.to_string(),
-        }
-    }
     if selection != "bun" {
         match Command::new(tool(&source, "ORCH_SCRIPTC", "scriptc"))
             .arg("build")
@@ -376,7 +318,7 @@ pub fn build(
                     "[orchestrate] TypeScript {}: scriptc native",
                     source.display()
                 );
-                return Ok(false);
+                return Ok(());
             }
             Ok(result) => {
                 native_error = format!(
@@ -420,14 +362,13 @@ pub fn build(
     );
     fs::write(destination.join("native-diagnostic.txt"), native_error)
         .map_err(|e| e.to_string())?;
-    Ok(false)
+    Ok(())
 }
 
 pub fn ffi_bindings(
     asset: &str,
     handlers: &[Handler],
     library: bool,
-    native_scalar: bool,
 ) -> Result<String, String> {
     fn rust_type(t: &Type) -> Result<String, String> {
         Ok(match t {
@@ -446,33 +387,6 @@ pub fn ffi_bindings(
     } else {
         "std::env::current_exe().expect(\"current_exe\").parent().unwrap().to_path_buf()"
     };
-    if native_scalar {
-        let mut code = String::new();
-        for (id, h) in handlers.iter().enumerate() {
-            let args = h
-                .params
-                .iter()
-                .map(|p| Ok(format!("r#{}: {}", p.name, rust_type(&p.ty)?)))
-                .collect::<Result<Vec<_>, String>>()?
-                .join(",");
-            let argv = h
-                .params
-                .iter()
-                .map(|p| format!(".arg(r#{}.to_string())", p.name))
-                .collect::<Vec<_>>()
-                .join("");
-            let parse = if h.return_type == Type::Void {
-                "()".into()
-            } else {
-                format!(
-                    "value.parse::<{}>().expect(\"invalid native TypeScript result\")",
-                    rust_type(&h.return_type)?
-                )
-            };
-            code.push_str(&format!("pub fn r#{}({args}) -> {} {{ let output = std::process::Command::new({base}.join({asset:?}).join(if cfg!(windows) {{\"serverlet.exe\"}} else {{\"serverlet\"}})).arg({id}.to_string()){argv}.output().expect(\"cannot start native TypeScript FFI\"); assert!(output.status.success(), \"native TypeScript FFI failed: {{}}\", String::from_utf8_lossy(&output.stderr)); let text = String::from_utf8(output.stdout).expect(\"invalid native output\"); let value = text.lines().rev().find_map(|l| l.strip_prefix(\"__ORCH_RESULT__\")).expect(\"missing native TypeScript result\"); {parse} }}\n", h.name, rust_type(&h.return_type)?));
-        }
-        return Ok(code);
-    }
     let mut code = format!("mod {module} {{\n{}\n", crate::codegen::core::WIRE_CODEC);
     code.push_str(include_str!("typescript_ffi.rs.txt"));
     let signatures = handlers

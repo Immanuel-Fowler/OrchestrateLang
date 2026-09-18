@@ -205,7 +205,38 @@ impl Parser {
             TokenKind::Str(s) => s.clone(),
             _ => return Err(format!("Expected string literal for path at line {}, col {}", tok_path.line, tok_path.col)),
         };
-        Ok(StmtNode::LoadForeign { language, path })
+        let mut backend = None;
+        // Options must open on the path's line, so a statement below is never consumed.
+        if self.peek().kind == TokenKind::LParen && self.peek().line == tok_path.line {
+            self.advance();
+            while self.peek().kind != TokenKind::RParen {
+                let key = match self.advance().kind.clone() {
+                    TokenKind::Identifier(s) => s,
+                    _ => return Err("Expected load_foreign option key".into()),
+                };
+                self.consume(TokenKind::Colon, "Expected ':' after load_foreign option key")?;
+                let value = match self.advance().kind.clone() {
+                    TokenKind::Str(s) => s,
+                    _ => return Err("Expected string load_foreign option value".into()),
+                };
+                match key.as_str() {
+                    "backend" if language == "typescript" && backend.is_none() => {
+                        backend = Some(Self::typescript_backend(&value)?)
+                    }
+                    _ => return Err(format!("Unsupported load_foreign option '{}': '{}' (typescript accepts backend: \"auto\" | \"scriptc\" | \"bun\")", key, value)),
+                }
+                if !self.match_token(TokenKind::Comma) { break; }
+            }
+            self.consume(TokenKind::RParen, "Expected ')' after load_foreign options")?;
+        }
+        Ok(StmtNode::LoadForeign { language, path, backend })
+    }
+
+    fn typescript_backend(value: &str) -> Result<String, String> {
+        match value {
+            "auto" | "scriptc" | "bun" => Ok(value.to_string()),
+            _ => Err(format!("TypeScript backend must be \"auto\", \"scriptc\", or \"bun\", got '{}'", value)),
+        }
     }
 
     fn parse_ident(&mut self, what: &str) -> Result<String, String> {
@@ -242,6 +273,7 @@ impl Parser {
             let mut source = None;
             let mut budget_micros = None;
             let mut late = None;
+            let mut backend = None;
             let mut keys = std::collections::HashSet::new();
             // Durations take a us, ms, or s suffix, e.g. "500us", "2ms", "0.5s".
             fn duration_micros(value: &str) -> Option<u64> {
@@ -278,7 +310,8 @@ impl Parser {
                     }
                     "late" if value == "drop" => late = Some(crate::ast::LatePolicy::Drop),
                     "late" if value == "latest" => late = Some(crate::ast::LatePolicy::Latest),
-                    _ => return Err(format!("Unsupported landline config '{}': '{}' (expected source, line: \"pipe\", budget, or late: \"drop\" | \"latest\")", key, value)),
+                    "backend" if runtime == "typescript" => backend = Some(Self::typescript_backend(&value)?),
+                    _ => return Err(format!("Unsupported landline config '{}': '{}' (expected source, line: \"pipe\", budget, late: \"drop\" | \"latest\", or backend for typescript)", key, value)),
                 }
                 if !self.match_token(TokenKind::Comma) { break; }
             }
@@ -291,6 +324,7 @@ impl Parser {
                 source: source.ok_or("Landline requires source")?,
                 budget_micros,
                 late: late.unwrap_or(crate::ast::LatePolicy::Drop),
+                backend,
             });
         }
         self.consume(TokenKind::LBrace, "Expected '{' to start serverlet body")?;
@@ -1303,6 +1337,28 @@ mod tests {
         let ast = parse("use module frontend: \"react_app\"; let res = frontend.prompt(\"Name\");");
         assert_eq!(ast.len(), 2);
         assert_eq!(ast[0].node, StmtNode::UseModule { local_name: "frontend".to_string(), module_name: "react_app".to_string() });
+    }
+
+    #[test]
+    fn test_parser_load_foreign_backend() {
+        let ast = parse("load_foreign \"typescript\" \"./math.ts\" (backend: \"bun\")");
+        assert_eq!(ast[0].node, StmtNode::LoadForeign { language: "typescript".into(), path: "./math.ts".into(), backend: Some("bun".into()) });
+        let ast = parse("load_foreign \"typescript\" \"./math.ts\"");
+        assert_eq!(ast[0].node, StmtNode::LoadForeign { language: "typescript".into(), path: "./math.ts".into(), backend: None });
+        let mut parser = Parser::new(Lexer::new("load_foreign \"typescript\" \"./math.ts\" (backend: \"deno\")").tokenize().unwrap());
+        assert!(parser.parse().unwrap_err().contains("must be \"auto\", \"scriptc\", or \"bun\""));
+        let mut parser = Parser::new(Lexer::new("load_foreign \"c\" \"./math.c\" (backend: \"bun\")").tokenize().unwrap());
+        assert!(parser.parse().unwrap_err().contains("Unsupported load_foreign option"));
+    }
+
+    #[test]
+    fn test_parser_landline_backend() {
+        let ast = parse("serverlet Tools via typescript(source: \"tools.ts\", backend: \"scriptc\") { on run() -> int }");
+        if let StmtNode::Serverlet { landline: Some(config), .. } = &ast[0].node {
+            assert_eq!(config.backend.as_deref(), Some("scriptc"));
+        } else { panic!("Expected landline serverlet"); }
+        let mut parser = Parser::new(Lexer::new("serverlet Q via python(source: \"q.py\", backend: \"bun\") { on run() -> int }").tokenize().unwrap());
+        assert!(parser.parse().unwrap_err().contains("Unsupported landline config 'backend'"));
     }
 
     #[test]

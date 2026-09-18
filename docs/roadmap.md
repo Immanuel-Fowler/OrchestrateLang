@@ -60,11 +60,11 @@ load_foreign "typescript" "./math.ts"   // requires math.orch_ffi sidecar
 - **Zig / Swift**: implemented with the same `.orch_ffi` sidecars and C-ABI types. The generated `build.rs` compiles each file to a static library with `zig build-obj` plus the platform archiver (`export fn`) or `swiftc` (`@_cdecl`, or `@c` on Swift 6.3+) and links the Swift runtime. Host target only.
 - **Python**: not possible as FFI, because Python needs its interpreter. Use a landline serverlet (1a).
 - **TypeScript**: implemented as a generated executable bridge. TypeScript 7 checks the
-  source, then the compiler tries scriptc and falls back to `bun build --compile`. Scalar
-  FFI calls can take the native scriptc path; the Bun transport handles rich wire values.
-  TypeScript landlines remain the persistent-state path. Backend selection is currently
-  project-wide via `ORCH_TS_BACKEND`; per-file / per-serverlet hints in `.orch` source
-  are planned.
+  source, then the compiler tries scriptc and falls back to `bun build --compile` for the
+  same persistent protocol executable, one per imported module, so module state survives
+  between calls. Each `load_foreign` or `via typescript(...)` declaration can name its
+  backend; `ORCH_TS_BACKEND` is the project-wide default. TypeScript landlines remain the
+  path for independently started instances, host callbacks, ticks, and budgets.
 
 **Next FFI work** (preferred over landlines; see the [design philosophy](design-philosophy.md) §4):
 

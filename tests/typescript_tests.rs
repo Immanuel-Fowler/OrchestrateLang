@@ -4,10 +4,35 @@ use std::{
     process::{Command, Output},
 };
 
-fn root(name: &str) -> PathBuf {
+/// Removed when its test passes; a failing test keeps the directory for inspection.
+struct TempRoot(PathBuf);
+impl std::ops::Deref for TempRoot {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+impl AsRef<Path> for TempRoot {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+impl AsRef<std::ffi::OsStr> for TempRoot {
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        self.0.as_os_str()
+    }
+}
+impl Drop for TempRoot {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+}
+fn root(name: &str) -> TempRoot {
     let p = std::env::temp_dir().join(format!("orch_typescript_{}_{name}", std::process::id()));
     fs::create_dir_all(&p).unwrap();
-    p
+    TempRoot(p)
 }
 fn available() -> bool {
     let tsc = std::env::var_os("ORCH_TSC").unwrap_or_else(|| "tsc".into());
@@ -114,44 +139,74 @@ fn typescript_bun_ffi_and_type_errors() {
     assert!(!bad.status.success());
     assert!(String::from_utf8_lossy(&bad.stderr).contains("TypeScript 7 check failed"));
 }
+/// One process per module: state persists across calls, survives a handler error, and
+/// stays separate from other modules. The backend named in source beats the environment.
 #[test]
-fn typescript_native_auto_selection() {
+fn typescript_ffi_persistent_state_errors_and_source_backend() {
     if !available() {
         return;
     }
-    let scriptc = std::env::var_os("ORCH_SCRIPTC").unwrap_or_else(|| "scriptc".into());
-    if !Command::new(scriptc)
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success())
-    {
-        eprintln!("Native test needs scriptc (bun add --dev scriptc)");
-        return;
-    }
-    let root = root("native");
-    let module = root.join("math");
-    fs::create_dir_all(&module).unwrap();
+    let root = root("persistent_ffi");
+    let math = root.join("math");
+    fs::create_dir_all(&math).unwrap();
+    fs::write(math.join("module.orch"), "load_foreign \"typescript\" \"math.ts\"").unwrap();
     fs::write(
-        module.join("module.orch"),
-        "load_foreign \"typescript\" \"math.ts\"",
+        math.join("math.orch_ffi"),
+        "twice(n: float) -> float\nnext() -> float\nfail(n: int) -> int",
     )
     .unwrap();
-    fs::write(module.join("math.orch_ffi"), "twice(n: float) -> float").unwrap();
     fs::write(
-        module.join("math.ts"),
-        "export function twice(n: number): number { return n * 2; }",
+        math.join("math.ts"),
+        "let calls = 0; export function twice(n: number): number { return n * 2; } export function next(): number { calls += 1; return calls; } export function fail(n: bigint): bigint { if (n === 0n) { throw new Error('boom'); } return n; }",
     )
     .unwrap();
-    let src =
-        "use module math: \"./math\"\norchestrator main() { print(math.twice(3.5)); print(math.twice(-0.0)); print(math.twice(1.0 / 0.0)); stop_orch() }";
+    let counter = root.join("counter");
+    fs::create_dir_all(&counter).unwrap();
+    fs::write(
+        counter.join("module.orch"),
+        "load_foreign \"typescript\" \"counter.ts\" (backend: \"bun\")",
+    )
+    .unwrap();
+    fs::write(counter.join("counter.orch_ffi"), "next() -> float").unwrap();
+    fs::write(
+        counter.join("counter.ts"),
+        "let n = 0; export function next(): number { n += 1; return n; }",
+    )
+    .unwrap();
+    let src = r#"use module math: "./math"
+use module counter: "./counter"
+let faulty = automatic(restart: never) {
+    sleep(150)
+    let x = math.fail(0)
+} on_crash error {
+    print("crashed")
+}
+orchestrator main(workers: process[faulty]) {
+    print(math.twice(3.5)); print(math.twice(-0.0)); print(math.twice(1.0 / 0.0))
+    print("math {math.next()} {math.next()}")
+    print("counter {counter.next()} {counter.next()}")
+    sleep(2000)
+    print("after {math.next()} {counter.next()}")
+    stop_orch()
+}"#;
     let output = success(&compile(&root, src, false, "auto"));
-    assert!(output.contains("scriptc native FFI"), "{output}");
-    assert!(output.lines().any(|l| l == "7"));
-    assert!(output.lines().any(|l| l == "-0"), "{output}");
-    assert!(output.lines().any(|l| l == "inf"), "{output}");
+    let values = output
+        .lines()
+        .filter(|line| !line.starts_with("[orchestrate]"))
+        .collect::<Vec<_>>();
+    // The worker's crash lands somewhere among the first prints, depending on how long
+    // the first call's process start takes; what matters is that it precedes "after".
+    let crashed = values.iter().position(|line| *line == "crashed").expect("worker crashed");
+    let after = values.iter().position(|line| line.starts_with("after")).unwrap();
+    assert!(crashed < after, "{values:?}");
+    let sequence = values.iter().filter(|line| **line != "crashed").copied().collect::<Vec<_>>();
+    assert_eq!(sequence, ["7", "-0", "inf", "math 1 2", "counter 1 2", "after 3 3"]);
+    let backend =
+        fs::read_to_string(root.join(".orch_cache/landlines/ffi_math_0/backend.txt")).unwrap();
+    assert!(matches!(backend.as_str(), "scriptc\n" | "bun\n"), "{backend}");
     assert_eq!(
-        fs::read_to_string(root.join(".orch_cache/landlines/ffi_math_0/backend.txt")).unwrap(),
-        "scriptc-scalar\n"
+        fs::read_to_string(root.join(".orch_cache/landlines/ffi_counter_0/backend.txt")).unwrap(),
+        "bun\n"
     );
 }
 #[test]

@@ -44,8 +44,9 @@ other serverlet.
 Landlines are not the first choice for every language. A language that can export
 C-callable functions (C#, Zig, Swift) should use FFI instead; see the
 [design philosophy](../design-philosophy.md) §4 and §8 below. Python needs its interpreter;
-TypeScript also has an executable FFI bridge, but it starts a fresh process per call. Both
-use landlines for persistent state, asynchronous handlers, and budgets.
+TypeScript also has a persistent executable FFI bridge, but its calls are synchronous and
+serialized through one process per imported module. Python and TypeScript use landlines
+for independently started instances, asynchronous handlers, host callbacks, and budgets.
 
 Landline serverlets close that gap. OrchestrateLang declares each foreign serverlet's
 interface, starts and supervises its runtime, routes calls and events to it, and
@@ -73,10 +74,11 @@ Be precise about this, because "it all compiles to Rust" is only true of the mid
   or the .NET garbage collector.
 - **Neither compiles to Rust nor links through the C ABI:** Python always needs its
   interpreter (over a pipe or embedded). TypeScript is checked by TypeScript 7 and uses a
-  generated executable bridge for stateless FFI or a persistent landline; scriptc is
-  attempted first and Bun is used when the source needs its runtime features. The backend
-  is currently chosen project-wide via `ORCH_TS_BACKEND`; per-file / per-serverlet
-  selection in `.orch` source is planned.
+  generated executable bridge for synchronous FFI or a persistent landline; scriptc is
+  attempted first and Bun is used when the source needs its runtime features. Each
+  `load_foreign` and `via typescript(...)` declaration can name its backend
+  (`backend: "auto" | "scriptc" | "bun"`); `ORCH_TS_BACKEND` is only the project-wide
+  default.
 
 The host sees one Rust crate. The polyglot part happens at the edges of it.
 
@@ -412,8 +414,8 @@ functions uses FFI, not a landline.
     into the host; the .NET runtime and garbage collector come with them.
 12. **[IMPLEMENTED] More languages (v0.4.0)** — Zig (`export fn`) and Swift (`@_cdecl`, or
     `@c` on Swift 6.3) through `load_foreign`, for the host target. TypeScript FFI and pipe
-    landlines: TypeScript 7 checks every source, scriptc serves eligible scalar FFI calls,
-    and Bun compiles the protocol executable when required. See the
+    landlines: TypeScript 7 checks every source, then scriptc or Bun compiles the same
+    persistent protocol executable. See the
     [TypeScript SDK guide](../../sdk/typescript/README.md).
 13. **Stateful FFI serverlets, only if needed** — a serverlet whose state lives in a native
     object, if handles (step 10) prove too awkward in practice.

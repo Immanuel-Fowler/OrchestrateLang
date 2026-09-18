@@ -286,7 +286,7 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>) 
         type_checker.register_module_functions(local_name, module_stmts);
         
         for stmt in module_stmts {
-            if let ast::StmtNode::LoadForeign { language, path } = &stmt.node {
+            if let ast::StmtNode::LoadForeign { language, path, .. } = &stmt.node {
                 if language == "rust" || language == "typescript" {
                     let foreign_path = module_path.join(path);
                     let mut sidecar_path = foreign_path.clone();
@@ -340,7 +340,7 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>) 
         
         let mut foreign_code = String::new();
         for stmt in &module_stmts {
-            if let ast::StmtNode::LoadForeign { language, path } = &stmt.node {
+            if let ast::StmtNode::LoadForeign { language, path, backend } = &stmt.node {
                 let foreign_path = module_path.join(path);
                 if language == "rust" {
                     let code = fs::read_to_string(&foreign_path)
@@ -351,8 +351,8 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>) 
                     let sidecar = fs::read_to_string(foreign_path.with_extension("orch_ffi")).map_err(|e| format!("TypeScript FFI sidecar: {e}"))?;
                     let handlers = crate::typescript::sidecar(&sidecar)?;
                     let asset = format!("ffi_{}_{}", local_name, foreign_code.len());
-                    let native_scalar = crate::typescript::build(&foreign_path, &bundle_dir.join(&asset), &handlers, &module_stmts, true)?;
-                    foreign_code.push_str(&crate::typescript::ffi_bindings(&asset, &handlers, library.is_some(), native_scalar)?);
+                    crate::typescript::build(&foreign_path, &bundle_dir.join(&asset), &handlers, &module_stmts, true, backend.as_deref())?;
+                    foreign_code.push_str(&crate::typescript::ffi_bindings(&asset, &handlers, library.is_some())?);
                 } else if matches!(language.as_str(), "c" | "cpp" | "zig" | "swift") {
                     if let Some((program, version_arg, install_hint)) = foreign_toolchain(language) {
                         if Command::new(program).arg(version_arg).output().is_err() {
@@ -722,7 +722,7 @@ pub fn run_check(input_file: &str) -> Result<(), String> {
             let module_stmts = compile_module(&module_path)?;
             type_checker.register_module_functions(local_name, &module_stmts);
             for stmt in &module_stmts {
-                if let ast::StmtNode::LoadForeign { language, path } = &stmt.node {
+                if let ast::StmtNode::LoadForeign { language, path, .. } = &stmt.node {
                     if language == "typescript" {
                         let content = fs::read_to_string(module_path.join(path).with_extension("orch_ffi")).map_err(|e| e.to_string())?;
                         for h in crate::typescript::sidecar(&content)? {
@@ -769,7 +769,7 @@ fn collect_foreign_sources(
 ) -> Result<(), String> {
     for stmt in stmts {
         match &stmt.node {
-            ast::StmtNode::LoadForeign { language, path } => {
+            ast::StmtNode::LoadForeign { language, path, .. } => {
                 let path = dir.join(path);
                 let typescript = if language == "typescript" {
                     let sidecar = fs::read_to_string(path.with_extension("orch_ffi"))
@@ -960,7 +960,7 @@ fn stage_landlines(stmts: &[ast::Stmt], destination: &Path) -> Result<(), String
             let directory = destination.join(format!("landline_{}", name));
             if directory.exists() { return Err(format!("Landline serverlet names must be unique: '{}'", name)); }
             if config.runtime == "typescript" {
-                crate::typescript::build(Path::new(&config.source), &directory, handlers, stmts, false)?;
+                crate::typescript::build(Path::new(&config.source), &directory, handlers, stmts, false, config.backend.as_deref())?;
                 continue;
             }
             let sdk = directory.join("orchestratelang");
