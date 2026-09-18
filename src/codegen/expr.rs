@@ -194,6 +194,9 @@ impl Codegen {
             ExprNode::AutomaticBlock { body, restart_policy, crash_handler } => {
                 let mut free_vars = HashSet::new();
                 self.get_free_vars_expr(expr, &mut HashSet::new(), &mut free_vars);
+                // In name order: set order changes between runs, and so would the output.
+                let mut free_vars: Vec<String> = free_vars.into_iter().collect();
+                free_vars.sort();
 
                 let mut capture_code = String::new();
                 for var in &free_vars {
@@ -283,6 +286,8 @@ impl Codegen {
             ExprNode::TriggeredBlock { event_name, params, body } => {
                 let mut free_vars = HashSet::new();
                 self.get_free_vars_expr(expr, &mut HashSet::new(), &mut free_vars);
+                let mut free_vars: Vec<String> = free_vars.into_iter().collect();
+                free_vars.sort();
 
                 let mut capture_code = String::new();
                 for var in &free_vars {

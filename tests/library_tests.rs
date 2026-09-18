@@ -680,3 +680,48 @@ fn main() {
 "#);
     assert!(output.is_empty());
 }
+
+/// Generated code must be a pure function of the program: a host that depends on the
+/// crate rebuilds it whenever a file changes, so any order that varies between runs
+/// defeats every build cache above the compiler. Events and captured variables are the
+/// two places a set used to reach the output.
+#[test]
+fn library_codegen_is_byte_identical_across_builds() {
+    let root = root("deterministic_codegen");
+    fs::create_dir_all(root.join("more")).unwrap();
+    fs::write(root.join("more/module.orch"), "fn total(x: int, y: int) -> int { x + y }\ntask slow(n: int) -> int { sleep(1)\n return n }\n").unwrap();
+    fs::write(root.join("main.orch"), r#"
+use module more: "./more"
+host world { fn record(n: int) }
+let a = 1
+let b = 2
+let c = 3
+let worker = automatic { world.record(a + b + c) sleep(50) }
+on alpha(n: int) { world.record(n + a + b) }
+on beta(n: int) { world.record(n + b + c) }
+on gamma(n: int) { world.record(n + a + c) }
+on delta(n: int) { world.record(n + a) }
+on epsilon(n: int) { world.record(n + b) }
+on zeta(n: int) { world.record(n + c) }
+on_tick(dt: float) { trigger alpha(more.total(a, b)) }
+orchestrator main(workers: process[worker]) {}
+"#).unwrap();
+    fn generate(root: &Path, output: &str) -> std::collections::BTreeMap<String, Vec<u8>> {
+        let result = Command::new(env!("CARGO_BIN_EXE_orchestrate"))
+            .args(["build", "--lib"]).arg(root.join("main.orch")).arg("-o").arg(root.join(output))
+            .output().unwrap();
+        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        fs::read_dir(root.join(output).join("src")).unwrap().map(|entry| {
+            let path = entry.unwrap().path();
+            (path.file_name().unwrap().to_string_lossy().into_owned(), fs::read(&path).unwrap())
+        }).collect()
+    }
+    let first = generate(&root, "scripts_a");
+    let second = generate(&root, "scripts_b");
+    assert!(first.contains_key("lib.rs") && first.contains_key("more.rs"));
+    assert_eq!(first.keys().collect::<Vec<_>>(), second.keys().collect::<Vec<_>>());
+    for (name, bytes) in &first {
+        assert!(second[name] == *bytes, "{name} differs between two builds of the same program");
+    }
+}
+
