@@ -77,6 +77,35 @@ fn clock_micros() -> i64 {{
 {process_ref}"#, print_macro = print_macro, process_ref = process_ref)
 }
 
+/// An opaque native object from a C-ABI foreign module, released through the sidecar's
+/// `drop` function when the last owner drops. Emitted in the entry file only when a
+/// sidecar uses `handle`; modules name it as `crate::OrchHandle`.
+pub const HANDLE_TYPE: &str = r#"#[derive(Clone)]
+pub struct OrchHandle(std::sync::Arc<OrchHandleInner>);
+pub struct OrchHandleInner {
+    ptr: *mut std::ffi::c_void,
+    release: unsafe extern "C" fn(*mut std::ffi::c_void),
+}
+unsafe impl Send for OrchHandleInner {}
+unsafe impl Sync for OrchHandleInner {}
+impl OrchHandle {
+    pub fn new(ptr: *mut std::ffi::c_void, release: unsafe extern "C" fn(*mut std::ffi::c_void)) -> Self {
+        OrchHandle(std::sync::Arc::new(OrchHandleInner { ptr, release }))
+    }
+    pub fn ptr(&self) -> *mut std::ffi::c_void { self.0.ptr }
+}
+impl Drop for OrchHandleInner {
+    fn drop(&mut self) { if !self.ptr.is_null() { unsafe { (self.release)(self.ptr) } } }
+}
+impl std::fmt::Debug for OrchHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "handle({:p})", self.0.ptr) }
+}
+impl std::fmt::Display for OrchHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "handle") }
+}
+
+"#;
+
 pub const SECRET_MIRROR_HELPERS: &str = r#"async fn __secret_write_frame<W: tokio::io::AsyncWriteExt + Unpin>(w: &mut W, kind: u8, call_id: u32, payload: &[u8]) -> std::io::Result<()> {
     w.write_all(&((payload.len() + 5) as u32).to_le_bytes()).await?;
     w.write_all(&[kind]).await?;
@@ -268,6 +297,12 @@ pub struct Codegen {
     /// Types of the entry file's top-level `let`s, from the typechecker, for the program struct.
     pub state_types: std::collections::BTreeMap<String, Type>,
     pub(super) state_rewrite: Option<StateRewrite>,
+    /// Some C-ABI sidecar in the program uses `handle`, so the entry file defines the type.
+    pub emit_handle_type: bool,
+    /// Foreign functions with a handle parameter, by the name calls use, and which of
+    /// their parameters are handles: those are passed by reference, so a call does not
+    /// move the caller's handle.
+    pub foreign_handle_params: std::collections::HashMap<String, Vec<bool>>,
     /// Struct definitions in the file being generated, used by the serverlet wire codec.
     pub struct_defs: Vec<(String, Vec<(String, Type)>)>,
 }
@@ -288,6 +323,8 @@ impl Codegen {
             io_driver_users: Vec::new(),
             state_types: std::collections::BTreeMap::new(),
             state_rewrite: None,
+            emit_handle_type: false,
+            foreign_handle_params: std::collections::HashMap::new(),
             sandbox_programs: Vec::new(),
             struct_defs: Vec::new(),
         }
@@ -598,6 +635,15 @@ impl Codegen {
         }
     }
 
+    /// Arguments for a foreign function whose handle parameters are passed by reference.
+    pub(super) fn compile_args_for(&mut self, key: &str, args: &[Expr]) -> String {
+        let flags = self.foreign_handle_params.get(key).cloned().unwrap_or_default();
+        args.iter().enumerate().map(|(i, arg)| {
+            let compiled = self.compile_expr(arg);
+            if flags.get(i).copied().unwrap_or(false) { format!("&({})", compiled) } else { compiled }
+        }).collect::<Vec<_>>().join(", ")
+    }
+
     /// A name in call position; a program field needs parentheses to be called.
     pub(super) fn call_name(&self, name: &str) -> String {
         match self.state_field(name) {
@@ -679,6 +725,9 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
         code.push_str(&if self.library {
             preamble.replace("fn stop_orch() {\n    std::process::exit(0);\n}", if is_main { "" } else { "use crate::stop_orch;" })
         } else { preamble });
+        if is_main && self.emit_handle_type {
+            code.push_str(HANDLE_TYPE);
+        }
 
         if self.has_secret {
             if self.library && !is_main {
@@ -803,6 +852,7 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
             Type::Bool => "bool".to_string(),
             Type::Void => "()".to_string(),
             Type::Process => "ProcessRef".to_string(),
+            Type::Handle => if self.is_main { "OrchHandle".to_string() } else { "crate::OrchHandle".to_string() },
             Type::Array(inner, _init_vals) => format!("Vec<{}>", self.compile_type(inner)),
             Type::Named(name) => name.clone(),
             Type::Option(inner) => format!("Option<{}>", self.compile_type(inner)),

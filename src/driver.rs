@@ -284,6 +284,10 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
     // Crates the generated crate must depend on, by name, with where each was declared.
     let mut extra_dependencies: std::collections::BTreeMap<String, (crate::dependencies::Dependency, String)> = std::collections::BTreeMap::new();
     crate::dependencies::merge(&mut extra_dependencies, cli_dependencies.to_vec(), "the command line")?;
+    // C-ABI functions with a handle parameter, as `module::name`, and whether any sidecar
+    // uses handles at all; codegen passes handles by reference and defines the type once.
+    let mut handle_params: std::collections::HashMap<String, Vec<bool>> = std::collections::HashMap::new();
+    let mut uses_handles = false;
 
     for (local_name, module_stmts, module_path) in &modules_data {
         type_checker.register_module_functions(local_name, module_stmts);
@@ -311,6 +315,22 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
                         let base = sidecar_path.parent().unwrap_or(module_path);
                         let declared = crate::dependencies::parse_section(&section, base, &origin)?;
                         crate::dependencies::merge(&mut extra_dependencies, declared, &origin)?;
+                    }
+                } else if matches!(language.as_str(), "c" | "cpp" | "zig" | "swift") {
+                    // A missing sidecar is reported by codegen below; here the signatures
+                    // are registered so calls are typed and handles are known.
+                    let sidecar_path = module_path.join(path).with_extension("orch_ffi");
+                    if let Ok(content) = fs::read_to_string(&sidecar_path) {
+                        let file_name = sidecar_path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown.orch_ffi").to_string();
+                        for signature in ffi_parser::parse_ffi(&content, language, &file_name)? {
+                            if signature.drop { continue; }
+                            if signature.mentions_handle() { uses_handles = true; }
+                            if signature.handle_params().iter().any(|is_handle| *is_handle) {
+                                handle_params.insert(format!("{}::{}", local_name, signature.name), signature.handle_params());
+                            }
+                            let params = signature.params.iter().map(|(_, ty)| ty.clone()).collect();
+                            type_checker.register_foreign_function(local_name, &signature.name, params, signature.ret.clone());
+                        }
                     }
                 }
             }
@@ -347,6 +367,11 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
         let mut generator = codegen::Codegen::new(all_tasks.clone());
         generator.library = library.is_some();
         generator.host_functions = host_functions.clone();
+        // The module's own code calls its foreign functions by bare name.
+        let prefix = format!("{}::", local_name);
+        generator.foreign_handle_params = handle_params.iter()
+            .filter_map(|(key, flags)| key.strip_prefix(&prefix).map(|name| (name.to_string(), flags.clone())))
+            .collect();
         let mut module_rust_code = generator.generate(&module_stmts, false);
         all_secret_programs.append(&mut generator.secret_programs);
         all_sandbox_programs.append(&mut generator.sandbox_programs);
@@ -434,6 +459,8 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
     generator.library = library.is_some();
     generator.host_functions = host_functions;
     generator.io_driver_users = io_driver_users;
+    generator.foreign_handle_params = handle_params;
+    generator.emit_handle_type = uses_handles;
     generator.state_types = ast.iter().filter_map(|stmt| match &stmt.node {
         ast::StmtNode::Let { name, .. } => type_checker.global_var_type(name).map(|ty| (name.clone(), ty)),
         _ => None,

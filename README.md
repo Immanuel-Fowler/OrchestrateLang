@@ -95,9 +95,9 @@ flowchart LR
 |---|---|---|---|
 | OrchestrateLang | Native module call | In-process or secret serverlet | Shipped |
 | Rust | In-module integration | Wrap with an OrchestrateLang serverlet | Shipped |
-| C / C++ | Native C ABI | Wrap with an OrchestrateLang serverlet | Shipped |
-| Zig | Native C ABI | Wrap with an OrchestrateLang serverlet | Shipped |
-| Swift | Native C ABI | Wrap with an OrchestrateLang serverlet | Shipped |
+| C / C++ | Native C ABI | A `handle` to a native object, or a serverlet | Shipped |
+| Zig | Native C ABI | A `handle` to a native object, or a serverlet | Shipped |
+| Swift | Native C ABI | A `handle` to a native object, or a serverlet | Shipped |
 | TypeScript | Persistent compiled adapter | Landline serverlet | Shipped |
 | Python | — | Landline serverlet | Shipped |
 | C# | Native AOT FFI | Landline / embedded runtime | Planned |

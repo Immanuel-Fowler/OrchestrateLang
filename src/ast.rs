@@ -49,6 +49,8 @@ pub enum Type {
     Bool,
     Void,
     Process,
+    /// An opaque native object owned by a C-ABI foreign module.
+    Handle,
     Array(Box<Type>, Vec<String>),
     Named(String),
     Option(Box<Type>),
@@ -67,6 +69,7 @@ impl Type {
             Type::Bool => "bool".to_string(),
             Type::Void => "void".to_string(),
             Type::Process => "process".to_string(),
+            Type::Handle => "handle".to_string(),
             Type::Array(inner, _) => format!("{}[]", inner.display_name()),
             Type::Named(name) => name.clone(),
             Type::Option(inner) => format!("option<{}>", inner.display_name()),

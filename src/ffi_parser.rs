@@ -1,19 +1,61 @@
+//! C-ABI sidecars (`.orch_ffi` beside a C, C++, Zig, or Swift file): signatures in
+//! OrchestrateLang types, turned into `extern "C"` declarations and safe wrappers.
+//!
+//! Types cross the boundary as: `int` `i64`, `float` `f64`, `bool` `bool`, `string` as a
+//! NUL-terminated `const char *` valid for the call (parameters) or a `malloc`'d
+//! `char *` the wrapper copies and frees (returns), and `handle` as an opaque `void *`
+//! the sidecar's one `drop <function>(h: handle)` releases when the last owner drops.
+use crate::ast::Type;
 use crate::lexer::{Lexer, TokenKind};
+
+/// One line of a C-ABI sidecar.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CSignature {
+    pub name: String,
+    pub params: Vec<(String, Type)>,
+    pub ret: Type,
+    /// `drop name(h: handle)`: releases this sidecar's handles. Not callable from
+    /// OrchestrateLang; the generated handle calls it.
+    pub drop: bool,
+}
+
+impl CSignature {
+    /// Which parameters are handles; codegen passes those by reference.
+    pub fn handle_params(&self) -> Vec<bool> {
+        self.params.iter().map(|(_, t)| *t == Type::Handle).collect()
+    }
+
+    pub fn mentions_handle(&self) -> bool {
+        self.ret == Type::Handle || self.params.iter().any(|(_, t)| *t == Type::Handle)
+    }
+}
 
 pub fn parse_ffi_and_generate_bindings(
     ffi_content: &str,
     language: &str,
     file_name: &str,
 ) -> Result<String, String> {
+    let signatures = parse_ffi(ffi_content, language, file_name)?;
+    generate_bindings(&signatures, file_name)
+}
+
+pub fn parse_ffi(ffi_content: &str, language: &str, file_name: &str) -> Result<Vec<CSignature>, String> {
     let mut lexer = Lexer::new(ffi_content);
     let tokens = lexer.tokenize().map_err(|e| format!("Error in {} at {}", file_name, e))?;
 
-    let mut extern_c = String::from("unsafe extern \"C\" {\n");
-    let mut wrappers = String::new();
-
+    let mut signatures = Vec::new();
     let mut pos = 0;
 
     while pos < tokens.len() && tokens[pos].kind != TokenKind::EOF {
+        // `drop name(...)`: a drop keyword followed by a name; a function called `drop`
+        // is followed by `(` instead.
+        let mut drop = false;
+        if matches!(&tokens[pos].kind, TokenKind::Identifier(n) if n == "drop")
+            && matches!(tokens.get(pos + 1).map(|t| &t.kind), Some(TokenKind::Identifier(_)))
+        {
+            drop = true;
+            pos += 1;
+        }
         let start_tok = &tokens[pos];
         let fn_name = match &start_tok.kind {
             TokenKind::Identifier(n) => n.clone(),
@@ -27,9 +69,9 @@ pub fn parse_ffi_and_generate_bindings(
         }
         pos += 1;
 
-        let mut args = Vec::new();
+        let mut params = Vec::new();
         tok = tokens.get(pos).unwrap_or_else(|| &tokens[tokens.len()-1]);
-        
+
         while tok.kind != TokenKind::RParen && tok.kind != TokenKind::EOF {
             let arg_name = match &tok.kind {
                 TokenKind::Identifier(n) => n.clone(),
@@ -48,13 +90,7 @@ pub fn parse_ffi_and_generate_bindings(
                 TokenKind::Identifier(n) => n.clone(),
                 _ => return Err(format!("Error in {} at line {}: expected parameter type, found {:?}", file_name, tok.line, tok.kind)),
             };
-            
-            if arg_type_str == "string" {
-                return Err(format!("load_foreign '{}': string type is not supported in C-ABI FFI signatures (use int, float, bool, or void)", language));
-            }
-            
-            let rust_type = orch_type_to_rust_ffi(&arg_type_str, file_name, tok.line)?;
-            args.push((arg_name, rust_type));
+            params.push((arg_name, c_type(&arg_type_str, file_name, tok.line)?));
             pos += 1;
 
             tok = tokens.get(pos).unwrap_or_else(|| &tokens[tokens.len()-1]);
@@ -74,7 +110,7 @@ pub fn parse_ffi_and_generate_bindings(
         }
         pos += 1;
 
-        let mut rust_ret = "()".to_string();
+        let mut ret = Type::Void;
         tok = tokens.get(pos).unwrap_or_else(|| &tokens[tokens.len()-1]);
         if tok.kind == TokenKind::Arrow {
             pos += 1;
@@ -83,41 +119,126 @@ pub fn parse_ffi_and_generate_bindings(
                 TokenKind::Identifier(n) => n.clone(),
                 _ => return Err(format!("Error in {} at line {}: expected return type, found {:?}", file_name, tok.line, tok.kind)),
             };
-            
-            if ret_type_str == "string" {
-                return Err(format!("load_foreign '{}': string type is not supported in C-ABI FFI signatures (use int, float, bool, or void)", language));
-            }
-            
-            rust_ret = orch_type_to_rust_ffi(&ret_type_str, file_name, tok.line)?;
+            ret = c_type(&ret_type_str, file_name, tok.line)?;
             pos += 1;
         }
 
-        let mut rust_args_decl = Vec::new();
-        let mut call_args = Vec::new();
-        for (a_name, a_type) in args {
-            rust_args_decl.push(format!("{}: {}", a_name, a_type));
-            call_args.push(a_name);
-        }
-
-        let args_decl_str = rust_args_decl.join(", ");
-        let call_decl_str = call_args.join(", ");
-        let ret_decl_str = if rust_ret == "()" { String::new() } else { format!(" -> {}", rust_ret) };
-
-        extern_c.push_str(&format!("    #[link_name = \"{}\"]\n    fn __ffi_{}({}){};\n", fn_name, fn_name, args_decl_str, ret_decl_str));
-        wrappers.push_str(&format!("pub fn {}({}){} {{\n    unsafe {{ __ffi_{}({}) }}\n}}\n", fn_name, args_decl_str, ret_decl_str, fn_name, call_decl_str));
+        signatures.push(CSignature { name: fn_name, params, ret, drop });
     }
 
+    let drops = signatures.iter().filter(|s| s.drop).count();
+    if drops > 1 {
+        return Err(format!("Error in {}: only one `drop` function per sidecar", file_name));
+    }
+    if let Some(release) = signatures.iter().find(|s| s.drop) {
+        let one_handle = release.params.len() == 1 && release.params[0].1 == Type::Handle;
+        if !one_handle || release.ret != Type::Void {
+            return Err(format!("Error in {}: `drop {}` must take one handle and return nothing", file_name, release.name));
+        }
+    }
+    if drops == 0 && signatures.iter().any(|s| s.ret == Type::Handle) {
+        return Err(format!(
+            "load_foreign '{}': {} returns a handle but declares no `drop <function>(h: handle)` to release it",
+            language, file_name
+        ));
+    }
+
+    Ok(signatures)
+}
+
+pub fn generate_bindings(signatures: &[CSignature], file_name: &str) -> Result<String, String> {
+    let stem: String = file_name
+        .trim_end_matches(".orch_ffi")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let free_symbol = format!("__ffi_free_{}", stem);
+    let release = signatures.iter().find(|s| s.drop).map(|s| format!("__ffi_{}", s.name));
+
+    let mut extern_c = String::from("unsafe extern \"C\" {\n");
+    let mut wrappers = String::new();
+    let mut returns_string = false;
+
+    for signature in signatures {
+        let decl_params = signature.params.iter()
+            .map(|(name, ty)| format!("{}: {}", name, ffi_type(ty, false)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let decl_ret = if signature.ret == Type::Void { String::new() } else { format!(" -> {}", ffi_type(&signature.ret, true)) };
+        extern_c.push_str(&format!("    #[link_name = \"{0}\"]\n    fn __ffi_{0}({1}){2};\n", signature.name, decl_params, decl_ret));
+        if signature.drop {
+            continue;
+        }
+
+        let wrapper_params = signature.params.iter()
+            .map(|(name, ty)| format!("{}: {}", name, wrapper_type(ty, false)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let wrapper_ret = if signature.ret == Type::Void { String::new() } else { format!(" -> {}", wrapper_type(&signature.ret, true)) };
+        let mut prologue = String::new();
+        let call_args = signature.params.iter().map(|(name, ty)| match ty {
+            Type::Str => {
+                prologue.push_str(&format!(
+                    "    let __{0} = std::ffi::CString::new({0}.replace('\\0', \"\")).expect(\"a string without NUL\");\n",
+                    name
+                ));
+                format!("__{}.as_ptr()", name)
+            }
+            Type::Handle => format!("{}.ptr()", name),
+            _ => name.clone(),
+        }).collect::<Vec<_>>().join(", ");
+        let call = format!("unsafe {{ __ffi_{}({}) }}", signature.name, call_args);
+        let body = match &signature.ret {
+            Type::Str => {
+                returns_string = true;
+                format!(
+                    "    let __result = {call};\n    if __result.is_null() {{ String::new() }} else {{\n        let __text = unsafe {{ std::ffi::CStr::from_ptr(__result) }}.to_string_lossy().into_owned();\n        unsafe {{ {free_symbol}(__result as *mut std::ffi::c_void) }};\n        __text\n    }}"
+                )
+            }
+            Type::Handle => format!("    crate::OrchHandle::new({call}, {})", release.as_deref().unwrap_or("__ffi_drop")),
+            _ => format!("    {call}"),
+        };
+        wrappers.push_str(&format!("pub fn {}({}){} {{\n{}{}\n}}\n", signature.name, wrapper_params, wrapper_ret, prologue, body));
+    }
+
+    if returns_string {
+        extern_c.push_str(&format!("    #[link_name = \"free\"]\n    fn {}(p: *mut std::ffi::c_void);\n", free_symbol));
+    }
     extern_c.push_str("}\n\n");
     Ok(format!("{}{}", extern_c, wrappers))
 }
 
-fn orch_type_to_rust_ffi(orch_type: &str, file_name: &str, line: usize) -> Result<String, String> {
-    match orch_type {
-        "int" => Ok("i64".to_string()),
-        "float" => Ok("f64".to_string()),
-        "bool" => Ok("bool".to_string()),
-        "void" => Ok("()".to_string()),
-        _ => Err(format!("Error in {} at line {}: unknown type '{}'", file_name, line, orch_type)),
+fn c_type(name: &str, file_name: &str, line: usize) -> Result<Type, String> {
+    match name {
+        "int" => Ok(Type::Int),
+        "float" => Ok(Type::Float),
+        "bool" => Ok(Type::Bool),
+        "void" => Ok(Type::Void),
+        "string" => Ok(Type::Str),
+        "handle" => Ok(Type::Handle),
+        _ => Err(format!("Error in {} at line {}: unknown type '{}'", file_name, line, name)),
+    }
+}
+
+/// The type in the `extern "C"` declaration.
+fn ffi_type(ty: &Type, returning: bool) -> String {
+    match ty {
+        Type::Int => "i64".into(),
+        Type::Float => "f64".into(),
+        Type::Bool => "bool".into(),
+        Type::Void => "()".into(),
+        Type::Str => if returning { "*mut std::os::raw::c_char".into() } else { "*const std::os::raw::c_char".into() },
+        Type::Handle => "*mut std::ffi::c_void".into(),
+        other => other.display_name(),
+    }
+}
+
+/// The type OrchestrateLang code sees on the safe wrapper.
+fn wrapper_type(ty: &Type, returning: bool) -> String {
+    match ty {
+        Type::Str => "String".into(),
+        Type::Handle => if returning { "crate::OrchHandle".into() } else { "&crate::OrchHandle".into() },
+        other => ffi_type(other, returning),
     }
 }
 
@@ -136,7 +257,7 @@ mod tests {
         assert!(res.contains("fn __ffi_circle_area(radius: f64) -> f64;"));
         assert!(res.contains("fn __ffi_hypotenuse(a: i64, b: i64) -> i64;"));
         assert!(res.contains("fn __ffi_do_nothing();"));
-        
+
         assert!(res.contains("pub fn circle_area(radius: f64) -> f64 {"));
         assert!(res.contains("unsafe { __ffi_circle_area(radius) }"));
     }
@@ -149,14 +270,38 @@ mod tests {
     }
 
     #[test]
-    fn test_string_type_rejected() {
-        let ffi = "greet(name: string) -> void";
-        let err = parse_ffi_and_generate_bindings(ffi, "c", "test.orch_ffi").unwrap_err();
-        assert_eq!(err, "load_foreign 'c': string type is not supported in C-ABI FFI signatures (use int, float, bool, or void)");
+    fn test_string_signatures_marshal_c_strings() {
+        let res = parse_ffi_and_generate_bindings("greet(name: string) -> string\nlength(s: string) -> int", "c", "text.orch_ffi").unwrap();
+        assert!(res.contains("fn __ffi_greet(name: *const std::os::raw::c_char) -> *mut std::os::raw::c_char;"));
+        assert!(res.contains("pub fn greet(name: String) -> String {"));
+        assert!(res.contains("std::ffi::CString::new(name.replace('\\0', \"\"))"));
+        assert!(res.contains("std::ffi::CStr::from_ptr(__result)"));
+        assert!(res.contains("__ffi_free_text(__result as *mut std::ffi::c_void)"));
+        assert!(res.contains("#[link_name = \"free\"]"));
+        assert!(res.contains("pub fn length(s: String) -> i64 {"));
+    }
 
-        let ffi2 = "get_name() -> string";
-        let err2 = parse_ffi_and_generate_bindings(ffi2, "zig", "test.orch_ffi").unwrap_err();
-        assert_eq!(err2, "load_foreign 'zig': string type is not supported in C-ABI FFI signatures (use int, float, bool, or void)");
+    #[test]
+    fn test_handle_signatures_release_through_drop() {
+        // `start` is a keyword, so a parameter cannot be called that; `initial` will do.
+        let ffi = "make(initial: int) -> handle\nbump(c: handle) -> int\ndrop release(c: handle)\n";
+        let signatures = parse_ffi(ffi, "zig", "counter.orch_ffi").unwrap();
+        assert!(signatures[2].drop);
+        assert_eq!(signatures[1].handle_params(), vec![true]);
+        assert!(signatures[0].mentions_handle());
+        let res = generate_bindings(&signatures, "counter.orch_ffi").unwrap();
+        assert!(res.contains("fn __ffi_make(initial: i64) -> *mut std::ffi::c_void;"));
+        assert!(res.contains("pub fn make(initial: i64) -> crate::OrchHandle {"));
+        assert!(res.contains("crate::OrchHandle::new(unsafe { __ffi_make(initial) }, __ffi_release)"));
+        assert!(res.contains("pub fn bump(c: &crate::OrchHandle) -> i64 {"));
+        assert!(res.contains("unsafe { __ffi_bump(c.ptr()) }"));
+        assert!(!res.contains("pub fn release("), "drop functions are not callable");
+        let err = parse_ffi("make() -> handle\n", "c", "counter.orch_ffi").unwrap_err();
+        assert!(err.contains("declares no `drop"), "{err}");
+        let err = parse_ffi("drop release(c: int)\n", "c", "counter.orch_ffi").unwrap_err();
+        assert!(err.contains("must take one handle"), "{err}");
+        let err = parse_ffi("drop a(c: handle)\ndrop b(c: handle)\n", "c", "counter.orch_ffi").unwrap_err();
+        assert!(err.contains("only one `drop`"), "{err}");
     }
 
     #[test]

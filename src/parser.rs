@@ -711,6 +711,7 @@ impl Parser {
                 "string" => Ok(Type::Str),
                 "bool" => Ok(Type::Bool),
                 "void" => Ok(Type::Void),
+                "handle" => Ok(Type::Handle),
                 "option" => {
                     self.consume(TokenKind::Lt, "Expected '<' after 'option'")?;
                     let inner = self.parse_type()?;

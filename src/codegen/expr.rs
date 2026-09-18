@@ -107,6 +107,9 @@ impl Codegen {
                     format!("tokio::time::sleep(std::time::Duration::from_millis({} as u64)).await", args_str)
                 } else if self.tasks.contains(callee) {
                     format!("{}({}).await", callee, args_str)
+                } else if self.foreign_handle_params.contains_key(callee) {
+                    let args = self.compile_args_for(callee, args);
+                    format!("{}({})", self.call_name(callee), args)
                 } else {
                     format!("{}({})", self.call_name(callee), args_str)
                 }
@@ -174,6 +177,9 @@ impl Codegen {
                     let full_name = format!("{}::{}", module_local_name, function);
                     if self.tasks.contains(&full_name) {
                         format!("{}::{}({}).await", module_local_name, function, args_str)
+                    } else if self.foreign_handle_params.contains_key(&full_name) {
+                        let args = self.compile_args_for(&full_name, args);
+                        format!("{}::{}({})", module_local_name, function, args)
                     } else {
                         format!("{}::{}({})", module_local_name, function, args_str)
                     }

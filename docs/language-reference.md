@@ -88,6 +88,7 @@ count = count + 1
 | `option<T>` | A value or `none` | `some(3)`, `none` |
 | `result<T>` | A value or a string error | `ok(3)`, `err("bad input")` |
 | `fn(A) -> B` | A function value | `let f: fn(int) -> int = fn(x: int) -> int { x }` |
+| `handle` | An opaque native object from a C-ABI foreign module | `let c = native.make_counter(0)` |
 
 #### User-Defined Structs
 
@@ -1010,8 +1011,50 @@ let worker = automatic {
 | `float` | `double` | `f64` |
 | `bool` | `bool` | `bool` |
 | `void` | `void` | `()` |
+| `string` | `const char *` in, `char *` out (see below) | `String` on the wrapper |
+| `handle` | `void *` | `OrchHandle` on the wrapper |
 
-> **Why no `string`?** C/C++ FFI signatures (`.orch_ffi`) do not support `string` as a parameter or return type because managing string ownership and lifetimes across the C/Rust boundary is unsafe without additional marshaling. If you attempt to use `string`, the compiler will produce the error: `load_foreign '<language>': string type is not supported in C-ABI FFI signatures (use int, float, bool, or void)`.
+**Strings** cross under one rule, which C, C++, Zig, and Swift can all meet without a
+helper library: a `string` parameter arrives as a NUL-terminated `const char *` that is
+valid only for the call; a `string` return is a NUL-terminated `char *` the foreign side
+allocated with `malloc` (or `strdup`), which the generated wrapper copies into a `String`
+and frees. Bytes that are not UTF-8 are replaced rather than rejected. A NUL inside an
+OrchestrateLang string is dropped before the call, since C cannot carry it.
+
+```c
+char *greet(const char *name) {          /* malloc'd; the wrapper frees it */
+    char *out = malloc(strlen(name) + 7);
+    sprintf(out, "hello %s", name);
+    return out;
+}
+```
+
+**Handles** are opaque native objects. A function that returns `handle` hands over a
+`void *` OrchestrateLang never dereferences; a `handle` parameter passes it back. The
+sidecar names, once, the function that releases one — `drop release_counter(c: handle)` —
+and the generated value calls it when its last owner drops, so a native object lives
+exactly as long as the OrchestrateLang value that holds it. The `drop` function is not
+callable from OrchestrateLang.
+
+```
+make_counter(initial: int) -> handle
+bump(c: handle) -> int
+drop release_counter(c: handle)
+```
+
+```orchestrate
+fn count_twice(initial: int) -> int {
+    let c = native.make_counter(initial)   // a handle
+    let a = native.bump(c)
+    let b = native.bump(c)               // c is passed by reference, not moved
+    return a + b                         // c drops here, and release_counter runs
+}
+```
+
+Handles can be stored in program state, passed to workers (which capture a clone that
+shares the object), and held in structs and arrays. They are not wire types: a serverlet or
+landline handler cannot take or return one. The object's own thread-safety is the foreign
+code's concern; the generated type only guarantees the release happens once.
 
 #### Foreign Zig (`load_foreign "zig"`) and Swift (`load_foreign "swift"`)
 
@@ -1049,6 +1092,12 @@ is_leap_year(year: int) -> bool
 | `float` | `f64` | `Double` |
 | `bool` | `bool` | `Bool` |
 | `void` | `void` | no return value |
+| `string` | `[*:0]const u8` in, `[*:0]u8` out via `std.heap.c_allocator` | `UnsafePointer<CChar>` in, `UnsafeMutablePointer<CChar>` out via `strdup` |
+| `handle` | `*anyopaque` | `UnsafeMutableRawPointer` |
+
+Strings and handles follow the C rules above: a returned string must come from the C
+allocator, because the wrapper frees it with `free`, and a sidecar that returns a
+`handle` declares its `drop` function.
 
 The generated `build.rs` compiles each file into its own static library —
 `zig build-obj -O ReleaseFast` packed by `libtool` (macOS) or `ar` for Zig, `swiftc -emit-library -static -parse-as-library -O`
@@ -1065,7 +1114,7 @@ through `swiftc -print-target-info`.
 
 **Type conversions for `load_foreign "rust"`:**
 
-*Note: The `string` row applies only to Rust foreign functions. C, C++, Zig, and Swift FFI signatures do not support `string` (see the tables above).*
+*Note: Rust foreign functions take `String` directly; for C, C++, Zig, and Swift, strings and handles cross under the rules above. `handle` is not a Rust sidecar type.*
 
 | OrchestrateLang | Rust |
 | :--- | :--- |

@@ -127,6 +127,50 @@ orchestrator main() {
     assert_eq!(out.trim(), "ok 5\ndivide by zero\ntoo large: 500\nok 20\n-1\n42");
 }
 
+/// Strings cross the C ABI under one ownership rule, and a handle is an opaque native
+/// object that the sidecar's `drop` function releases when its last owner drops: here
+/// when `count_twice` returns, before its result is printed.
+#[test]
+fn runtime_ffi_c_strings_and_handles() {
+    write_foreign_module("ffi_c_strings_handles", "native", "c", "native.c", r#"
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+char* greet(const char* name) {
+    size_t n = strlen(name);
+    char* out = malloc(n + 7);
+    memcpy(out, "hello ", 6);
+    memcpy(out + 6, name, n + 1);
+    return out;
+}
+long long text_length(const char* s) { return (long long)strlen(s); }
+struct counter { long long value; };
+void* make_counter(long long start) { struct counter* c = malloc(sizeof *c); c->value = start; return c; }
+long long bump(void* c) { struct counter* k = c; k->value += 1; return k->value; }
+void release_counter(void* c) { printf("released %lld\n", ((struct counter*)c)->value); fflush(stdout); free(c); }
+"#,
+        "greet(name: string) -> string\ntext_length(s: string) -> int\nmake_counter(initial: int) -> handle\nbump(c: handle) -> int\ndrop release_counter(c: handle)\n");
+    let out = run_orch("ffi_c_strings_handles", r#"
+use module native: "./native"
+
+fn count_twice(initial: int) -> int {
+    let c = native.make_counter(initial)
+    let a = native.bump(c)
+    let b = native.bump(c)
+    return a + b
+}
+
+orchestrator main() {
+    print(native.greet("world"))
+    print(to_string(native.text_length("héllo")))
+    print(to_string(count_twice(10)))
+    print("after")
+    stop_orch()
+}
+"#);
+    assert_eq!(out.trim(), "hello world\n6\nreleased 12\n23\nafter");
+}
+
 #[test]
 fn runtime_ffi_zig() {
     if !has_tool("zig", "version") { return; }

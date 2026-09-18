@@ -796,6 +796,40 @@ fn main() {
     assert!(output.is_empty());
 }
 
+/// A handle held in program state keeps its native object alive across ticks and
+/// releases it when the instance shuts down.
+#[test]
+fn library_handle_in_program_state_lives_until_shutdown() {
+    let root = root("handle_state");
+    fs::create_dir_all(root.join("native")).unwrap();
+    fs::write(root.join("native/module.orch"), "load_foreign \"c\" \"native.c\"\n").unwrap();
+    fs::write(root.join("native/native.c"), "#include <stdlib.h>\n#include <stdio.h>\nstruct counter { long long value; };\nvoid* make_counter(long long start) { struct counter* c = malloc(sizeof *c); c->value = start; return c; }\nlong long bump(void* c) { struct counter* k = c; k->value += 1; return k->value; }\nvoid release_counter(void* c) { printf(\"released %lld\\n\", ((struct counter*)c)->value); fflush(stdout); free(c); }\n").unwrap();
+    fs::write(root.join("native/native.orch_ffi"), "make_counter(initial: int) -> handle\nbump(c: handle) -> int\ndrop release_counter(c: handle)\n").unwrap();
+    build(&root, r#"
+use module native: "./native"
+host world { fn record(n: int) }
+let counter = native.make_counter(5)
+on_tick(dt: float) { world.record(native.bump(counter)) }
+orchestrator main() {}
+"#);
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<i64>>>);
+impl scripts::Host for Host { fn world_record(&self, n: i64) -> Result<(), String> { self.0.lock().unwrap().push(n); Ok(()) } }
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut scripts = scripts::start(runtime.handle(), Host(log.clone())).unwrap();
+    scripts.tick_blocking(&runtime, 0.1).unwrap();
+    scripts.tick_sync(&runtime, 0.1).unwrap();
+    assert_eq!(*log.lock().unwrap(), vec![6, 7]);
+    scripts.shutdown_blocking(&runtime).unwrap();
+    println!("shut down");
+}
+"#);
+    assert_eq!(output.trim(), "released 7\nshut down");
+}
+
 /// A Rust foreign module declares the crates it needs in its sidecar, and a host can add
 /// more on the command line; the same crate declared twice must be identical.
 #[test]
