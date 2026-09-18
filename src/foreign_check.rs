@@ -72,9 +72,11 @@ fn check_python_types(path: &str, scratch: &Path) -> Result<Outcome, String> {
 /// path, and what to tell someone who has none of the candidates installed.
 fn checker(language: &str) -> Option<(&'static [&'static str], &'static [&'static str], &'static str)> {
     match language {
+        // gcc only warns about a call to an undeclared function, where clang errors; the
+        // link would fail either way, so the check treats it as the error it is.
         "c" => Some((
             &["cc", "clang", "gcc"],
-            &["-fsyntax-only"],
+            &["-fsyntax-only", "-Werror=implicit-function-declaration"],
             "install a C compiler (Xcode Command Line Tools on macOS, build-essential on Linux)",
         )),
         "cpp" => Some((

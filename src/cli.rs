@@ -12,6 +12,8 @@ fn print_help(invocation: &str) {
     println!("  build <file.orch> -o <out>   Specify the output binary name");
     println!("  build --lib <file.orch> -o <dir>   Generate a host-linkable Rust crate");
     println!("  build --lib --rust-version <x.y>   Set the generated crate's rust-version");
+    println!("  build --lib --dependency '<name> = <spec>'   Add a Cargo dependency to the generated crate (repeatable)");
+    println!("  build --lib --dependencies <file.toml>       Add the dependencies a TOML fragment declares");
     println!("  check <file.orch>            Type-check only — no compilation (fast)");
     println!("  check-foreign <file.orch>    Check foreign sources with their own language's checker");
     println!("  check-foreign --deep         Also run mypy on Python and cargo check on Rust (slower)");
@@ -29,6 +31,22 @@ fn print_help(invocation: &str) {
     println!("EXAMPLES:");
     println!("  {} run hello.orch", invocation);
     println!("  {} build main.orch -o myapp", invocation);
+}
+
+/// `--dependency 'name = spec'` and `--dependencies <file>` entries, with relative paths
+/// resolved against the working directory the command runs in.
+fn parse_dependency_args(args: &[(&str, &str)]) -> Result<Vec<crate::dependencies::Dependency>, String> {
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let mut dependencies = Vec::new();
+    for (flag, value) in args {
+        let (text, origin) = if *flag == "--dependency" {
+            (value.to_string(), "--dependency".to_string())
+        } else {
+            (std::fs::read_to_string(value).map_err(|e| format!("cannot read --dependencies {}: {}", value, e))?, value.to_string())
+        };
+        dependencies.extend(crate::dependencies::parse_section(&text, &cwd, &origin)?);
+    }
+    Ok(dependencies)
 }
 
 fn print_short_usage(invocation: &str) {
@@ -65,20 +83,27 @@ pub fn run(invocation: &str, args: &[String]) {
             let mut library = false;
             let mut target = None;
             let mut rust_version = None;
+            let mut dependency_args: Vec<(&str, &str)> = Vec::new();
             let mut options = args[2..].iter();
             while let Some(arg) = options.next() {
                 match arg.as_str() {
                     "--lib" => library = true,
                     "--target" => target = options.next().map(String::as_str),
                     "--rust-version" => rust_version = options.next().map(String::as_str),
+                    "--dependency" | "--dependencies" => match options.next() {
+                        Some(value) => dependency_args.push((arg.as_str(), value.as_str())),
+                        None => { eprintln!("{} needs a value", arg); std::process::exit(1); }
+                    },
                     "-o" => out = options.next().map(String::as_str),
                     value if !value.starts_with('-') && input.is_none() => input = Some(value),
                     _ => { eprintln!("Unknown build argument: {}", arg); std::process::exit(1); }
                 }
             }
             let result = match input {
-                Some(input) if library => driver::run_build_library_for_target(input, out, target, rust_version),
+                Some(input) if library => parse_dependency_args(&dependency_args)
+                    .and_then(|dependencies| driver::run_build_library_for_target(input, out, target, rust_version, &dependencies)),
                 Some(_) if rust_version.is_some() => Err("--rust-version applies to build --lib".into()),
+                Some(_) if !dependency_args.is_empty() => Err("--dependency and --dependencies apply to build --lib".into()),
                 Some(input) => driver::run_build(input, out),
                 None => Err("build requires an input file".into()),
             };

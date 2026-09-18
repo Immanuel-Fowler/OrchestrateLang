@@ -98,6 +98,32 @@ loops, blocking host methods, or a stuck `on_start`/`on_stop` hook can delay a t
 shutdown. A landline `budget` bounds slow Python or TypeScript calls, but not Rust host methods or the
 hooks themselves.
 
+### Ticking on the calling thread
+
+`tick_blocking` sends a command to the library's coordinator task and parks until the reply
+arrives: a runtime entry, a task wake, a channel send, and a oneshot per frame, plus the
+runtime's poll syscall when it parks. `tick_sync` runs the same tick on the calling thread
+instead:
+
+```rust
+let output = scripts.tick_sync(&runtime, dt)?;   // tick_sync(&runtime, dt, input) for a typed tick
+scripts.fixed_tick_sync(&runtime, step)?;
+```
+
+The hooks run inside the caller, under the runtime's context. When the body finishes
+without waiting on anything — no serverlet or landline round trip, no `sleep` — the call
+returns with no task, channel, or park involved. When it has to wait, the rest of the tick
+finishes under `runtime.block_on`, so the result and the side effects are the same as
+`tick_blocking` would produce; only where the work runs differs. Events queued before the
+tick, events the hooks queue, deterministic mode, and `stop_orch()` behave exactly as they
+do through `tick_blocking`. Idle ticks no longer touch the event queues at all: a queue is
+inspected only after something was put on it.
+
+`tick_sync` is for hosts that drive the library from synchronous code, like the blocking
+methods; call it from outside any Tokio context, since a waiting body blocks the caller.
+The channel path stays available and unchanged for hosts that prefer it, including hosts
+that need to cancel a tick with `shutdown()`.
+
 ## Runtime drivers
 
 Every library needs Tokio's time driver: `sleep`, landline budgets, and the shutdown grace
@@ -277,6 +303,14 @@ need Bun, TypeScript, or scriptc on the player's machine, but data and native de
 the implementation uses still need packaging. Foreign C, C++, Zig, and Swift sources are
 compiled by the generated crate's build script, so they still reference their source files
 and require their toolchain (a C/C++ compiler, `zig`, or `swiftc`) when the host builds it.
+
+A Rust foreign module may declare Cargo dependencies in its sidecar, and `build --lib`
+adds more with `--dependency '<name> = <spec>'` or `--dependencies <file.toml>`; see the
+[language reference](language-reference.md#cargo-dependencies-for-foreign-rust). They go
+into the generated `Cargo.toml` in name order. A relative `path` is resolved when the crate
+is generated — against the sidecar for a sidecar declaration, against the working directory
+for the command line — and recorded absolute, so the output crate builds wherever it is
+placed, but it references that directory rather than carrying a copy.
 
 Secret children are compiled for the compiler machine's target by default. Pass
 `build --lib --target <triple>` to build them, and check the library, for another target;

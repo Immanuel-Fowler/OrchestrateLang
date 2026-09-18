@@ -184,6 +184,11 @@ impl TypeChecker {
         None
     }
 
+    /// The type a top-level `let` was given or inferred, once `type_check` has run.
+    pub fn global_var_type(&self, name: &str) -> Option<Type> {
+        self.env.first()?.get(name).cloned()
+    }
+
     fn substitute_type_params(&self, ty: &Type, subst: &HashMap<String, Type>) -> Type {
         match ty {
             Type::TypeParam(name) => subst.get(name).cloned().unwrap_or_else(|| ty.clone()),

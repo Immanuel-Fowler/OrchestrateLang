@@ -11,7 +11,7 @@ impl Codegen {
                 Literal::Str(v) => format!("String::from({:?})", v),
                 Literal::Bool(v) => v.to_string(),
             },
-            ExprNode::Identifier(name) => name.clone(),
+            ExprNode::Identifier(name) => self.read_name(name),
             ExprNode::Unary { op, operand } => {
                 let operand_str = self.compile_expr(operand);
                 match op {
@@ -108,7 +108,7 @@ impl Codegen {
                 } else if self.tasks.contains(callee) {
                     format!("{}({}).await", callee, args_str)
                 } else {
-                    format!("{}({})", callee, args_str)
+                    format!("{}({})", self.call_name(callee), args_str)
                 }
             }
             ExprNode::Pipeline { value, function } => {
@@ -122,7 +122,7 @@ impl Codegen {
                         } else if self.tasks.contains(name) {
                             format!("{}({}).await", name, val_str)
                         } else {
-                            format!("{}({})", name, val_str)
+                            format!("{}({})", self.call_name(name), val_str)
                         }
                     }
                     ExprNode::Call { callee, args } => {
@@ -144,7 +144,7 @@ impl Codegen {
                         } else if self.tasks.contains(callee) {
                             format!("{}({}).await", callee, all_args_str)
                         } else {
-                            format!("{}({})", callee, all_args_str)
+                            format!("{}({})", self.call_name(callee), all_args_str)
                         }
                     }
                     _ => panic!("Invalid pipeline function target: {:?}", function),
@@ -178,7 +178,7 @@ impl Codegen {
                         format!("{}::{}({})", module_local_name, function, args_str)
                     }
                 } else {
-                    format!("{}.{}({}).await", module_local_name, function, args_str)
+                    format!("{}.{}({}).await", self.read_name(module_local_name), function, args_str)
                 }
             }
             ExprNode::StartServerlet { name, args } => {
@@ -200,11 +200,17 @@ impl Codegen {
 
                 let mut capture_code = String::new();
                 for var in &free_vars {
-                    capture_code.push_str(&format!("let {} = {}.clone();\n    ", var, var));
+                    capture_code.push_str(&format!("let {} = {}.clone();\n    ", var, self.read_name(var)));
                 }
+                // Inside the closure every captured name is the clone above, not a program field.
+                self.push_scope();
+                for var in &free_vars { self.define_local(var); }
 
                 let crash_handler_code = if let Some((err_name, handler)) = crash_handler {
+                    self.push_scope();
+                    self.define_local(err_name);
                     let handler_str = self.compile_expr(handler);
+                    self.pop_scope();
                     format!(
                         r#"Err(__e) => {{
                     let {} = format!("{{:?}}", __e);
@@ -236,6 +242,7 @@ impl Codegen {
                 } else {
                     (vec![], vec![self.compile_expr(body)])
                 };
+                self.pop_scope();
 
                 let setup_inner = setup_code.join("\n                ");
                 let loop_inner = loop_code.join("\n                    ");
@@ -291,8 +298,11 @@ impl Codegen {
 
                 let mut capture_code = String::new();
                 for var in &free_vars {
-                    capture_code.push_str(&format!("let {} = {}.clone();\n    ", var, var));
+                    capture_code.push_str(&format!("let {} = {}.clone();\n    ", var, self.read_name(var)));
                 }
+                self.push_scope();
+                for var in &free_vars { self.define_local(var); }
+                for p in params { self.define_local(&p.name); }
 
                 let func_name = format!("get_registry_{}", event_name);
                 let types_str = if params.is_empty() {
@@ -315,6 +325,7 @@ impl Codegen {
                 };
 
                 let body_str = self.compile_expr(body);
+                self.pop_scope();
                 if self.library && event_name != "update_orchestrator" {
                     let clones = capture_code.clone();
                     return format!("{{ {capture_code} std::sync::Arc::new(move || {{ {clones} crate::{func_name}().lock().unwrap().push(std::sync::Arc::new(move |msg: {arc_type_str}| {{ {clones} Box::pin(async move {{ let {bindings} = (*msg).clone(); {body_str}; }}) as crate::OrchEvent }})); }}) }}");
@@ -327,7 +338,7 @@ impl Codegen {
             }
             ExprNode::StartProcess { target } => {
                 let target_str = self.compile_expr(target);
-                format!("{}()", target_str)
+                if target_str.starts_with("__program.") { format!("({})()", target_str) } else { format!("{}()", target_str) }
             }
             ExprNode::ArrayLiteral(elements) => {
                 let elems_str = elements.iter().map(|e| self.compile_expr(e)).collect::<Vec<String>>().join(", ");
@@ -360,7 +371,10 @@ impl Codegen {
             }
             ExprNode::TryCatch { body, err_name, handler } => {
                 let body_str = self.compile_expr(body);
+                self.push_scope();
+                self.define_local(err_name);
                 let handler_str = self.compile_expr(handler);
+                self.pop_scope();
                 format!(
                     r#"(|| -> Result<_, String> {{ Ok({{ {} }}) }})().unwrap_or_else(|{}: String| {{ {} }})"#,
                     body_str, err_name, handler_str
@@ -381,6 +395,10 @@ impl Codegen {
 
                 let mut arms_code = Vec::new();
                 for arm in arms {
+                    self.push_scope();
+                    let mut bindings = Vec::new();
+                    Self::pattern_bindings(&arm.pattern, &mut bindings);
+                    for name in &bindings { self.define_local(name); }
                     // Pre-compile guard conditions (needs &mut self, so do before pattern compilation)
                     let guard_str: Option<String> = if let MatchPattern::Guard { condition, .. } = &arm.pattern {
                         let cond_clone = *condition.clone();
@@ -391,6 +409,7 @@ impl Codegen {
 
                     let pattern_str = Self::compile_match_pattern_str(&arm.pattern, guard_str.as_deref());
                     let body_str = self.compile_expr(&arm.body);
+                    self.pop_scope();
                     arms_code.push(format!("        {} => {{ {} }}", pattern_str, body_str));
                 }
                 format!("match {} {{\n{}\n    }}", match_subject, arms_code.join(",\n"))
@@ -404,7 +423,10 @@ impl Codegen {
                     Some(rt) if *rt != Type::Void => format!(" -> {}", self.compile_type(rt)),
                     _ => String::new(),
                 };
+                self.push_scope();
+                for p in params { self.define_local(&p.name); }
                 let body_str = self.compile_expr(body);
+                self.pop_scope();
                 format!("move |{}|{} {}", params_str, ret_str, body_str)
             }
             ExprNode::StringInterp { parts } => {
@@ -427,6 +449,15 @@ impl Codegen {
                     format!("format!({:?}, {})", fmt_str, args.join(", "))
                 }
             }
+        }
+    }
+
+    /// The names a match pattern binds, which shadow program fields in its arm.
+    fn pattern_bindings(pattern: &MatchPattern, names: &mut Vec<String>) {
+        match pattern {
+            MatchPattern::EnumVariant { binding: Some(name), .. } | MatchPattern::Binding(name) => names.push(name.clone()),
+            MatchPattern::Guard { inner, .. } => Self::pattern_bindings(inner, names),
+            _ => {}
         }
     }
 

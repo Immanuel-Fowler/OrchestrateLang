@@ -169,11 +169,11 @@ fn library_rust_version(requested: Option<&str>) -> Result<String, String> {
 }
 
 pub fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Result<String, String> {
-    compile_with_mode(input_file, cache_dir, None)
+    compile_with_mode(input_file, cache_dir, None, &[])
 }
 
 /// `library` carries the `rust-version` the generated crate declares; `None` builds a binary.
-fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>) -> Result<String, String> {
+fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, cli_dependencies: &[crate::dependencies::Dependency]) -> Result<String, String> {
     let input_path = Path::new(input_file);
     let source = fs::read_to_string(input_path)
         .map_err(|e| format!("Failed to read source file '{}': {}", input_file, e))?;
@@ -281,10 +281,13 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>) 
         }
     }
     let mut all_foreign_sources = Vec::new();
+    // Crates the generated crate must depend on, by name, with where each was declared.
+    let mut extra_dependencies: std::collections::BTreeMap<String, (crate::dependencies::Dependency, String)> = std::collections::BTreeMap::new();
+    crate::dependencies::merge(&mut extra_dependencies, cli_dependencies.to_vec(), "the command line")?;
 
     for (local_name, module_stmts, module_path) in &modules_data {
         type_checker.register_module_functions(local_name, module_stmts);
-        
+
         for stmt in module_stmts {
             if let ast::StmtNode::LoadForeign { language, path, .. } = &stmt.node {
                 if language == "rust" || language == "typescript" {
@@ -297,8 +300,18 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>) 
                     let sidecar_content = fs::read_to_string(&sidecar_path)
                         .map_err(|e| format!("Failed to read Rust FFI sidecar {:?}: {}", sidecar_path, e))?;
                     let sidecar_name = sidecar_path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown.orch_ffi");
-                    register_rust_ffi_from_sidecar(&sidecar_content, local_name, sidecar_name, &mut type_checker)
+                    let (signatures, dependencies) = crate::dependencies::split_sidecar(&sidecar_content);
+                    register_rust_ffi_from_sidecar(&signatures, local_name, sidecar_name, &mut type_checker)
                         .map_err(|e| format!("Rust FFI sidecar error: {}", e))?;
+                    if let Some(section) = dependencies {
+                        if language != "rust" {
+                            return Err(format!("{}: [dependencies] applies to load_foreign \"rust\" sidecars", sidecar_path.display()));
+                        }
+                        let origin = sidecar_path.display().to_string();
+                        let base = sidecar_path.parent().unwrap_or(module_path);
+                        let declared = crate::dependencies::parse_section(&section, base, &origin)?;
+                        crate::dependencies::merge(&mut extra_dependencies, declared, &origin)?;
+                    }
                 }
             }
         }
@@ -421,6 +434,10 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>) 
     generator.library = library.is_some();
     generator.host_functions = host_functions;
     generator.io_driver_users = io_driver_users;
+    generator.state_types = ast.iter().filter_map(|stmt| match &stmt.node {
+        ast::StmtNode::Let { name, .. } => type_checker.global_var_type(name).map(|ty| (name.clone(), ty)),
+        _ => None,
+    }).collect();
     if library.is_some() { generator.scan_events(&module_event_stmts); }
     let main_rust = generator.generate(&ast, true);
     all_secret_programs.append(&mut generator.secret_programs);
@@ -444,14 +461,10 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>) 
         }
     }
 
-    let mut cargo_toml_content = r#"[package]
-name = "orch_generated"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-tokio = { version = "1.35", features = ["full"] }
-"#.to_string();
+    let mut cargo_toml_content = format!(
+        "[package]\nname = \"orch_generated\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ntokio = {{ version = \"1.35\", features = [\"full\"] }}\n{}",
+        crate::dependencies::emit(extra_dependencies.values().map(|(dependency, _)| dependency))
+    );
 
     if !all_foreign_sources.is_empty() {
         let mut build_rs = String::from("fn main() {\n");
@@ -1004,9 +1017,9 @@ fn copy_landlines(source: &Path, destination: &Path) -> Result<(), String> {
 
 /// Generate a standalone Cargo library crate; do not overwrite unrelated directories.
 pub fn run_build_library(input: &str, output: Option<&str>) -> Result<(), String> {
-    run_build_library_for_target(input, output, None, None)
+    run_build_library_for_target(input, output, None, None, &[])
 }
-pub fn run_build_library_for_target(input: &str, output: Option<&str>, target: Option<&str>, rust_version: Option<&str>) -> Result<(), String> {
+pub fn run_build_library_for_target(input: &str, output: Option<&str>, target: Option<&str>, rust_version: Option<&str>, dependencies: &[crate::dependencies::Dependency]) -> Result<(), String> {
     let rust_version = library_rust_version(rust_version)?;
     let destination = PathBuf::from(output.ok_or("build --lib requires -o <crate directory>")?);
     let marker = destination.join(".orchestrate-library");
@@ -1015,7 +1028,7 @@ pub fn run_build_library_for_target(input: &str, output: Option<&str>, target: O
     }
     let cache = prepare_cache_dir(Path::new(input))?.join("library");
     fs::create_dir_all(cache.join("src")).map_err(|e| e.to_string())?;
-    let source = compile_with_mode(input, &cache, Some(&rust_version))?;
+    let source = compile_with_mode(input, &cache, Some(&rust_version), dependencies)?;
     if let Some(target) = target {
         let has_typescript = fs::read_dir(cache.join("landlines")).ok().into_iter().flatten().filter_map(Result::ok).any(|entry| entry.path().join("backend.txt").exists());
         if has_typescript {

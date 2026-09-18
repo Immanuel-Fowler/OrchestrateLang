@@ -1,5 +1,16 @@
-use super::core::Codegen;
-use crate::ast::{StmtNode, Type};
+use super::core::{Codegen, StateRewrite};
+use crate::ast::{Expr, ExprNode, MatchPattern, Stmt, StmtNode, StringPart, Type};
+use std::collections::HashSet;
+
+/// One field of the program struct: a top-level `let`, in declaration order.
+struct StateField {
+    name: String,
+    rust_type: String,
+    /// A closure has no nameable type, so its field boxes it.
+    boxed: bool,
+    /// No type could be derived; emitted as a compile_error! beside the struct.
+    error: Option<String>,
+}
 
 impl Codegen {
     pub(super) fn host_type(&self, ty: &Type) -> String {
@@ -23,6 +34,130 @@ impl Codegen {
             }
         }
         (None, "()".into())
+    }
+
+    fn client_type(serverlet: &str) -> String {
+        match serverlet.rsplit_once("::") {
+            Some((module, name)) => format!("{module}::{name}Client"),
+            None => format!("{serverlet}Client"),
+        }
+    }
+
+    /// Every name an expression uses — identifiers, call targets, and serverlet receivers —
+    /// regardless of shadowing, which over-approximates safely.
+    fn hook_names(expr: &Expr, names: &mut HashSet<String>) {
+        match &expr.node {
+            ExprNode::Identifier(name) => { names.insert(name.clone()); }
+            ExprNode::Literal(_) | ExprNode::NoneLiteral => {}
+            ExprNode::Unary { operand, .. } => Self::hook_names(operand, names),
+            ExprNode::Binary { lhs, rhs, .. } => { Self::hook_names(lhs, names); Self::hook_names(rhs, names); }
+            ExprNode::Call { callee, args } => {
+                names.insert(callee.clone());
+                for arg in args { Self::hook_names(arg, names); }
+            }
+            ExprNode::Pipeline { value, function } => { Self::hook_names(value, names); Self::hook_names(function, names); }
+            ExprNode::Block(stmts) => for stmt in stmts { Self::hook_names_stmt(stmt, names); },
+            ExprNode::If { cond, then_branch, else_branch } => {
+                Self::hook_names(cond, names);
+                Self::hook_names(then_branch, names);
+                if let Some(branch) = else_branch { Self::hook_names(branch, names); }
+            }
+            ExprNode::ModuleCall { module_local_name, args, .. } => {
+                names.insert(module_local_name.clone());
+                for arg in args { Self::hook_names(arg, names); }
+            }
+            ExprNode::StartServerlet { args, .. } => for arg in args { Self::hook_names(arg, names); },
+            ExprNode::AutomaticBlock { body, crash_handler, .. } => {
+                Self::hook_names(body, names);
+                if let Some((_, handler)) = crash_handler { Self::hook_names(handler, names); }
+            }
+            ExprNode::TriggeredBlock { body, .. } | ExprNode::Closure { body, .. } => Self::hook_names(body, names),
+            ExprNode::StartProcess { target } => Self::hook_names(target, names),
+            ExprNode::ArrayLiteral(items) => for item in items { Self::hook_names(item, names); },
+            ExprNode::StructLiteral { fields, .. } => for (_, value) in fields { Self::hook_names(value, names); },
+            ExprNode::FieldAccess { object, .. } | ExprNode::SomeLiteral(object) | ExprNode::OkLiteral(object)
+            | ExprNode::ErrLiteral(object) | ExprNode::Propagate(object) => Self::hook_names(object, names),
+            ExprNode::Index { object, index } => { Self::hook_names(object, names); Self::hook_names(index, names); }
+            ExprNode::TryCatch { body, handler, .. } => { Self::hook_names(body, names); Self::hook_names(handler, names); }
+            ExprNode::EnumVariantLiteral { payload, .. } => if let Some(payload) = payload { Self::hook_names(payload, names); },
+            ExprNode::Match { value, arms } => {
+                Self::hook_names(value, names);
+                for arm in arms {
+                    if let MatchPattern::Guard { condition, .. } = &arm.pattern { Self::hook_names(condition, names); }
+                    Self::hook_names(&arm.body, names);
+                }
+            }
+            ExprNode::StringInterp { parts } => for part in parts {
+                if let StringPart::Expr(expr) = part { Self::hook_names(expr, names); }
+            },
+        }
+    }
+
+    fn hook_names_stmt(stmt: &Stmt, names: &mut HashSet<String>) {
+        match &stmt.node {
+            StmtNode::Let { value, .. } | StmtNode::Expr(value) => Self::hook_names(value, names),
+            StmtNode::Return(Some(value)) => Self::hook_names(value, names),
+            StmtNode::Trigger { args, .. } => for arg in args { Self::hook_names(arg, names); },
+            StmtNode::While { cond, body } => { Self::hook_names(cond, names); Self::hook_names(body, names); }
+            StmtNode::ForIn { iter, body, .. } => { Self::hook_names(iter, names); Self::hook_names(body, names); }
+            StmtNode::Parallel(stmts) => for stmt in stmts { Self::hook_names_stmt(stmt, names); },
+            _ => {}
+        }
+    }
+
+    /// The program struct's fields: the top-level `let`s a hook body can reach. The rest
+    /// stay locals of the entry task exactly as before, so a binding consumed during
+    /// startup — moved into the process list, say — is unaffected. A name declared twice
+    /// keeps its first position and takes the type of its last declaration, which is the
+    /// binding that gets packed.
+    fn state_fields(&self) -> Vec<StateField> {
+        let mut referenced = HashSet::new();
+        for stmt in &self.local_stmts {
+            match &stmt.node {
+                StmtNode::OnTick { body, .. } | StmtNode::OnFixedTick { body, .. } | StmtNode::OnStop(body) => {
+                    Self::hook_names(body, &mut referenced)
+                }
+                _ => {}
+            }
+        }
+        let mut fields: Vec<StateField> = Vec::new();
+        for stmt in &self.local_stmts {
+            let StmtNode::Let { name, ty, value } = &stmt.node else { continue };
+            if !referenced.contains(name) { continue; }
+            let (rust_type, boxed, error) = match &value.node {
+                ExprNode::StartServerlet { name: serverlet, .. } => (Self::client_type(serverlet), false, None),
+                ExprNode::AutomaticBlock { .. } | ExprNode::TriggeredBlock { .. } => ("ProcessRef".to_string(), false, None),
+                ExprNode::Identifier(other) if fields.iter().any(|f| f.name == *other) => {
+                    let alias = fields.iter().find(|f| f.name == *other).unwrap();
+                    (alias.rust_type.clone(), alias.boxed, None)
+                }
+                _ => match ty.clone().or_else(|| self.state_types.get(name).cloned()) {
+                    Some(Type::Fn(params, ret)) => (
+                        format!(
+                            "Box<dyn Fn({}) -> {} + Send>",
+                            params.iter().map(|t| self.compile_type(t)).collect::<Vec<_>>().join(", "),
+                            self.compile_type(&ret)
+                        ),
+                        true,
+                        None,
+                    ),
+                    Some(Type::TypeParam(_)) | None => (
+                        "()".to_string(),
+                        false,
+                        Some(format!("library state '{name}' has no type the compiler can name; add a type annotation")),
+                    ),
+                    Some(other) => (self.compile_type(&other), false, None),
+                },
+            };
+            if let Some(existing) = fields.iter_mut().find(|f| f.name == *name) {
+                existing.rust_type = rust_type;
+                existing.boxed = boxed;
+                existing.error = error;
+            } else {
+                fields.push(StateField { name: name.clone(), rust_type, boxed, error });
+            }
+        }
+        fields
     }
 
     pub(super) fn library_runtime(&self) -> String {
@@ -70,7 +205,7 @@ impl Codegen {
                 let params = types.iter().enumerate().map(|(i,t)| format!("arg{}: {}", i, self.compile_type(t))).collect::<Vec<_>>().join(", ");
                 let args = (0..types.len()).map(|i| format!("arg{}", i)).collect::<Vec<_>>().join(", ");
                 let value = if types.len() == 1 { args } else { format!("({})", args) };
-                triggers.push_str(&format!("pub fn trigger_{name}(&self, {params}) -> Result<(), String> {{ if *self.context.shutdown.borrow() {{ return Err(\"library is stopped\".into()); }} let context = self.context.clone(); let future: OrchEvent = Box::pin(async move {{ let handlers = context.event_{name}.lock().unwrap().clone(); let value = std::sync::Arc::new({value}); for handler in handlers {{ context.batch.lock().unwrap().push_back(handler(value.clone())); }} }}); self.context.events.lock().unwrap().push_back(future); Ok(()) }}\n"));
+                triggers.push_str(&format!("pub fn trigger_{name}(&self, {params}) -> Result<(), String> {{ if *self.context.shutdown.borrow() {{ return Err(\"library is stopped\".into()); }} let context = self.context.clone(); let future: OrchEvent = Box::pin(async move {{ let handlers = context.event_{name}.lock().unwrap().clone(); let value = std::sync::Arc::new({value}); for handler in handlers {{ context.batch.lock().unwrap().push_back(handler(value.clone())); }} }}); self.context.queue_event(future); Ok(()) }}\n"));
                 fields.push_str(&format!("    event_{}: std::sync::Arc<std::sync::Mutex<Vec<OrchEventHandler<{}>>>>,\n", name, ty));
             } else {
                 fields.push_str(&format!("    event_{}: std::sync::Arc<std::sync::Mutex<Vec<tokio::sync::mpsc::Sender<std::sync::Arc<{}>>>>>,\n", name, ty));
@@ -103,6 +238,9 @@ impl Codegen {
         execution: &str,
         args: &str,
     ) -> String {
+        let fields = self.state_fields();
+        let rewrite_fields: std::collections::BTreeMap<String, bool> =
+            fields.iter().map(|f| (f.name.clone(), f.boxed)).collect();
         let mut start = String::new();
         let mut stop = String::new();
         let mut tick = String::new();
@@ -115,19 +253,67 @@ impl Codegen {
                 StmtNode::OnStop(body) => {
                     stop.push_str(&format!("{};\n", self.compile_expr(&body)))
                 }
-                StmtNode::OnFixedTick { param, body } => fixed.push_str(&format!("{{ let {} = __dt; {}; }}\n", param, self.compile_expr(&body))),
+                StmtNode::OnFixedTick { param, body } => {
+                    // Hook bodies run after the bindings are packed, so they read the struct.
+                    let mut scope = std::collections::HashSet::new();
+                    scope.insert(param.clone());
+                    self.state_rewrite = Some(StateRewrite { fields: rewrite_fields.clone(), scopes: vec![scope] });
+                    let compiled = self.compile_expr(&body);
+                    self.state_rewrite = None;
+                    fixed.push_str(&format!("{{ let {} = __dt; {}; }}\n", param, compiled));
+                }
                 StmtNode::OnTick { param, input, return_type, body } => {
                     let bind = input.as_ref().map(|p| format!("let {} = __input;", p.name)).unwrap_or_default();
+                    let mut scope = std::collections::HashSet::new();
+                    scope.insert(param.clone());
+                    if let Some(p) = &input { scope.insert(p.name.clone()); }
+                    self.state_rewrite = Some(StateRewrite { fields: rewrite_fields.clone(), scopes: vec![scope] });
+                    let compiled = self.compile_expr(&body);
+                    self.state_rewrite = None;
                     if input.is_some() || return_type != Type::Void {
-                        tick = format!("let {} = __dt; {} {}", param, bind, self.compile_expr(&body));
-                    } else { tick.push_str(&format!("{{ let {} = __dt; {}; }}\n", param, self.compile_expr(&body))); }
+                        tick = format!("let {} = __dt; {} {}", param, bind, compiled);
+                    } else { tick.push_str(&format!("{{ let {} = __dt; {}; }}\n", param, compiled)); }
                 },
                 _ => {}
             }
         }
-        let input_binding = if self.tick_types().0.is_some() { ", __input" } else { "" };
+        let (input, output) = self.tick_types();
+        let input_param = input.as_ref().map(|ty| format!(", __input: {ty}")).unwrap_or_default();
+        let input_arg = if input.is_some() { ", __input" } else { "" };
+        let errors = fields.iter().filter_map(|f| f.error.as_ref().map(|e| format!("compile_error!({e:?});\n"))).collect::<String>();
+        let program_struct = if fields.is_empty() {
+            "struct __OrchProgram {}".to_string()
+        } else {
+            format!("struct __OrchProgram {{\n{}\n}}", fields.iter().map(|f| format!("    {}: {},", f.name, f.rust_type)).collect::<Vec<_>>().join("\n"))
+        };
+        let pack = if fields.is_empty() {
+            "__OrchProgram {}".to_string()
+        } else {
+            format!("__OrchProgram {{ {} }}", fields.iter().map(|f| if f.boxed { format!("{0}: Box::new({0})", f.name) } else { f.name.clone() }).collect::<Vec<_>>().join(", "))
+        };
+        let unpack = if fields.is_empty() {
+            "__OrchProgram {}".to_string()
+        } else {
+            format!("__OrchProgram {{ {} }}", fields.iter().map(|f| format!("mut {}", f.name)).collect::<Vec<_>>().join(", "))
+        };
         format!(
-            r#"{helper}
+            r#"{errors}/// The top-level bindings the hooks reach, owned by the instance rather than by a task.
+{program_struct}
+{helper}
+async fn __orch_run_tick(__program: &mut __OrchProgram, __dt: f64{input_param}) -> {output} {{
+    let __context = crate::__orch_context();
+    __context.advance_time(__dt);
+    __context.drain_events().await;
+    let __output = async {{ {tick} }}.await;
+    __context.drain_events().await;
+    __output
+}}
+async fn __orch_run_fixed_tick(__program: &mut __OrchProgram, __dt: f64) {{
+    let __context = crate::__orch_context();
+    __context.drain_events().await;
+    {fixed}
+    __context.drain_events().await;
+}}
 async fn __orch_entry(mut commands: tokio::sync::mpsc::UnboundedReceiver<OrchCommand>, ready: tokio::sync::oneshot::Sender<()>) {{
     {declarations}
     let __context = crate::__orch_context();
@@ -137,23 +323,29 @@ async fn __orch_entry(mut commands: tokio::sync::mpsc::UnboundedReceiver<OrchCom
     }}
     {execution}
     let __main = if __context.options.deterministic {{ orchestrator_main({args}).await; None }} else {{ Some(tokio::spawn(async move {{ orchestrator_main({args}).await; }})) }};
+    *__context.program.lock().await = Some({pack});
     let _ = ready.send(());
     while !*__shutdown.borrow() {{
         let command = tokio::select! {{ biased; _ = __shutdown.changed() => break, command = commands.recv() => command }};
         let Some(command) = command else {{ break; }};
         match command {{
-            OrchCommand::Tick(__dt{input_binding}, reply) => {{
+            OrchCommand::Tick(__dt{input_arg}, reply) => {{
                 __context.frame.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 __context.dt_bits.store(__dt.to_bits(), std::sync::atomic::Ordering::Relaxed);
-                tokio::select! {{ biased; _ = __shutdown.changed() => break, __output = async {{ __context.advance_time(__dt); __context.drain_events().await; let output = async {{ {tick} }}.await; __context.drain_events().await; output }} => {{ let _ = reply.send(__output); }} }}
+                let mut __state = __context.program.lock().await;
+                let __program = __state.as_mut().expect("program state");
+                tokio::select! {{ biased; _ = __shutdown.changed() => break, __output = __orch_run_tick(__program, __dt{input_arg}) => {{ let _ = reply.send(__output); }} }}
             }},
             OrchCommand::FixedTick(__dt, reply) => {{
-                tokio::select! {{ biased; _ = __shutdown.changed() => break, _ = async {{ __context.drain_events().await; {fixed} __context.drain_events().await; }} => {{ let _ = reply.send(()); }} }}
+                let mut __state = __context.program.lock().await;
+                let __program = __state.as_mut().expect("program state");
+                tokio::select! {{ biased; _ = __shutdown.changed() => break, _ = __orch_run_fixed_tick(__program, __dt) => {{ let _ = reply.send(()); }} }}
             }},
             OrchCommand::Shutdown => break,
         }}
     }}
     if let Some(__main) = __main {{ __main.abort(); let _ = __main.await; }}
+    let {unpack} = __context.program.lock().await.take().expect("program state");
     {stop}
 }}
 "#

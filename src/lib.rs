@@ -4,6 +4,7 @@ pub mod lexer;
 pub mod parser;
 pub mod typechecker;
 pub mod codegen;
+pub mod dependencies;
 pub mod driver;
 pub mod errors;
 pub mod ffi_parser;

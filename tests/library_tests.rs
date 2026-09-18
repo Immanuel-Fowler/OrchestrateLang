@@ -533,10 +533,15 @@ fn main() {
     scripts.fixed_tick_blocking(&runtime, 0.01).unwrap();
     let result = scripts.tick_blocking(&runtime, 0.25, scripts::Input { values: vec![8] }).unwrap();
     assert_eq!(result.total, 10);
+    // The synchronous entry points carry the same typed input and output, and finish a
+    // landline round trip under block_on when the body has to wait for it.
+    scripts.fixed_tick_sync(&runtime, 0.01).unwrap();
+    let result = scripts.tick_sync(&runtime, 0.25, scripts::Input { values: vec![1, 2] }).unwrap();
+    assert_eq!(result.total, 6, "sum of the batch plus the tick number, which is 3 by now");
     scripts.shutdown_blocking(&runtime).unwrap();
 }
 "#);
-    assert_eq!(output.trim(), "fixed\nfixed");
+    assert_eq!(output.trim(), "fixed\nfixed\nfixed");
 }
 
 #[test]
@@ -551,23 +556,24 @@ on_tick(dt: float) { world.record(0) }
 use std::sync::{Arc, Mutex};
 struct Host(Arc<Mutex<Vec<i64>>>);
 impl scripts::Host for Host { fn world_record(&self, n: i64) -> Result<(), String> { self.0.lock().unwrap().push(n); Ok(()) } }
-fn run(runtime: &tokio::runtime::Runtime) -> Vec<i64> {
+fn run(runtime: &tokio::runtime::Runtime, sync: bool) -> Vec<i64> {
+    let tick = |scripts: &mut scripts::Scripts, dt: f64| if sync { scripts.tick_sync(runtime, dt) } else { scripts.tick_blocking(runtime, dt) };
     let recorded = Arc::new(Mutex::new(Vec::new()));
     let options = scripts::StartOptions { deterministic: true, ..Default::default() };
     let mut scripts = scripts::start_with_options(runtime.handle(), Host(recorded.clone()), options).unwrap();
     let untouched = Arc::new(Mutex::new(Vec::new()));
     let mut other = scripts::start_with_options(runtime.handle(), Host(untouched.clone()), scripts::StartOptions { deterministic: true, ..Default::default() }).unwrap();
     scripts.trigger_hit(3).unwrap();
-    scripts.tick_blocking(runtime, 0.001).unwrap();
+    tick(&mut scripts, 0.001).unwrap();
     assert_eq!(*recorded.lock().unwrap(), vec![3,0]);
-    other.tick_blocking(runtime, 0.001).unwrap();
+    tick(&mut other, 0.001).unwrap();
     assert_eq!(*untouched.lock().unwrap(), vec![0], "an event must reach only the instance it was fired on");
     other.shutdown_blocking(runtime).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(30));
     assert_eq!(*recorded.lock().unwrap(), vec![3,0]);
     scripts.trigger_hit(4).unwrap();
-    scripts.tick_blocking(runtime, 0.02).unwrap();
-    scripts.tick_blocking(runtime, 0.02).unwrap();
+    tick(&mut scripts, 0.02).unwrap();
+    tick(&mut scripts, 0.02).unwrap();
     scripts.shutdown_blocking(runtime).unwrap();
     let result = recorded.lock().unwrap().clone();
     result
@@ -575,9 +581,12 @@ fn run(runtime: &tokio::runtime::Runtime) -> Vec<i64> {
 fn main() {
     let a = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let b = tokio::runtime::Runtime::new().unwrap();
-    let first = run(&a);
-    assert_eq!(first, run(&a));
-    assert_eq!(first, run(&b));
+    let first = run(&a, false);
+    assert_eq!(first, run(&a, false));
+    assert_eq!(first, run(&b, false));
+    // The synchronous path replays the same host-driven time and event order.
+    assert_eq!(first, run(&a, true));
+    assert_eq!(first, run(&b, true));
     assert_eq!(first, vec![3,0,103,4,0,104,0]);
     println!("replays match");
 }
@@ -785,4 +794,160 @@ fn main() {
 }
 "#);
     assert!(output.is_empty());
+}
+
+/// A Rust foreign module declares the crates it needs in its sidecar, and a host can add
+/// more on the command line; the same crate declared twice must be identical.
+#[test]
+fn library_rust_dependencies_from_sidecar_and_cli() {
+    let root = root("rust_dependencies");
+    fs::create_dir_all(root.join("sdk/src")).unwrap();
+    fs::write(root.join("sdk/Cargo.toml"), "[package]\nname = \"sdk\"\nversion = \"0.1.0\"\nedition = \"2021\"\n").unwrap();
+    fs::write(root.join("sdk/src/lib.rs"), "pub fn triple(n: i64) -> i64 { n * 3 }\n").unwrap();
+    fs::create_dir_all(root.join("native")).unwrap();
+    fs::write(root.join("native/module.orch"), "load_foreign \"rust\" \"impl.rs\"\n").unwrap();
+    fs::write(root.join("native/impl.orch_ffi"), "triple(n: int) -> int\n\n[dependencies]\nsdk = { path = \"../sdk\" }\n").unwrap();
+    fs::write(root.join("native/impl.rs"), "pub fn triple(n: i64) -> i64 { sdk::triple(n) }\n").unwrap();
+    fs::write(root.join("main.orch"), "use module native: \"./native\"\nhost world { fn record(n: int) }\non_tick(dt: float) { world.record(native.triple(2)) }\norchestrator main() {}\n").unwrap();
+    fs::write(root.join("deps.toml"), "[dependencies]\nsdk = { path = \"sdk\" }\n").unwrap();
+    // The fragment names the same crate at the same directory, resolved from the working
+    // directory rather than the sidecar, so it merges instead of conflicting.
+    let result = Command::new(env!("CARGO_BIN_EXE_orchestrate"))
+        .args(["build", "--lib"]).arg(root.join("main.orch")).arg("-o").arg(root.join("scripts"))
+        .arg("--dependencies").arg(root.join("deps.toml"))
+        .current_dir(&root).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let manifest = fs::read_to_string(root.join("scripts/Cargo.toml")).unwrap();
+    let sdk = fs::canonicalize(root.join("sdk")).unwrap();
+    let expected = format!("sdk = {{ path = {:?} }}", sdk.to_string_lossy());
+    assert_eq!(manifest.matches("sdk = ").count(), 1, "{manifest}");
+    assert!(manifest.contains(&expected), "{manifest}");
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<i64>>>);
+impl scripts::Host for Host { fn world_record(&self, n: i64) -> Result<(), String> { self.0.lock().unwrap().push(n); Ok(()) } }
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut scripts = scripts::start(runtime.handle(), Host(log.clone())).unwrap();
+    scripts.tick_blocking(&runtime, 0.1).unwrap();
+    assert_eq!(*log.lock().unwrap(), vec![6]);
+    scripts.shutdown_blocking(&runtime).unwrap();
+}
+"#);
+    assert!(output.is_empty());
+    let conflict = Command::new(env!("CARGO_BIN_EXE_orchestrate"))
+        .args(["build", "--lib"]).arg(root.join("main.orch")).arg("-o").arg(root.join("scripts"))
+        .arg("--dependency").arg("sdk = \"1.0\"")
+        .current_dir(&root).output().unwrap();
+    assert!(!conflict.status.success());
+    let stderr = String::from_utf8_lossy(&conflict.stderr);
+    assert!(stderr.contains("dependency 'sdk'") && stderr.contains("must be identical"), "{stderr}");
+    let refused = Command::new(env!("CARGO_BIN_EXE_orchestrate"))
+        .args(["build"]).arg(root.join("main.orch")).arg("--dependency").arg("sdk = \"1.0\"")
+        .current_dir(&root).output().unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("apply to build --lib"));
+}
+
+/// State across ticks, events queued during a tick, a serverlet round trip the body has
+/// to wait for, a stop requested mid-tick, and on_stop reading the final state: the same
+/// program observed through the channel path and through tick_sync.
+#[test]
+fn engine_sync_tick_matches_channel_tick() {
+    let root = root("sync_tick_parity");
+    build(&root, r#"
+host world { fn record(n: int) }
+serverlet Counter {
+    let total = 0
+    on add(n: int) -> int {
+        total = total + n
+        return total
+    }
+}
+let ticks = 0
+let counter = start Counter()
+on hit(n: int) { world.record(n * 10) }
+on_tick(dt: float) {
+    ticks = ticks + 1
+    trigger hit(ticks)
+    world.record(counter.add(1))
+    if ticks == 3 { stop_orch() }
+}
+on_stop { world.record(ticks * 100) }
+orchestrator main() {}
+"#);
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<i64>>>);
+impl scripts::Host for Host { fn world_record(&self, n: i64) -> Result<(), String> { self.0.lock().unwrap().push(n); Ok(()) } }
+fn drive(runtime: &tokio::runtime::Runtime, sync: bool) -> Vec<i64> {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut scripts = scripts::start(runtime.handle(), Host(log.clone())).unwrap();
+    let mut outcomes = Vec::new();
+    for _ in 0..4 {
+        let result = if sync { scripts.tick_sync(runtime, 0.1) } else { scripts.tick_blocking(runtime, 0.1) };
+        outcomes.push(result.is_ok());
+    }
+    assert_eq!(outcomes, [true, true, true, false], "the tick after stop_orch fails on both paths");
+    scripts.shutdown_blocking(runtime).unwrap();
+    let recorded = log.lock().unwrap().clone();
+    recorded
+}
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let channel = drive(&runtime, false);
+    let sync = drive(&runtime, true);
+    assert_eq!(channel, vec![1, 10, 2, 20, 3, 30, 300]);
+    assert_eq!(sync, channel);
+}
+"#);
+    assert!(output.is_empty());
+}
+
+/// The synchronous tick skips the coordinator task, the command channel, the reply, and
+/// the park that block_on costs per frame.
+#[test]
+fn engine_sync_tick_is_cheaper_than_the_channel() {
+    let root = root("sync_tick_cost");
+    build(&root, r#"
+host world { fn count() }
+let ticks = 0
+on_tick(dt: float) {
+    ticks = ticks + 1
+    world.count()
+}
+orchestrator main() {}
+"#);
+    let output = host(&root, r#"
+use std::sync::atomic::{AtomicU64, Ordering};
+struct Host(std::sync::Arc<AtomicU64>);
+impl scripts::Host for Host { fn world_count(&self) -> Result<(), String> { self.0.fetch_add(1, Ordering::Relaxed); Ok(()) } }
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let count = std::sync::Arc::new(AtomicU64::new(0));
+    let mut scripts = scripts::start(runtime.handle(), Host(count.clone())).unwrap();
+    scripts.ready_blocking(&runtime).unwrap();
+    const N: u64 = 20_000;
+    let mut measure = |sync: bool| {
+        let mut best = u128::MAX;
+        for _ in 0..5 {
+            let start = std::time::Instant::now();
+            for _ in 0..N {
+                if sync { scripts.tick_sync(&runtime, 0.016).unwrap(); } else { scripts.tick_blocking(&runtime, 0.016).unwrap(); }
+            }
+            best = best.min(start.elapsed().as_nanos() / N as u128);
+        }
+        best
+    };
+    let channel = measure(false);
+    let sync = measure(true);
+    scripts.shutdown_blocking(&runtime).unwrap();
+    assert_eq!(count.load(Ordering::Relaxed), N * 10);
+    println!("channel {channel} sync {sync}");
+    assert!(sync < channel, "a sync tick ({sync} ns) must cost less than a channel tick ({channel} ns)");
+}
+"#);
+    assert!(output.starts_with("channel "), "{output}");
+    println!("{}", output.trim());
 }

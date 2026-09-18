@@ -242,6 +242,14 @@ pub fn pascal_case(s: &str) -> String {
     res
 }
 
+/// Active while a library hook body is compiled: the entry file's top-level `let`s are
+/// fields of the `__program` struct, unless a local of the same name shadows them.
+pub(super) struct StateRewrite {
+    /// Field name to whether the field boxes a closure, which changes how it is read.
+    pub fields: std::collections::BTreeMap<String, bool>,
+    pub scopes: Vec<HashSet<String>>,
+}
+
 pub struct Codegen {
     pub tasks: HashSet<String>,
     pub modules: HashSet<String>,
@@ -257,6 +265,9 @@ pub struct Codegen {
     pub has_secret: bool,
     /// Declarations that start children through tokio::process, for the library's driver check.
     pub io_driver_users: Vec<String>,
+    /// Types of the entry file's top-level `let`s, from the typechecker, for the program struct.
+    pub state_types: std::collections::BTreeMap<String, Type>,
+    pub(super) state_rewrite: Option<StateRewrite>,
     /// Struct definitions in the file being generated, used by the serverlet wire codec.
     pub struct_defs: Vec<(String, Vec<(String, Type)>)>,
 }
@@ -275,6 +286,8 @@ impl Codegen {
             secret_programs: Vec::new(),
             has_secret: false,
             io_driver_users: Vec::new(),
+            state_types: std::collections::BTreeMap::new(),
+            state_rewrite: None,
             sandbox_programs: Vec::new(),
             struct_defs: Vec::new(),
         }
@@ -555,6 +568,44 @@ impl Codegen {
                             | "range" | "map" | "filter" | "reduce" | "find" | "any" | "all")
     }
 
+    pub(super) fn push_scope(&mut self) {
+        if let Some(rewrite) = &mut self.state_rewrite { rewrite.scopes.push(HashSet::new()); }
+    }
+
+    pub(super) fn pop_scope(&mut self) {
+        if let Some(rewrite) = &mut self.state_rewrite { rewrite.scopes.pop(); }
+    }
+
+    pub(super) fn define_local(&mut self, name: &str) {
+        if let Some(rewrite) = &mut self.state_rewrite {
+            if let Some(scope) = rewrite.scopes.last_mut() { scope.insert(name.to_string()); }
+        }
+    }
+
+    /// Whether a name read here is a program field (and whether that field is boxed).
+    fn state_field(&self, name: &str) -> Option<bool> {
+        let rewrite = self.state_rewrite.as_ref()?;
+        if rewrite.scopes.iter().any(|scope| scope.contains(name)) { return None; }
+        rewrite.fields.get(name).copied()
+    }
+
+    /// A name read as a value: a local, a program field, or a boxed closure by reference.
+    pub(super) fn read_name(&self, name: &str) -> String {
+        match self.state_field(name) {
+            Some(true) => format!("(&__program.{name})"),
+            Some(false) => format!("__program.{name}"),
+            None => name.to_string(),
+        }
+    }
+
+    /// A name in call position; a program field needs parentheses to be called.
+    pub(super) fn call_name(&self, name: &str) -> String {
+        match self.state_field(name) {
+            Some(_) => format!("(__program.{name})"),
+            None => name.to_string(),
+        }
+    }
+
     pub fn generate(&mut self, stmts: &[Stmt], is_main: bool) -> String {
         self.is_main = is_main;
         self.scan_tasks(stmts);
@@ -714,6 +765,7 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
     pub fn compile_block_inner(&mut self, body: &Expr, force_semicolons: bool) -> String {
         if let ExprNode::Block(stmts) = &body.node {
             let mut parts = Vec::new();
+            self.push_scope();
             for (i, s) in stmts.iter().enumerate() {
                 let is_last = i == stmts.len() - 1;
                 // Source map comment for each statement
@@ -736,6 +788,7 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
                     }
                 }
             }
+            self.pop_scope();
             parts.join("\n    ")
         } else {
             self.compile_expr(body)
