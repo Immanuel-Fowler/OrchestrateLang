@@ -9,6 +9,37 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-18
+
+Errors of any type, strings and handles across the C ABI, and a generic standard library.
+
+### Added
+- Type parameters in Rust `.orch_ffi` signatures: `reverse<T>(items: T[]) -> T[]`
+  registers as a generic function, so a call infers `T` from its arguments and the Rust
+  implementation, written generically, infers it too. The standard library's `lists`
+  module uses this: `head`, `tail`, `reverse`, `sort`, `unique`, and `flatten` now take
+  any element type rather than `int` alone, and `sum_float`, `max_float`, and `min_float`
+  join the `int` versions. `docs/language-reference.md` gains the standard-library section
+  it lacked.
+- `result<T, E>`. A result's error can be any type; `result<T>` still means
+  `result<T, string>`, so every existing program keeps its meaning and its generated code.
+  `err(value)` takes any value and is checked against the `result` it must produce; `?`
+  requires the function's error type to match, without converting between error types;
+  `match` binds `result::Err(e)` as `E`; and `try { … } catch e: Failure { … }` names the
+  error type a block propagates, while a plain `catch e` still binds a `string`.
+- `string` across the C ABI. C, C++, Zig, and Swift sidecars accept `string` parameters
+  and returns under one ownership rule: a parameter arrives as a NUL-terminated
+  `const char *` valid for the call, and a return is a `malloc`'d `char *` the generated
+  wrapper copies and frees. The slowest boundary no longer carries richer types than the
+  fastest.
+- `handle`: an opaque native object from a C-ABI foreign module. A sidecar that returns
+  `handle` names its release function once, `drop release_counter(c: handle)`, and the
+  generated value calls it when its last owner drops, so a native object lives as long as
+  the OrchestrateLang value holding it — in a local, in program state across ticks, or
+  in a struct — with no serverlet or process around it. Handle arguments are passed by
+  reference, so a call does not move the caller's handle. C-ABI sidecar signatures are now
+  registered with the typechecker, so calls to them are typed and arity-checked.
+
 ## [0.7.0] - 2026-09-18
 
 Foreign Rust can depend on the host, and a frame can tick without a task hop.
@@ -403,7 +434,8 @@ First tagged release.
   `option` / `result`, `try` / `catch`, supervision, `check`, the language server, or the
   standard library. See `examples/` for working code.
 
-[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.5.1...v0.6.0

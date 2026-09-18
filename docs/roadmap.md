@@ -153,18 +153,20 @@ The compiler resolves bare (non-path) module names against the local registry au
 Each is small enough to land on its own; the plan with a design and steps for all four
 is [plans/language-gaps.md](plans/language-gaps.md).
 
-- **`result<T, E>`.** Today `result<T>` always carries a `string` error (`err()` accepts
-  nothing else, `catch e` binds a string). Plan: an optional second parameter that
-  defaults to `string`, so every existing program keeps compiling. About a day.
-- **`string` across the C ABI, then opaque handles.** C, C++, Zig, and Swift sidecars
-  accept only `int`, `float`, and `bool`; TypeScript, the slowest boundary, has the
-  richest types. Plan: `string` first with one ownership rule, then a `handle` type whose
-  native object is released when its owner is dropped — stateful native objects without a
-  serverlet. A day each; arrays and structs after.
-- **The standard library beyond `int`.** `lists` is `int[]`-only because Rust sidecars
-  are monomorphic, although the language has generics. Plan: type parameters in `.orch_ffi`
-  signatures, so `reverse<T>(items: T[]) -> T[]` registers as the generic it already is in
-  Rust. Half a day to a day.
+- **`result<T, E>` — shipped in 0.8.0.** `result<T>` used to carry only a `string` error.
+  The second parameter defaults to `string`, so every existing program kept compiling;
+  `err(value)` takes any type, `?` requires matching error types, and
+  `catch e: Failure` names a non-string error a `try` block propagates.
+- **`string` across the C ABI, then opaque handles — shipped in 0.8.0.** C, C++, Zig,
+  and Swift sidecars used to accept only `int`, `float`, and `bool`. Strings cross under
+  one ownership rule (NUL-terminated in; `malloc`'d out, copied and freed by the wrapper),
+  and `handle` is an opaque native object released through the sidecar's `drop` function
+  when its last owner drops — stateful native objects without a serverlet. Arrays and
+  structs across the C ABI are still to come.
+- **The standard library beyond `int` — shipped in 0.8.0.** `lists` was `int[]`-only
+  because Rust sidecars were monomorphic. Sidecar signatures take type parameters,
+  `reverse<T>(items: T[]) -> T[]`, so the structural list functions accept any element
+  type and the numeric ones gained `float` variants.
 - **Sandboxed serverlets still run without isolation.** Steps 3–7 of
   [design/sandboxed-serverlets.md](design/sandboxed-serverlets.md) remain. Plan: first make
   `sandbox(...)` an error unless a flag opts into the unsandboxed run, so the syntax cannot

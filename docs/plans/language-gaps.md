@@ -1,8 +1,14 @@
 # Language gaps: `result<T, E>`, C-ABI strings and handles, a generic stdlib, sandbox honesty
 
-> Status: **planned, not started.** Found in the 2026-09-18 review of the language after
-> v0.6.0. Each section stands alone and can ship as its own change; sizes are estimates
-> for one person. None changes the behaviour of a program that compiles today.
+> Status: **sections 1–3 shipped in v0.8.0 (2026-09-18); section 4 open.** Found in the
+> 2026-09-18 review of the language after v0.6.0. Where the shipped design differs from
+> the plan below: `try`/`catch` names a non-string error type explicitly,
+> `catch e: Failure`, because codegen has no type information and Rust cannot infer the
+> closure's error type (the typechecker verifies the annotation against what the block
+> propagates); the release function is declared on its own line, `drop release(c: handle)`,
+> and handle arguments are passed by reference so a call does not move the caller's
+> handle; and arrays and structs across the C ABI remain planned. Sizes were estimates
+> for one person. None changes the behaviour of a program that compiled before.
 
 ## 1. `result<T, E>`
 
