@@ -9,6 +9,34 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-18
+
+Generated code that never changes on its own, and a library that says which Tokio
+drivers it needs.
+
+A patch under the rule in CONTRIBUTING.md section 5: nothing that already worked changes
+behaviour. The constant is new, the start-time error replaces a panic and a hang, and the
+ordering fix changes the generated text, not what it does.
+
+### Added
+- `NEEDS_IO_DRIVER` in generated library crates: `true` when a declaration anywhere in the
+  program — the entry file or an imported module — starts a child process through Tokio,
+  which is a Python or TypeScript landline or a secret serverlet. A host can build its
+  runtime from it. `start` and `start_with_options` now check the runtime before spawning
+  anything and return an error naming those declarations when it lacks the IO driver, or
+  the time driver every program needs, where a missing driver used to panic inside a task
+  and leave the next call waiting forever. `build --lib` prints the same list.
+  `docs/library-mode.md` gains a "Runtime drivers" section that says, per declaration,
+  whether code runs in the host process or as a persistent child and what the runtime must
+  enable; TypeScript FFI runs its child over `std` pipes and needs no IO driver.
+
+### Fixed
+- Generated code is a pure function of the program. Event registries were emitted in
+  HashMap order, and the variables a worker or event handler captures in HashSet order;
+  both change between runs, so the same program produced different Rust on consecutive
+  builds and a host rebuilt the generated crate every time. Both are emitted in name order
+  now, and a test builds a library twice and compares the outputs byte for byte.
+
 ## [0.6.0] - 2026-09-17
 
 TypeScript FFI keeps its process, and each TypeScript file chooses its compiler.
@@ -349,7 +377,8 @@ First tagged release.
   `option` / `result`, `try` / `catch`, supervision, `check`, the language server, or the
   standard library. See `examples/` for working code.
 
-[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.4.0...v0.5.0
