@@ -84,6 +84,10 @@ count = count + 1
 | `void` | No return value | (used in function signatures) |
 | `process` | A handle to a process block | `let p: process = automatic { ... }` |
 | `process[]` | Array of process handles | `orchestrator main(procs: process[])` |
+| `T[]` | Array of `T` | `let xs: int[] = [1, 2, 3]` |
+| `option<T>` | A value or `none` | `some(3)`, `none` |
+| `result<T>` | A value or a string error | `ok(3)`, `err("bad input")` |
+| `fn(A) -> B` | A function value | `let f: fn(int) -> int = fn(x: int) -> int { x }` |
 
 #### User-Defined Structs
 
@@ -285,12 +289,153 @@ trigger update_orchestrator([])
 | `length` | `length(arr) -> int` | Returns the number of elements in an array |
 | `append` | `append(arr, val)` | Appends `val` to the end of `arr` in place |
 | `remove` | `remove(arr, index: int)` | Removes the element at `index` from `arr` in place |
+| `map` | `map(arr, f: fn(T) -> U) -> U[]` | A new array of `f` applied to each element |
+| `filter` | `filter(arr, f: fn(T) -> bool) -> T[]` | The elements for which `f` is true |
+| `reduce` | `reduce(arr, init: U, f: fn(U, T) -> U) -> U` | Folds the array left to right from `init` |
+| `any` | `any(arr, f: fn(T) -> bool) -> bool` | Whether `f` is true for some element |
+| `all` | `all(arr, f: fn(T) -> bool) -> bool` | Whether `f` is true for every element |
+| `find` | `find(arr, f: fn(T) -> bool) -> option<T>` | The first element for which `f` is true |
 
 ```orchestrate
 let items = [1, 2, 3]
 append(items, 4)
 print(to_string(length(items)))   // prints 4
 remove(items, 0)                  // removes the first element
+```
+
+### 2.10 Closures and Function Types
+
+A closure is `fn(params) -> type { body }`, and its type is written the same way without
+the body. Closures are values: bind them with `let`, pass them to functions, and hand them
+to the array functions above.
+
+```orchestrate
+fn apply(x: int, f: fn(int) -> int) -> int {
+    f(x)
+}
+
+orchestrator main() {
+    let double = fn(x: int) -> int { x * 2 }
+    print("{apply(5, double)}")                              // 10
+
+    let evens = filter([1, 2, 3, 4], fn(x: int) -> bool { x % 2 == 0 })
+    let total = reduce(evens, 0, fn(acc: int, x: int) -> int { acc + x })
+    print("{total}")                                         // 6
+    stop_orch()
+}
+```
+
+Parameter types are always declared. A closure that returns nothing omits `-> type`. A
+`let` with a function type annotation, `let f: fn(int) -> int = ...`, is accepted; the
+compiler lets Rust infer the closure's concrete type.
+
+### 2.11 Generics
+
+A `fn`, `task`, or `process` takes type parameters in angle brackets after its name. Each
+parameter is inferred from the arguments at the call site; there is no explicit
+`identity<int>(42)` form.
+
+```orchestrate
+fn identity<T>(x: T) -> T {
+    x
+}
+
+fn wrap_some<T>(value: T) -> option<T> {
+    some(value)
+}
+
+orchestrator main() {
+    let n = identity(42)          // T = int
+    let s = identity("hello")     // T = string
+    let maybe = wrap_some(true)   // option<bool>
+    stop_orch()
+}
+```
+
+A type parameter may appear on its own or inside `T[]`, `option<T>`, `result<T>`, and
+function types. Generic functions compile to Rust generics bounded by
+`Clone + Debug + Send + Sync + 'static`, which every OrchestrateLang value satisfies.
+
+The typechecker treats a type parameter as compatible with any argument, so a call that
+misuses one (for example passing an `int` where the body indexes `T[]`) is reported by the
+Rust compiler rather than by `orchestrate check`. `ORCH_SHOW_GENERATED=1` shows the
+generated code beside the error.
+
+### 2.12 Enums and `match`
+
+An `enum` lists its variants; a variant may carry one payload. Construct a variant with
+`Name::Variant` or `Name::Variant(value)`, and take it apart with `match`.
+
+```orchestrate
+enum Shape {
+    Circle(int),
+    Square(int),
+    Point,
+}
+
+fn area(s: Shape) -> int {
+    match s {
+        Shape::Circle(r) => r * r * 3
+        Shape::Square(side) => side * side
+        Shape::Point => 0
+    }
+}
+```
+
+`match` is an expression, so every arm produces a value of the same type. Arms are
+separated by newlines, a payload pattern binds the payload to a name, and `_` matches
+anything. A pattern may carry a guard, `Shape::Circle(r) if r > 10 => ...`, which is
+tried only when the pattern matches. A `match` must be exhaustive: the typechecker
+rejects one that misses a variant and has no `_` arm. Literal patterns work for `int`, `string`, and `bool` values, and
+`option` values match with `option::Some(v)` and `option::None`.
+
+### 2.13 `option`, `result`, `?`, and `try` / `catch`
+
+`option<T>` is `some(value)` or `none`. `result<T>` is `ok(value)` or `err("message")`;
+the error of a `result` is always a `string`.
+
+```orchestrate
+fn divide(a: int, b: int) -> result<int> {
+    if b == 0 {
+        err("division by zero")
+    } else {
+        ok(a / b)
+    }
+}
+
+fn halve_then_double(x: int, y: int) -> result<int> {
+    let half = divide(x, y)?
+    ok(half * 2)
+}
+
+task guarded(a: int, b: int) -> int {
+    try {
+        divide(a, b)?
+    } catch e {
+        print("caught: " + e)
+        0 - 1
+    }
+}
+```
+
+`expr?` unwraps a `result<T>` or `option<T>` to its `T`, and returns early with the error
+or `none` when there is none. Use it in a function that returns the same kind of value:
+`result` inside a `result` function, `option` inside an `option` function.
+
+`try { ... } catch name { ... }` evaluates the block; if a `?` inside it fails, the error
+message is bound to `name` and the `catch` block's value is used instead. Both blocks must
+produce the same type. Inside `try`, `?` applies to `result` values.
+
+### 2.14 String Interpolation
+
+A string literal may embed expressions in braces. Any expression is allowed, including
+arithmetic and function calls; write `{{` and `}}` for literal braces.
+
+```orchestrate
+let x = 10
+let y = 20
+print("Sum of {x} and {y} is {x + y}")     // Sum of 10 and 20 is 30
+print("Use {{ and }} for literal braces")
 ```
 
 ---
@@ -1129,14 +1274,22 @@ not sent. `late` requires `budget`. Pass arrays to handle many items in one call
 
 `via typescript(source: "...")` checks the source with TypeScript 7, then compiles a
 protocol executable. The compiler attempts `scriptc` first and falls back to
-`bun build --compile` when necessary. Set `ORCH_TS_BACKEND=scriptc` or `bun` to force a
-backend; `auto` is the default. The compiler finds tools under a source ancestor's
-`node_modules/.bin` before `PATH`; `ORCH_TSC`, `ORCH_SCRIPTC`, and `ORCH_BUN` override
-them. Install project tools with `bun add --dev typescript scriptc @types/bun`.
+`bun build --compile` when necessary. A declaration names its own backend when the choice
+matters to that file:
 
-> **Note:** Backend selection is currently a project-wide environment variable
-> (`ORCH_TS_BACKEND`). Per-serverlet / per-FFI-file backend hints declared directly in
-> `.orch` source are planned for a future release.
+```orchestrate
+serverlet Tools via typescript(source: "tools.ts", backend: "bun") {
+    on run() -> int
+}
+
+load_foreign "typescript" "math.ts" (backend: "scriptc")
+```
+
+`backend` accepts `auto` (the default), `scriptc`, or `bun`; a forced `scriptc` build fails
+rather than falling back. `ORCH_TS_BACKEND` sets the project-wide default for declarations
+that say nothing. The compiler finds tools under a source ancestor's `node_modules/.bin`
+before `PATH`; `ORCH_TSC`, `ORCH_SCRIPTC`, and `ORCH_BUN` override them. Install project
+tools with `bun add --dev typescript scriptc @types/bun`.
 
 The source default-exports a class with methods matching the declared handlers. A method
 may return its declared value or a `Promise` of that value. `int` maps to `bigint`,
