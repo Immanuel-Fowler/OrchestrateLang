@@ -725,3 +725,64 @@ orchestrator main(workers: process[worker]) {}
     }
 }
 
+#[test]
+fn engine_io_driver_required_by_landline_in_module() {
+    let root = root("io_driver_needed");
+    fs::create_dir_all(root.join("svc")).unwrap();
+    fs::write(root.join("svc/module.orch"), "serverlet Probe via python(source: \"impl.py\") { on ping() -> int }\n").unwrap();
+    fs::write(root.join("svc/impl.py"), "from orchestratelang import landline\nclass Probe(landline.Serverlet):\n    def ping(self) -> int: return 42\nlandline.serve(Probe)\n").unwrap();
+    build(&root, r#"
+use module svc: "./svc"
+host world { fn record(n: int) }
+let probe = start svc.Probe()
+on_tick(dt: float) { world.record(probe.ping()) }
+orchestrator main() {}
+"#);
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<i64>>>);
+impl scripts::Host for Host { fn world_record(&self, n: i64) -> Result<(), String> { self.0.lock().unwrap().push(n); Ok(()) } }
+fn main() {
+    assert!(scripts::NEEDS_IO_DRIVER);
+    let timers_only = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+    let error = scripts::start(timers_only.handle(), Host(Default::default())).err().expect("start must fail without the IO driver");
+    assert!(error.contains("IO driver") && error.contains("python landline serverlet 'Probe'"), "{error}");
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut scripts = scripts::start(runtime.handle(), Host(log.clone())).unwrap();
+    scripts.tick_blocking(&runtime, 0.1).unwrap();
+    assert_eq!(*log.lock().unwrap(), vec![42]);
+    scripts.shutdown_blocking(&runtime).unwrap();
+}
+"#);
+    assert!(output.is_empty());
+}
+
+#[test]
+fn engine_time_only_runtime_runs_in_process_program() {
+    let root = root("io_driver_not_needed");
+    build(&root, r#"
+host world { fn record(n: int) }
+let worker = automatic { world.record(7) sleep(5) }
+on_tick(dt: float) { world.record(1) }
+orchestrator main(workers: process[worker]) {}
+"#);
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<i64>>>);
+impl scripts::Host for Host { fn world_record(&self, n: i64) -> Result<(), String> { self.0.lock().unwrap().push(n); Ok(()) } }
+fn main() {
+    assert!(!scripts::NEEDS_IO_DRIVER);
+    let bare = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    let error = scripts::start(bare.handle(), Host(Default::default())).err().expect("start must fail without the time driver");
+    assert!(error.contains("time driver"), "{error}");
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut scripts = scripts::start(runtime.handle(), Host(log.clone())).unwrap();
+    scripts.tick_blocking(&runtime, 0.1).unwrap();
+    assert!(log.lock().unwrap().contains(&1) && log.lock().unwrap().contains(&7));
+    scripts.shutdown_blocking(&runtime).unwrap();
+}
+"#);
+    assert!(output.is_empty());
+}

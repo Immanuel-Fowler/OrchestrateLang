@@ -255,6 +255,8 @@ pub struct Codegen {
     /// The driver writes each as a sub-crate and compiles it to wasm32-wasip1.
     pub sandbox_programs: Vec<(String, String)>,
     pub has_secret: bool,
+    /// Declarations that start children through tokio::process, for the library's driver check.
+    pub io_driver_users: Vec<String>,
     /// Struct definitions in the file being generated, used by the serverlet wire codec.
     pub struct_defs: Vec<(String, Vec<(String, Type)>)>,
 }
@@ -272,6 +274,7 @@ impl Codegen {
             local_stmts: Vec::new(),
             secret_programs: Vec::new(),
             has_secret: false,
+            io_driver_users: Vec::new(),
             sandbox_programs: Vec::new(),
             struct_defs: Vec::new(),
         }

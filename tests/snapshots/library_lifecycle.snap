@@ -231,6 +231,41 @@ async fn __orch_entry(mut commands: tokio::sync::mpsc::UnboundedReceiver<OrchCom
 }
 
 
+/// Whether the runtime that starts this library must have Tokio's IO driver: true when a
+/// declaration anywhere in the program starts a child process through Tokio (a Python or
+/// TypeScript landline, or a secret serverlet). Every runtime needs the time driver.
+pub const NEEDS_IO_DRIVER: bool = false;
+const ORCH_IO_DRIVER_USERS: &str = "";
+
+/// Tokio panics, rather than erring, when code needs a driver the runtime was built
+/// without. Probing on a named thread turns that into an error before anything is spawned;
+/// the host's panic hook still prints the probe's panic under that thread's name.
+fn __orch_check_drivers(runtime: &tokio::runtime::Handle) -> Result<(), String> {
+    fn probe(runtime: &tokio::runtime::Handle, driver: &str, register: fn()) -> Result<bool, String> {
+        let runtime = runtime.clone();
+        let thread = std::thread::Builder::new().name(format!("orchestrate {driver} driver check")).spawn(move || {
+            let _guard = runtime.enter();
+            std::panic::catch_unwind(register).is_ok()
+        }).map_err(|e| e.to_string())?;
+        Ok(thread.join().unwrap_or(false))
+    }
+    if !probe(runtime, "time", || {
+        let mut sleep = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(1)));
+        let _ = std::future::Future::poll(sleep.as_mut(), &mut std::task::Context::from_waker(std::task::Waker::noop()));
+    })? {
+        return Err("this program needs Tokio's time driver (sleep, landline budgets, and the shutdown grace period use it); build the runtime with enable_time() or enable_all()".into());
+    }
+    if NEEDS_IO_DRIVER && !probe(runtime, "IO", || {
+        #[cfg(unix)]
+        let _ = tokio::net::UnixStream::pair();
+        #[cfg(not(unix))]
+        let _ = std::net::TcpListener::bind("127.0.0.1:0").and_then(tokio::net::TcpListener::from_std);
+    })? {
+        return Err(format!("this program needs Tokio's IO driver: {ORCH_IO_DRIVER_USERS} start child processes through tokio::process; build the runtime with enable_io() or enable_all()"));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 pub struct StartOptions {
     pub deterministic: bool,
@@ -438,6 +473,7 @@ pub fn start(runtime: &tokio::runtime::Handle, host: impl Host) -> Result<Script
     start_with_options(runtime, host, StartOptions::default())
 }
 pub fn start_with_options(runtime: &tokio::runtime::Handle, host: impl Host, options: StartOptions) -> Result<Scripts, String> {
+    __orch_check_drivers(runtime)?;
     static NEXT_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let assets = loop {
         let id = NEXT_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

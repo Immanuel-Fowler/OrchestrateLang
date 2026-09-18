@@ -82,6 +82,8 @@ impl Codegen {
         let input_arg = if input.is_some() { ", input" } else { "" };
         let input_field = input.as_ref().map(|ty| format!(", {}", ty)).unwrap_or_default();
         let mut runtime = include_str!("library_runtime.rs.txt")
+            .replace("@NEEDS_IO_DRIVER@", if self.io_driver_users.is_empty() { "false" } else { "true" })
+            .replace("@IO_DRIVER_USERS@", &format!("{:?}", self.io_driver_users.join(", ")))
             .replace("@HOST_METHODS@", &methods)
             .replace("@EVENT_FIELDS@", &fields)
             .replace("@EVENT_INIT@", &init)

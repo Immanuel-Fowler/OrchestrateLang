@@ -405,9 +405,22 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>) 
             .map_err(|e| format!("Failed to write module Rust code: {}", e))?;
     }
 
+    // Landlines and secret serverlets start children through tokio::process, which needs
+    // the host runtime's IO driver. The whole graph decides, since a host reading the entry
+    // file cannot see a declaration inside an imported module.
+    let mut io_driver_users = ast.iter().chain(module_event_stmts.iter()).filter_map(|stmt| match &stmt.node {
+        ast::StmtNode::Serverlet { name, landline: Some(config), .. } => Some(format!("{} landline serverlet '{}'", config.runtime, name)),
+        ast::StmtNode::Serverlet { name, secret: true, .. } => Some(format!("secret serverlet '{}'", name)),
+        _ => None,
+    }).collect::<Vec<_>>();
+    io_driver_users.sort();
+    if library.is_some() && !io_driver_users.is_empty() {
+        println!("[orchestrate] host runtime needs Tokio's IO driver: {}", io_driver_users.join(", "));
+    }
     let mut generator = codegen::Codegen::new(all_tasks);
     generator.library = library.is_some();
     generator.host_functions = host_functions;
+    generator.io_driver_users = io_driver_users;
     if library.is_some() { generator.scan_events(&module_event_stmts); }
     let main_rust = generator.generate(&ast, true);
     all_secret_programs.append(&mut generator.secret_programs);

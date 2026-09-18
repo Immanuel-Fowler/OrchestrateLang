@@ -30,6 +30,14 @@ serverlet Tools via typescript(source: "tools.ts", backend: "scriptc") {
 fails instead of falling back. When a declaration says nothing, `ORCH_TS_BACKEND` sets the
 project-wide default.
 
+Either backend produces an executable that runs as one persistent child process per
+declaration; neither runs TypeScript inside the host process. An FFI module drives its
+child synchronously over `std` pipes and needs nothing from the host's Tokio runtime beyond
+the time driver every program needs; a landline drives its child through `tokio::process`,
+so a host embedding the program must enable Tokio's IO driver. Generated library crates
+report this as `NEEDS_IO_DRIVER`; see
+[library-mode.md](../../docs/library-mode.md#runtime-drivers).
+
 ## Landline serverlets
 
 Declare a serverlet in `.orch` and default-export a TypeScript class:

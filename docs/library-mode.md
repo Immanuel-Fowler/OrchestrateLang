@@ -98,6 +98,46 @@ loops, blocking host methods, or a stuck `on_start`/`on_stop` hook can delay a t
 shutdown. A landline `budget` bounds slow Python or TypeScript calls, but not Rust host methods or the
 hooks themselves.
 
+## Runtime drivers
+
+Every library needs Tokio's time driver: `sleep`, landline budgets, and the shutdown grace
+period use it. A program needs the IO driver only when a declaration starts a child process
+through Tokio, and the entry file alone cannot tell a host that, because the declaration
+may sit in an imported module. Where each kind of declaration runs, and what that asks of
+the host's runtime:
+
+| Declaration | Runs as | Runtime needs |
+|---|---|---|
+| Functions, workers, events, in-process serverlets | Tasks on the host runtime | time |
+| `load_foreign` Rust, C, C++, Zig, Swift | In-process native call | time |
+| `load_foreign "typescript"` (`backend: "scriptc"` or `"bun"`) | One persistent child per module, driven synchronously over `std` pipes; a call blocks its thread until the reply | time |
+| `serverlet X via python(...)` (`line: "pipe"`, the only line today) | Persistent child driven through `tokio::process` | time and IO |
+| `serverlet X via typescript(...)` (`backend: "scriptc"` or `"bun"`) | Persistent child driven through `tokio::process` | time and IO |
+| `serverlet X secret` | Separate native child driven through `tokio::process` | time and IO |
+
+Neither TypeScript backend runs in the host process; `backend` chooses which compiler builds
+the child. The generated crate exposes what the whole program needs:
+
+```rust
+let mut builder = tokio::runtime::Builder::new_current_thread();
+builder.enable_time();
+if scripts::NEEDS_IO_DRIVER { builder.enable_io(); }
+let runtime = builder.build()?;
+```
+
+`scripts::NEEDS_IO_DRIVER` is `true` when any declaration in the entry file or an imported
+module is in the last three rows. `build --lib` prints the same list, and `start` and
+`start_with_options` check the runtime before spawning anything: a runtime without a driver
+the program needs makes them return an error naming the declarations —
+`this program needs Tokio's IO driver: python landline serverlet 'Quests' start child
+processes through tokio::process; build the runtime with enable_io() or enable_all()` —
+where a missing driver used to panic inside a task and leave the next call waiting forever.
+
+Tokio reports a missing driver by panicking, so the check registers a throwaway handle on a
+thread named `orchestrate IO driver check` (or `time driver check`) and catches the panic.
+When the check fails, the host's panic hook also prints that panic under that thread name,
+and a host built with `panic = "abort"` aborts there instead of receiving the error.
+
 ## Events from the host
 
 Every `on <event>(...)` block gets a typed method on `Scripts`:
