@@ -278,6 +278,14 @@ the implementation uses still need packaging. Foreign C, C++, Zig, and Swift sou
 compiled by the generated crate's build script, so they still reference their source files
 and require their toolchain (a C/C++ compiler, `zig`, or `swiftc`) when the host builds it.
 
+A Rust foreign module may declare Cargo dependencies in its sidecar, and `build --lib`
+adds more with `--dependency '<name> = <spec>'` or `--dependencies <file.toml>`; see the
+[language reference](language-reference.md#cargo-dependencies-for-foreign-rust). They go
+into the generated `Cargo.toml` in name order. A relative `path` is resolved when the crate
+is generated — against the sidecar for a sidecar declaration, against the working directory
+for the command line — and recorded absolute, so the output crate builds wherever it is
+placed, but it references that directory rather than carrying a copy.
+
 Secret children are compiled for the compiler machine's target by default. Pass
 `build --lib --target <triple>` to build them, and check the library, for another target;
 the matching Rust target and linker must be installed. The standard library (`lists`,

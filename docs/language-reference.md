@@ -742,6 +742,8 @@ orchestrator main(procs: process[]) { }
 orchestrate run   <file.orch>
 orchestrate build <file.orch>
 orchestrate build <file.orch> -o <output-name>
+orchestrate build --lib <file.orch> -o <dir> [--target <triple>] [--rust-version <x.y>]
+                  [--dependency '<name> = <spec>'] [--dependencies <file.toml>]
 ```
 
 | Command | What it does |
@@ -749,6 +751,11 @@ orchestrate build <file.orch> -o <output-name>
 | `run <file>` | Compiles and immediately executes the program |
 | `build <file>` | Compiles to a standalone release binary named after the `.orch` file |
 | `build <file> -o <name>` | Compiles to a release binary with a custom name |
+| `build --lib <file> -o <dir>` | Generates a Rust crate a host application links; see [library-mode.md](library-mode.md) |
+| `build --lib … --target <triple>` | Builds the crate's secret children, and checks the crate, for another target |
+| `build --lib … --rust-version <x.y>` | Declares a different `rust-version` in the generated crate |
+| `build --lib … --dependency '<name> = <spec>'` | Adds a Cargo dependency to the generated crate; repeatable. A relative `path` is resolved against the working directory |
+| `build --lib … --dependencies <file.toml>` | Adds every dependency a TOML fragment declares (a `[dependencies]` header is optional); paths resolve the same way |
 
 ### Debugging Generated Code
 
@@ -917,6 +924,30 @@ orchestrator main(procs: process[worker]) { }
 ```
 
 > **Note:** Foreign Rust functions must be synchronous and cannot contain `.await` calls.
+
+##### Cargo dependencies for foreign Rust
+
+The generated crate depends only on `tokio`. A foreign Rust module that needs more — a
+host's SDK crate, a library from crates.io — declares it in the sidecar, after the
+signatures, under `[dependencies]`:
+
+```
+// math_helpers.orch_ffi
+circle_area(radius: float) -> float
+
+[dependencies]
+sdk = { path = "../sdk" }
+rand = "0.8"
+```
+
+Entries use Cargo's inline form: a version string, or an inline table with any of Cargo's
+dependency keys. A relative `path` is resolved against the sidecar's directory and must
+exist; the generated manifest records the absolute path, so the crate builds from the
+compiler's cache and from the `build --lib` output directory alike. Every module's
+declarations are merged into the generated `Cargo.toml` in name order. The same crate may
+be declared by more than one sidecar only when the declarations are identical, and `tokio`
+may only repeat what the generated crate already provides. `build --lib` also accepts
+dependencies from the host side; see the [CLI reference](#chapter-5--cli-reference).
 
 #### Foreign C (`load_foreign "c"`) and C++ (`load_foreign "cpp"`)
 

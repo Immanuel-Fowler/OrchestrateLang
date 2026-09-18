@@ -786,3 +786,57 @@ fn main() {
 "#);
     assert!(output.is_empty());
 }
+
+/// A Rust foreign module declares the crates it needs in its sidecar, and a host can add
+/// more on the command line; the same crate declared twice must be identical.
+#[test]
+fn library_rust_dependencies_from_sidecar_and_cli() {
+    let root = root("rust_dependencies");
+    fs::create_dir_all(root.join("sdk/src")).unwrap();
+    fs::write(root.join("sdk/Cargo.toml"), "[package]\nname = \"sdk\"\nversion = \"0.1.0\"\nedition = \"2021\"\n").unwrap();
+    fs::write(root.join("sdk/src/lib.rs"), "pub fn triple(n: i64) -> i64 { n * 3 }\n").unwrap();
+    fs::create_dir_all(root.join("native")).unwrap();
+    fs::write(root.join("native/module.orch"), "load_foreign \"rust\" \"impl.rs\"\n").unwrap();
+    fs::write(root.join("native/impl.orch_ffi"), "triple(n: int) -> int\n\n[dependencies]\nsdk = { path = \"../sdk\" }\n").unwrap();
+    fs::write(root.join("native/impl.rs"), "pub fn triple(n: i64) -> i64 { sdk::triple(n) }\n").unwrap();
+    fs::write(root.join("main.orch"), "use module native: \"./native\"\nhost world { fn record(n: int) }\non_tick(dt: float) { world.record(native.triple(2)) }\norchestrator main() {}\n").unwrap();
+    fs::write(root.join("deps.toml"), "[dependencies]\nsdk = { path = \"sdk\" }\n").unwrap();
+    // The fragment names the same crate at the same directory, resolved from the working
+    // directory rather than the sidecar, so it merges instead of conflicting.
+    let result = Command::new(env!("CARGO_BIN_EXE_orchestrate"))
+        .args(["build", "--lib"]).arg(root.join("main.orch")).arg("-o").arg(root.join("scripts"))
+        .arg("--dependencies").arg(root.join("deps.toml"))
+        .current_dir(&root).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let manifest = fs::read_to_string(root.join("scripts/Cargo.toml")).unwrap();
+    let sdk = fs::canonicalize(root.join("sdk")).unwrap();
+    let expected = format!("sdk = {{ path = {:?} }}", sdk.to_string_lossy());
+    assert_eq!(manifest.matches("sdk = ").count(), 1, "{manifest}");
+    assert!(manifest.contains(&expected), "{manifest}");
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<i64>>>);
+impl scripts::Host for Host { fn world_record(&self, n: i64) -> Result<(), String> { self.0.lock().unwrap().push(n); Ok(()) } }
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut scripts = scripts::start(runtime.handle(), Host(log.clone())).unwrap();
+    scripts.tick_blocking(&runtime, 0.1).unwrap();
+    assert_eq!(*log.lock().unwrap(), vec![6]);
+    scripts.shutdown_blocking(&runtime).unwrap();
+}
+"#);
+    assert!(output.is_empty());
+    let conflict = Command::new(env!("CARGO_BIN_EXE_orchestrate"))
+        .args(["build", "--lib"]).arg(root.join("main.orch")).arg("-o").arg(root.join("scripts"))
+        .arg("--dependency").arg("sdk = \"1.0\"")
+        .current_dir(&root).output().unwrap();
+    assert!(!conflict.status.success());
+    let stderr = String::from_utf8_lossy(&conflict.stderr);
+    assert!(stderr.contains("dependency 'sdk'") && stderr.contains("must be identical"), "{stderr}");
+    let refused = Command::new(env!("CARGO_BIN_EXE_orchestrate"))
+        .args(["build"]).arg(root.join("main.orch")).arg("--dependency").arg("sdk = \"1.0\"")
+        .current_dir(&root).output().unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("apply to build --lib"));
+}

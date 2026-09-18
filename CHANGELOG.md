@@ -9,6 +9,15 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+### Added
+- Cargo dependencies for Rust foreign modules. A `.orch_ffi` sidecar declares what its
+  `.rs` file needs under `[dependencies]`, in Cargo's inline form, and `build --lib`
+  accepts more from the host with `--dependency '<name> = <spec>'` and
+  `--dependencies <file.toml>`. A relative `path` resolves against the sidecar or the
+  working directory, never the output directory, and is recorded absolute. The same crate
+  declared twice must be identical, and the generated manifest lists dependencies in name
+  order. Until now a foreign Rust file could use only std and tokio.
+
 ## [0.6.1] - 2026-09-18
 
 Generated code that never changes on its own, and a library that says which Tokio
