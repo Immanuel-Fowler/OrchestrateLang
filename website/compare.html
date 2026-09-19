@@ -40,6 +40,32 @@
 .pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
 .pair .code pre { font-size: 0.8rem; }
 
+/* gallery */
+.gal-bar { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; margin-bottom: 22px; padding: 12px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); position: sticky; top: calc(var(--header-h) + env(safe-area-inset-top, 0px)); z-index: 20; }
+.gal-bar .lbl { font-size: 0.82rem; color: var(--muted); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.gal-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+.gal-tabs button { appearance: none; border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink-2); padding: 6px 12px; border-radius: 4px; font: inherit; font-size: 0.88rem; cursor: pointer; }
+.gal-tabs button[aria-selected="true"] { background: var(--ink); color: var(--ground); border-color: var(--ink); font-weight: 600; }
+.gal-bar .jump { margin-left: auto; font-size: 0.82rem; color: var(--muted); }
+.gal-bar .jump a { color: var(--blue-ink); text-decoration: none; }
+.gal-bar .jump a:hover { text-decoration: underline; }
+.gallery { display: grid; gap: 28px; }
+.ex-card { display: grid; gap: 12px; }
+.ex-card > header { display: grid; gap: 6px; max-width: 80ch; }
+.ex-card h3 { font-size: 1.2rem; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.ex-card h3 .n { font-family: var(--font-mono); font-size: 0.72rem; color: var(--brass-ink); font-weight: 600; }
+.ex-card header p { font-size: 0.92rem; color: var(--ink-2); }
+.two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
+@media (max-width: 900px) { .two { grid-template-columns: 1fr; } .gal-bar { position: static; } }
+.two .code pre { font-size: 0.78rem; max-height: 560px; overflow: auto; line-height: 1.55; }
+.two .code-head .who { font-weight: 600; color: var(--code-ink); }
+.two .code.ours { box-shadow: 0 0 0 2px var(--brass-wash), var(--shadow); }
+.two .code.ours .code-head .dot { background: var(--brass); }
+.two .code .code-head .dot { background: var(--line-strong); }
+.takeaway { font-size: 0.9rem; color: var(--ink-2); background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--teal); border-radius: 0 var(--radius) var(--radius) 0; padding: 11px 14px; max-width: 90ch; }
+.takeaway b { color: var(--ink); font-weight: 600; }
+.gal-note { margin-top: 24px; font-size: 0.85rem; color: var(--muted); max-width: 80ch; }
+
 .honest { background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--brass); border-radius: var(--radius); padding: 16px 18px; max-width: 76ch; color: var(--ink-2); }
 .honest strong { color: var(--ink); }
 </style>
@@ -72,7 +98,7 @@
   <div class="wrap">
     <div class="eyebrow">When to use what</div>
     <h1>Where OrchestrateLang fits, and where it does not.</h1>
-    <p class="lede">Four well-known ways to coordinate concurrent work, compared with OrchestrateLang on the axes that decide a choice: what it compiles to, what owns state, what happens on failure, how other languages plug in, and whether it crosses machines. No scores. Several of these are the right answer for problems OrchestrateLang is not built for, and the page says so.</p>
+    <p class="lede">Four well-known ways to coordinate concurrent work, compared with OrchestrateLang on the axes that decide a choice: what it compiles to, what owns state, what happens on failure, how other languages plug in, and whether it crosses machines. No scores. Several of these are the right answer for problems OrchestrateLang is not built for, and the page says so. Below the table, a <a href="#gallery">gallery</a> shows five ordinary jobs written in each one.</p>
   </div>
 </section>
 
@@ -261,72 +287,24 @@
   </div>
 </section>
 
-<!-- ============ SAME PROGRAM ============ -->
-<section class="section" id="same">
+<!-- ============ GALLERY ============ -->
+<section class="section" id="gallery">
   <div class="wrap">
     <div class="section-head">
-      <div class="eyebrow">The same worker, twice</div>
-      <h2>What the language removes.</h2>
-      <p>A supervised polling worker with an event handler. Left: the OrchestrateLang source. Right: the shape of the Rust a careful engineer writes by hand for the same behavior, abbreviated. The generated code for every example is on the <a href="examples.html">examples page</a> under "Generated Rust".</p>
+      <div class="eyebrow">Gallery</div>
+      <h2>The same job, written five ways.</h2>
+      <p>Five ordinary orchestration jobs. The left column is always OrchestrateLang; the right column is whichever system you pick. The alternatives are written the way their own documentation would write them, not strawmen, and each one is doing real work that the language happens to make a declaration.</p>
     </div>
-    <div class="pair">
-      <div class="code">
-        <div class="code-head"><span class="dot"></span>worker.orch<button class="copy" type="button" data-copy>Copy</button></div>
-<pre><code class="language-orchestrate">let poller = automatic(restart: 3) {
-    let reading = read_sensor()
-    if reading > 90 {
-        trigger overheated(reading)
-    }
-    sleep(500)
-} on_crash error {
-    print("poller crashed: {error}")
-}
 
-let alarm = on overheated(reading: int) {
-    print("temperature is {reading}")
-}
-
-orchestrator main(workers: process[poller]) {
-    on_stop { print("bye") }
-}</code></pre>
-      </div>
-      <div class="code">
-        <div class="code-head"><span class="dot"></span>by hand, sketch<button class="copy" type="button" data-copy>Copy</button></div>
-<pre><code class="language-rust">// an event bus for `overheated`
-let (tx, mut rx) = broadcast::channel::&lt;i64&gt;(64);
-
-// the handler
-let alarm = tokio::spawn(async move {
-    while let Ok(reading) = rx.recv().await {
-        println!("temperature is {reading}");
-    }
-});
-
-// the supervised worker
-let poller = tokio::spawn(async move {
-    let mut attempts = 0;
-    loop {
-        let result = AssertUnwindSafe(async {
-            loop {
-                let reading = read_sensor();
-                if reading > 90 { let _ = tx.send(reading); }
-                sleep(Duration::from_millis(500)).await;
-            }
-        }).catch_unwind().await;
-        if let Err(e) = result {
-            eprintln!("poller crashed: {e:?}");
-            attempts += 1;
-            if attempts > 3 { break; }
-        }
-    }
-});
-
-// lifecycle: Ctrl+C, abort handles, join, on_stop …
-tokio::signal::ctrl_c().await?;
-poller.abort(); alarm.abort();
-println!("bye");</code></pre>
-      </div>
+    <div class="gal-bar">
+      <span class="lbl">Compare with</span>
+      <div class="gal-tabs" role="tablist" id="gal-tabs"></div>
+      <span class="jump">Jump to <a href="#ex-workers">workers</a> · <a href="#ex-state">state</a> · <a href="#ex-events">events</a> · <a href="#ex-parallel">parallel</a> · <a href="#ex-lifecycle">lifecycle</a></span>
     </div>
+
+    <div class="gallery" id="gallery-body"></div>
+
+    <p class="gal-note">Imports and helper functions are trimmed where they are not the point. Elixir stands in for the Erlang/OTP runtime because it reads more clearly; the supervision behaviour shown is OTP's. Akka examples use Akka Typed in Scala. Temporal examples use the Go SDK. Nothing here is a benchmark: see the <a href="./#benchmarks">latency chart</a> for measured numbers.</p>
   </div>
 </section>
 
@@ -350,7 +328,941 @@ println!("bye");</code></pre>
   </div>
 </footer>
 
+
+<div id="snippets" hidden>
+
+<script type="text/plain" data-ex="workers" data-lang="orch">
+// Three recurring workers, three restart policies, one lifecycle owner.
+
+let poller = automatic(restart: always) {
+    let reading = read_sensor()
+    if reading > 90 {
+        trigger overheated(reading)
+    }
+    sleep(500)
+} on_crash error {
+    print("poller crashed: {error}")
+}
+
+let reporter = automatic(restart: 3) {
+    publish_metrics()
+    sleep(5000)
+} on_crash error {
+    print("reporter crashed: {error}")
+}
+
+let heartbeat = automatic(restart: never) {
+    print("alive")
+    sleep(1000)
+}
+
+orchestrator main(workers: process[poller, reporter, heartbeat]) {
+    on_start { print("three workers up") }
+    on_stop  { print("shutting down") }
+}
+</script>
+
+<script type="text/plain" data-ex="workers" data-lang="tokio">
+use std::{panic::AssertUnwindSafe, time::Duration};
+use futures::FutureExt;
+use tokio::{signal, sync::broadcast, time::sleep};
+
+// The restart policy is a supervisor loop you write once and reuse.
+async fn supervise<F, Fut>(name: &'static str, limit: Option<u32>, body: F)
+where
+    F: Fn() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send,
+{
+    let mut restarts = 0u32;
+    let mut backoff = Duration::from_millis(100);
+    loop {
+        match AssertUnwindSafe(body()).catch_unwind().await {
+            Ok(()) => return,
+            Err(e) => {
+                eprintln!("{name} crashed: {e:?}");
+                match limit {
+                    Some(0) => return,                  // restart: never
+                    Some(n) if restarts >= n => return, // restart: N
+                    _ => {}                             // restart: always
+                }
+                restarts += 1;
+                sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_secs(30));
+            }
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let (tx, _rx) = broadcast::channel::<i64>(64);
+
+    let tx2 = tx.clone();
+    let poller = tokio::spawn(supervise("poller", None, move || {
+        let tx = tx2.clone();
+        async move {
+            loop {
+                let reading = read_sensor();
+                if reading > 90 { let _ = tx.send(reading); }
+                sleep(Duration::from_millis(500)).await;
+            }
+        }
+    }));
+
+    let reporter = tokio::spawn(supervise("reporter", Some(3), || async {
+        loop { publish_metrics(); sleep(Duration::from_secs(5)).await; }
+    }));
+
+    let heartbeat = tokio::spawn(supervise("heartbeat", Some(0), || async {
+        loop { println!("alive"); sleep(Duration::from_secs(1)).await; }
+    }));
+
+    println!("three workers up");
+    signal::ctrl_c().await?;
+    poller.abort(); reporter.abort(); heartbeat.abort();
+    println!("shutting down");
+    Ok(())
+}
+</script>
+
+<script type="text/plain" data-ex="workers" data-lang="otp">
+# Each worker reschedules itself; the supervisor owns the restarts.
+defmodule Poller do
+  use GenServer, restart: :permanent            # restart: always
+
+  def start_link(_opts), do: GenServer.start_link(__MODULE__, nil)
+
+  def init(nil), do: {:ok, schedule(500)}
+
+  def handle_info(:tick, state) do
+    reading = Sensor.read()
+    if reading > 90 do
+      Phoenix.PubSub.broadcast(App.PubSub, "overheated", reading)
+    end
+    {:noreply, schedule(500)}
+  end
+
+  defp schedule(ms), do: Process.send_after(self(), :tick, ms)
+end
+
+defmodule Reporter do
+  use GenServer, restart: :transient            # stops after the tree's limit
+  # same shape, every 5_000 ms
+end
+
+defmodule Heartbeat do
+  use GenServer, restart: :temporary            # restart: never
+  # same shape, every 1_000 ms
+end
+
+defmodule App do
+  use Application
+
+  def start(_type, _args) do
+    IO.puts("three workers up")
+    Supervisor.start_link(
+      [Poller, Reporter, Heartbeat],
+      strategy: :one_for_one,
+      max_restarts: 3,
+      max_seconds: 5,
+      name: App.Supervisor
+    )
+  end
+
+  def stop(_state), do: IO.puts("shutting down")
+end
+</script>
+
+<script type="text/plain" data-ex="workers" data-lang="akka">
+import akka.actor.typed._
+import akka.actor.typed.scaladsl._
+import scala.concurrent.duration._
+
+// Each worker is a behavior with its own timer; supervision wraps it.
+object Poller {
+  sealed trait Cmd
+  case object Tick extends Cmd
+
+  def apply(bus: ActorRef[Long]): Behavior[Cmd] =
+    Behaviors.withTimers { timers =>
+      timers.startTimerWithFixedDelay(Tick, 500.millis)
+      Behaviors.receiveMessage { case Tick =>
+        val reading = Sensor.read()
+        if (reading > 90) bus ! reading
+        Behaviors.same
+      }
+    }
+}
+
+object Root {
+  def apply(): Behavior[Nothing] = Behaviors.setup[Nothing] { ctx =>
+    val bus = ctx.spawn(EventBus(), "bus")
+
+    ctx.spawn(                                     // restart: always
+      Behaviors.supervise(Poller(bus)).onFailure(
+        SupervisorStrategy.restartWithBackoff(100.millis, 30.seconds, 0.2)),
+      "poller")
+
+    ctx.spawn(                                     // restart: 3
+      Behaviors.supervise(Reporter()).onFailure(
+        SupervisorStrategy.restart.withLimit(3, 5.seconds)),
+      "reporter")
+
+    ctx.spawn(                                     // restart: never
+      Behaviors.supervise(Heartbeat()).onFailure(SupervisorStrategy.stop),
+      "heartbeat")
+
+    ctx.log.info("three workers up")
+    Behaviors.empty
+  }
+}
+
+object Main extends App {
+  val system = ActorSystem[Nothing](Root(), "app")
+  CoordinatedShutdown(system)
+    .addJvmShutdownHook(() => println("shutting down"))
+}
+</script>
+
+<script type="text/plain" data-ex="workers" data-lang="temporal">
+// Recurring work is a loop inside a workflow; the server owns the retries.
+func AppWorkflow(ctx workflow.Context) error {
+	workflow.GetLogger(ctx).Info("three workers up")
+
+	forever := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 10 * time.Second,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:    100 * time.Millisecond,
+			BackoffCoefficient: 2.0,
+			MaximumInterval:    30 * time.Second,
+			MaximumAttempts:    0, // unlimited: restart: always
+		},
+	})
+	thrice := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 10 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
+	})
+	once := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 10 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+	})
+
+	loop := func(c workflow.Context, act interface{}, every time.Duration) {
+		workflow.Go(c, func(c workflow.Context) {
+			for {
+				if err := workflow.ExecuteActivity(c, act).Get(c, nil); err != nil {
+					workflow.GetLogger(c).Error("worker gave up", "err", err)
+					return
+				}
+				_ = workflow.Sleep(c, every)
+			}
+		})
+	}
+
+	loop(forever, PollOnce, 500*time.Millisecond)
+	loop(thrice, PublishMetrics, 5*time.Second)
+	loop(once, Heartbeat, time.Second)
+
+	// Runs until cancelled. History survives a worker process dying.
+	return workflow.Await(ctx, func() bool { return false })
+}
+</script>
+
+<script type="text/plain" data-ex="state" data-lang="orch">
+// Private state, one call at a time, a typed client for free.
+serverlet Counter {
+    let value = 0
+
+    on add(amount: int) -> int {
+        value = value + amount
+        value
+    }
+
+    on get() -> int {
+        value
+    }
+}
+
+orchestrator main() {
+    let counter = start Counter()
+    print(to_string(counter.add(5)))   // 5
+    print(to_string(counter.add(3)))   // 8
+    print(to_string(counter.get()))    // 8
+    stop_orch()
+}
+</script>
+
+<script type="text/plain" data-ex="state" data-lang="tokio">
+use tokio::sync::{mpsc, oneshot};
+
+// The message type, the client, and the loop are all hand-written.
+enum Msg {
+    Add { amount: i64, reply: oneshot::Sender<i64> },
+    Get { reply: oneshot::Sender<i64> },
+}
+
+#[derive(Clone)]
+struct CounterClient(mpsc::Sender<Msg>);
+
+impl CounterClient {
+    async fn add(&self, amount: i64) -> i64 {
+        let (tx, rx) = oneshot::channel();
+        self.0.send(Msg::Add { amount, reply: tx }).await.unwrap();
+        rx.await.unwrap()
+    }
+    async fn get(&self) -> i64 {
+        let (tx, rx) = oneshot::channel();
+        self.0.send(Msg::Get { reply: tx }).await.unwrap();
+        rx.await.unwrap()
+    }
+}
+
+fn start_counter() -> CounterClient {
+    let (tx, mut rx) = mpsc::channel(32);
+    tokio::spawn(async move {
+        let mut value = 0i64;                    // private state
+        while let Some(msg) = rx.recv().await {  // serialized by the channel
+            match msg {
+                Msg::Add { amount, reply } => {
+                    value += amount;
+                    let _ = reply.send(value);
+                }
+                Msg::Get { reply } => { let _ = reply.send(value); }
+            }
+        }
+    });
+    CounterClient(tx)
+}
+
+#[tokio::main]
+async fn main() {
+    let counter = start_counter();
+    println!("{}", counter.add(5).await);   // 5
+    println!("{}", counter.add(3).await);   // 8
+    println!("{}", counter.get().await);    // 8
+}
+</script>
+
+<script type="text/plain" data-ex="state" data-lang="otp">
+defmodule Counter do
+  use GenServer
+
+  # client side
+  def start_link(_opts) do
+    GenServer.start_link(__MODULE__, 0, name: __MODULE__)
+  end
+  def add(amount), do: GenServer.call(__MODULE__, {:add, amount})
+  def get, do: GenServer.call(__MODULE__, :get)
+
+  # server side: one message at a time, state threaded through
+  @impl true
+  def init(value), do: {:ok, value}
+
+  @impl true
+  def handle_call({:add, amount}, _from, value) do
+    next = value + amount
+    {:reply, next, next}
+  end
+
+  def handle_call(:get, _from, value), do: {:reply, value, value}
+end
+
+{:ok, _pid} = Counter.start_link([])
+IO.puts(Counter.add(5))   # 5
+IO.puts(Counter.add(3))   # 8
+IO.puts(Counter.get())    # 8
+</script>
+
+<script type="text/plain" data-ex="state" data-lang="akka">
+import akka.actor.typed._
+import akka.actor.typed.scaladsl._
+import akka.actor.typed.scaladsl.AskPattern._
+import akka.util.Timeout
+import scala.concurrent.{Await, Future}
+import scala.concurrent.duration._
+
+object Counter {
+  sealed trait Cmd
+  final case class Add(amount: Long, replyTo: ActorRef[Long]) extends Cmd
+  final case class Get(replyTo: ActorRef[Long]) extends Cmd
+
+  def apply(value: Long = 0): Behavior[Cmd] =
+    Behaviors.receiveMessage {
+      case Add(amount, replyTo) =>
+        val next = value + amount
+        replyTo ! next
+        apply(next)               // the next state is the next behavior
+      case Get(replyTo) =>
+        replyTo ! value
+        Behaviors.same
+    }
+}
+
+implicit val timeout: Timeout = 3.seconds
+val system: ActorSystem[Counter.Cmd] = ActorSystem(Counter(), "counter")
+implicit val sched: Scheduler = system.scheduler
+
+println(Await.result(system.ask(Counter.Add(5, _)), 3.seconds))  // 5
+println(Await.result(system.ask(Counter.Add(3, _)), 3.seconds))  // 8
+println(Await.result(system.ask(Counter.Get(_)),    3.seconds))  // 8
+</script>
+
+<script type="text/plain" data-ex="state" data-lang="temporal">
+// State lives in the workflow; callers reach it with signals and queries.
+func CounterWorkflow(ctx workflow.Context) error {
+	value := 0
+
+	// a query reads state without writing history
+	err := workflow.SetQueryHandler(ctx, "get", func() (int, error) {
+		return value, nil
+	})
+	if err != nil {
+		return err
+	}
+
+	adds := workflow.GetSignalChannel(ctx, "add")
+	for {
+		var amount int
+		adds.Receive(ctx, &amount)     // one signal at a time
+		value += amount
+		workflow.GetLogger(ctx).Info("counter", "value", value)
+	}
+}
+
+// From a client, in another process entirely:
+//   c.SignalWorkflow(ctx, id, "", "add", 5)
+//   c.SignalWorkflow(ctx, id, "", "add", 3)
+//   v, _ := c.QueryWorkflow(ctx, id, "", "get")   // 8
+//
+// The count survives a worker crash, a deploy, or a week of downtime.
+</script>
+
+<script type="text/plain" data-ex="events" data-lang="orch">
+// One typed event, any number of handlers. Handlers register on boot.
+let audit = on user_created(id: int, name: string) {
+    print("audit: {id} {name}")
+}
+
+let welcome = on user_created(id: int, name: string) {
+    send_email(id)
+}
+
+let worker = automatic {
+    trigger user_created(42, "Mina")    // both handlers run
+    sleep(1000)
+}
+
+orchestrator main(workers: process[worker]) {
+    // audit and welcome need no `start`: an `on` block registers itself
+}
+</script>
+
+<script type="text/plain" data-ex="events" data-lang="tokio">
+use tokio::sync::broadcast;
+
+#[derive(Clone, Debug)]
+struct UserCreated { id: i64, name: String }   // the payload type is yours
+
+#[tokio::main]
+async fn main() {
+    let (tx, _) = broadcast::channel::<UserCreated>(64);
+
+    // every consumer needs its own receiver and its own task
+    let mut audit_rx = tx.subscribe();
+    tokio::spawn(async move {
+        loop {
+            match audit_rx.recv().await {
+                Ok(e) => println!("audit: {} {}", e.id, e.name),
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    // silent data loss
+                    eprintln!("audit missed {n} events");
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+
+    let mut welcome_rx = tx.subscribe();
+    tokio::spawn(async move {
+        while let Ok(e) = welcome_rx.recv().await { send_email(e.id); }
+    });
+
+    // subscribers created after this point never see it
+    let _ = tx.send(UserCreated { id: 42, name: "Mina".into() });
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+}
+</script>
+
+<script type="text/plain" data-ex="events" data-lang="otp">
+# Subscribers are processes; the producer broadcasts to a topic.
+defmodule Audit do
+  use GenServer
+
+  def start_link(_opts), do: GenServer.start_link(__MODULE__, nil)
+
+  @impl true
+  def init(nil) do
+    Phoenix.PubSub.subscribe(App.PubSub, "user_created")
+    {:ok, nil}
+  end
+
+  @impl true
+  def handle_info({:user_created, id, name}, state) do
+    IO.puts("audit: #{id} #{name}")
+    {:noreply, state}
+  end
+end
+
+defmodule Welcome do
+  use GenServer
+  # same subscribe; handle_info sends the email
+end
+
+# the producer
+Phoenix.PubSub.broadcast(
+  App.PubSub, "user_created", {:user_created, 42, "Mina"})
+
+# The tuple shape is a convention. Nothing checks that a subscriber's
+# handle_info clauses match what producers actually send.
+</script>
+
+<script type="text/plain" data-ex="events" data-lang="akka">
+import akka.actor.typed._
+import akka.actor.typed.scaladsl._
+import akka.actor.typed.pubsub.Topic
+
+final case class UserCreated(id: Long, name: String)
+
+object Root {
+  def apply(): Behavior[Nothing] = Behaviors.setup[Nothing] { ctx =>
+    val topic = ctx.spawn(Topic[UserCreated]("user-created"), "topic")
+
+    val audit = ctx.spawn(Behaviors.receiveMessage[UserCreated] { e =>
+      ctx.log.info("audit: {} {}", e.id, e.name)
+      Behaviors.same
+    }, "audit")
+
+    val welcome = ctx.spawn(Behaviors.receiveMessage[UserCreated] { e =>
+      sendEmail(e.id)
+      Behaviors.same
+    }, "welcome")
+
+    topic ! Topic.Subscribe(audit)
+    topic ! Topic.Subscribe(welcome)
+    topic ! Topic.Publish(UserCreated(42, "Mina"))
+
+    Behaviors.empty
+  }
+}
+</script>
+
+<script type="text/plain" data-ex="events" data-lang="temporal">
+// There is no in-process bus: a reaction is another workflow or activity.
+func OnUserCreated(ctx workflow.Context, id int, name string) error {
+	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: time.Minute,
+	})
+
+	// fan out to both consumers, then wait for both
+	audit := workflow.ExecuteActivity(ctx, AuditUser, id, name)
+	email := workflow.ExecuteActivity(ctx, SendWelcomeEmail, id)
+
+	if err := audit.Get(ctx, nil); err != nil {
+		return err
+	}
+	return email.Get(ctx, nil)
+}
+
+// The producer starts it:
+//   c.ExecuteWorkflow(ctx, opts, OnUserCreated, 42, "Mina")
+//
+// Both reactions are retried and survive a crash on either side, which an
+// in-process event bus cannot promise. The cost is a server round trip.
+</script>
+
+<script type="text/plain" data-ex="parallel" data-lang="orch">
+task fetch(id: int) -> string {
+    sleep(100)
+    "item {id}"
+}
+
+let worker = automatic {
+    // both run concurrently; the block ends when both are done
+    parallel {
+        let first  = fetch(1)
+        let second = fetch(2)
+    }
+
+    print(first + " / " + second)
+    stop_orch()
+}
+
+orchestrator main(workers: process[worker]) { }
+</script>
+
+<script type="text/plain" data-ex="parallel" data-lang="tokio">
+use std::time::Duration;
+
+async fn fetch(id: i64) -> String {
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    format!("item {id}")
+}
+
+#[tokio::main]
+async fn main() {
+    // join! polls both on this one task: concurrent, not parallel
+    let (first, second) = tokio::join!(fetch(1), fetch(2));
+    println!("{first} / {second}");
+
+    // to use more than one core, spawn and then await the handles
+    let a = tokio::spawn(fetch(1));
+    let b = tokio::spawn(fetch(2));
+    let (first, second) = (a.await.unwrap(), b.await.unwrap());
+    println!("{first} / {second}");
+
+    // and if either may fail, try_join! instead, with matching error types
+}
+</script>
+
+<script type="text/plain" data-ex="parallel" data-lang="otp">
+defmodule Fetcher do
+  def fetch(id) do
+    Process.sleep(100)
+    "item #{id}"
+  end
+end
+
+# each Task is a real process on its own scheduler
+tasks = Enum.map([1, 2], fn id -> Task.async(fn -> Fetcher.fetch(id) end) end)
+[first, second] = Task.await_many(tasks, 5_000)
+
+IO.puts("#{first} / #{second}")
+
+# Task.async_stream/3 does the same for a large list with a concurrency limit
+</script>
+
+<script type="text/plain" data-ex="parallel" data-lang="akka">
+import scala.concurrent.{Await, Future}
+import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.duration._
+
+def fetch(id: Int): Future[String] = Future {
+  Thread.sleep(100)
+  s"item $id"
+}
+
+// zip for two, Future.sequence for a list
+val both = fetch(1).zip(fetch(2))
+val (first, second) = Await.result(both, 5.seconds)
+println(first + " / " + second)
+
+// between actors it is two asks combined the same way:
+//   val f1 = worker.ask(Fetch(1, _))
+//   val f2 = worker.ask(Fetch(2, _))
+//   Await.result(f1.zip(f2), 5.seconds)
+</script>
+
+<script type="text/plain" data-ex="parallel" data-lang="temporal">
+func FetchBoth(ctx workflow.Context) (string, error) {
+	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: time.Minute,
+	})
+
+	// starting both before getting either is what makes them concurrent
+	f1 := workflow.ExecuteActivity(ctx, Fetch, 1)
+	f2 := workflow.ExecuteActivity(ctx, Fetch, 2)
+
+	var first, second string
+	if err := f1.Get(ctx, &first); err != nil {
+		return "", err
+	}
+	if err := f2.Get(ctx, &second); err != nil {
+		return "", err
+	}
+	return first + " / " + second, nil
+}
+
+// Calling Get on f1 before starting f2 would silently serialize them: the
+// ordering rule is yours to keep, and it is the classic Temporal mistake.
+</script>
+
+<script type="text/plain" data-ex="lifecycle" data-lang="orch">
+orchestrator main(workers: process[poller, reporter]) {
+    on_start {
+        open_database()
+        print("ready")
+    }
+
+    on_stop {
+        flush_metrics()
+        close_database()
+        print("clean exit")
+    }
+}
+
+// Ctrl+C runs on_stop. stop_orch() from inside a worker exits immediately.
+// In library mode the Rust host awaits ready() and shutdown() itself, so the
+// host keeps its process and its own logging.
+</script>
+
+<script type="text/plain" data-ex="lifecycle" data-lang="tokio">
+use std::time::Duration;
+use tokio::signal::unix::{signal, SignalKind};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    open_database().await?;
+    println!("ready");
+
+    let poller = tokio::spawn(poll_loop());
+    let reporter = tokio::spawn(report_loop());
+
+    // the signal set, the order, and the grace period are all your decisions
+    let mut term = signal(SignalKind::terminate())?;
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = term.recv() => {}
+    }
+
+    poller.abort();
+    reporter.abort();
+    let _ = tokio::time::timeout(Duration::from_secs(5), async {
+        let _ = poller.await;
+        let _ = reporter.await;
+    }).await;
+
+    flush_metrics().await;
+    close_database().await;
+    println!("clean exit");
+    Ok(())
+}
+</script>
+
+<script type="text/plain" data-ex="lifecycle" data-lang="otp">
+defmodule App do
+  use Application
+
+  @impl true
+  def start(_type, _args) do
+    :ok = Database.open()
+    IO.puts("ready")
+
+    Supervisor.start_link([Poller, Reporter],
+      strategy: :one_for_one,
+      name: App.Supervisor)
+  end
+
+  # runs after the supervision tree has been torn down
+  @impl true
+  def stop(_state) do
+    Metrics.flush()
+    Database.close()
+    IO.puts("clean exit")
+    :ok
+  end
+end
+
+# A child that needs its own cleanup traps exits and implements terminate/2:
+#
+#   def init(state) do
+#     Process.flag(:trap_exit, true)
+#     {:ok, state}
+#   end
+#
+#   def terminate(_reason, _state), do: Metrics.flush()
+</script>
+
+<script type="text/plain" data-ex="lifecycle" data-lang="akka">
+import akka.Done
+import akka.actor.CoordinatedShutdown
+import akka.actor.typed.ActorSystem
+import scala.concurrent.Future
+
+val system = ActorSystem[Nothing](Root(), "app")
+Database.open()
+system.log.info("ready")
+
+// tasks run in a defined phase order on termination or JVM shutdown
+CoordinatedShutdown(system).addTask(
+  CoordinatedShutdown.PhaseBeforeServiceUnbind, "flush-metrics") { () =>
+    Metrics.flush().map(_ => Done)(system.executionContext)
+}
+
+CoordinatedShutdown(system).addTask(
+  CoordinatedShutdown.PhaseServiceStop, "close-db") { () =>
+    Database.close().map(_ => Done)(system.executionContext)
+}
+
+// individual actors clean up by handling the PostStop signal:
+//   Behaviors.receiveSignal { case (_, PostStop) => flush(); Behaviors.same }
+</script>
+
+<script type="text/plain" data-ex="lifecycle" data-lang="temporal">
+// Worker lifecycle: the process may die at any point; the workflow continues.
+func main() {
+	c, err := client.Dial(client.Options{})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer c.Close()
+
+	w := worker.New(c, "task-queue", worker.Options{})
+	w.RegisterWorkflow(AppWorkflow)
+	w.RegisterActivity(PollOnce)
+
+	// blocks until interrupted, then drains in-flight activities
+	if err := w.Run(worker.InterruptCh()); err != nil {
+		log.Fatal(err)
+	}
+	log.Println("clean exit")
+}
+
+// Cleanup inside a workflow must run on a disconnected context, or it is
+// cancelled along with everything else:
+//
+//   defer func() {
+//       cctx, _ := workflow.NewDisconnectedContext(ctx)
+//       _ = workflow.ExecuteActivity(cctx, FlushMetrics).Get(cctx, nil)
+//   }()
+</script>
+
+</div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <script src="assets/site.js"></script>
+
+<script>
+(function () {
+  "use strict";
+
+  // highlight.js's common bundle has no Elixir or Scala; register small grammars.
+  if (window.hljs && !window.hljs.getLanguage("elixir")) {
+    window.hljs.registerLanguage("elixir", function (h) {
+      return {
+        name: "Elixir",
+        keywords: {
+          keyword: "def defp defmodule do end use import alias require if else unless case cond fn when for with receive after try rescue catch raise quote unquote impl spec true false nil",
+          built_in: "GenServer Supervisor Application Task Registry Process Enum IO Phoenix Agent Stream Map List Kernel"
+        },
+        contains: [
+          h.HASH_COMMENT_MODE,
+          { className: "string", begin: '"', end: '"', contains: [{ className: "subst", begin: /#\{/, end: /\}/ }] },
+          { className: "symbol", begin: /:[a-zA-Z_][a-zA-Z0-9_?!]*/ },
+          { className: "meta", begin: /@[a-zA-Z_]+/ },
+          { className: "title.class_", begin: /\b[A-Z][A-Za-z0-9_]*\b/ },
+          h.C_NUMBER_MODE
+        ]
+      };
+    });
+  }
+  if (window.hljs && !window.hljs.getLanguage("scala")) {
+    window.hljs.registerLanguage("scala", function (h) {
+      return {
+        name: "Scala",
+        keywords: {
+          keyword: "def val var object class trait case extends with implicit import package new sealed final override if else match for yield while return type lazy private protected",
+          literal: "true false null",
+          built_in: "Behaviors Behavior ActorRef ActorSystem Future Await Some None List Map Seq Option String Long Int Unit Done"
+        },
+        contains: [
+          h.C_LINE_COMMENT_MODE,
+          h.C_BLOCK_COMMENT_MODE,
+          { className: "string", begin: /s?"/, end: /"/, contains: [{ className: "subst", begin: /\$\{/, end: /\}/ }, { className: "subst", begin: /\$[a-zA-Z_]+/ }] },
+          { className: "meta", begin: /@[a-zA-Z_]+/ },
+          { className: "title.class_", begin: /\b[A-Z][A-Za-z0-9_]*\b/ },
+          h.C_NUMBER_MODE
+        ]
+      };
+    });
+  }
+
+  var OTHERS = [
+    { id: "tokio",    name: "Tokio by hand", hl: "rust",   file: "main.rs" },
+    { id: "otp",      name: "Elixir / OTP",  hl: "elixir", file: "app.ex" },
+    { id: "akka",     name: "Akka",          hl: "scala",  file: "App.scala" },
+    { id: "temporal", name: "Temporal",      hl: "go",     file: "workflow.go" }
+  ];
+
+  var EXAMPLES = [
+    { id: "workers", n: "01", title: "Several supervised workers at once",
+      blurb: "Three recurring jobs on different intervals, each with its own restart policy, all owned by one lifecycle. This is the shape most orchestration code actually has.",
+      takeaway: "<b>What the language removes:</b> the supervisor loop, the backoff arithmetic, the restart bookkeeping, and the abort handles. <code>restart: always</code>, <code>restart: 3</code>, and <code>restart: never</code> are the whole policy, and the worker set is a list the orchestrator owns." },
+    { id: "state", n: "02", title: "A service that owns state",
+      blurb: "A counter that keeps a private value and answers typed calls, one at a time, with no lock held by the caller.",
+      takeaway: "<b>What the language removes:</b> the message enum, the reply channels, the client struct, and the receive loop. A <code>serverlet</code> is the actor; <code>start Counter()</code> returns the typed client the compiler wrote." },
+    { id: "events", n: "03", title: "One producer, several consumers",
+      blurb: "A typed event with two independent reactions, neither of which the producer knows about.",
+      takeaway: "<b>What the language removes:</b> subscription wiring, per-consumer tasks, and the lag and loss cases. An <code>on</code> block registers on boot and its parameter list <em>is</em> the payload's checked signature." },
+    { id: "parallel", n: "04", title: "Fan out, then join",
+      blurb: "Two independent pieces of work that must both finish before the next step runs.",
+      takeaway: "<b>What the language removes:</b> the choice between concurrency and parallelism, and the ordering trap where starting work too late silently serializes it. A <code>parallel</code> block is one join point." },
+    { id: "lifecycle", n: "05", title: "Start up and shut down cleanly",
+      blurb: "Setup before any worker runs, and coordinated cleanup when the program is asked to stop.",
+      takeaway: "<b>What the language removes:</b> signal handling, the grace period, and the teardown order. <code>on_start</code> and <code>on_stop</code> name both ends, and library mode hands both to the Rust host instead of taking the process." }
+  ];
+
+  var snippets = {};
+  document.querySelectorAll('#snippets script[data-ex]').forEach(function (el) {
+    snippets[el.dataset.ex + ":" + el.dataset.lang] = el.textContent.replace(/^\n/, "").replace(/\s+$/, "");
+  });
+
+  function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+  function codeBlock(label, file, lang, body, ours) {
+    return '<div class="code' + (ours ? " ours" : "") + '">' +
+      '<div class="code-head"><span class="dot"></span><span class="who">' + esc(label) + "</span>" +
+      '<span style="margin-left:8px;opacity:.65">' + esc(file) + "</span>" +
+      '<button class="copy" type="button" data-copy>Copy</button></div>' +
+      '<pre><code class="language-' + lang + '">' + esc(body) + "</code></pre></div>";
+  }
+
+  var current = "tokio";
+  var tabsEl = document.getElementById("gal-tabs");
+  var bodyEl = document.getElementById("gallery-body");
+
+  tabsEl.innerHTML = OTHERS.map(function (o) {
+    return '<button type="button" role="tab" data-id="' + o.id + '" aria-selected="' + (o.id === current) + '">' + o.name + "</button>";
+  }).join("");
+
+  function render() {
+    var other = OTHERS.filter(function (o) { return o.id === current; })[0];
+    bodyEl.innerHTML = EXAMPLES.map(function (ex) {
+      var mine = snippets[ex.id + ":orch"] || "";
+      var theirs = snippets[ex.id + ":" + other.id] || "";
+      return '<article class="ex-card" id="ex-' + ex.id + '">' +
+        "<header><h3><span class=\"n\">" + ex.n + "</span>" + ex.title + "</h3><p>" + ex.blurb + "</p></header>" +
+        '<div class="two">' +
+          codeBlock("OrchestrateLang", ex.id + ".orch", "orchestrate", mine, true) +
+          codeBlock(other.name, other.file, other.hl, theirs, false) +
+        "</div>" +
+        '<p class="takeaway">' + ex.takeaway + "</p>" +
+        "</article>";
+    }).join("");
+    if (window.orchHighlightAll) window.orchHighlightAll(bodyEl);
+  }
+
+  tabsEl.addEventListener("click", function (ev) {
+    var b = ev.target.closest("button[data-id]");
+    if (!b || b.dataset.id === current) return;
+    current = b.dataset.id;
+    tabsEl.querySelectorAll("button").forEach(function (x) {
+      x.setAttribute("aria-selected", String(x.dataset.id === current));
+    });
+    try { localStorage.setItem("orch-compare-lang", current); } catch (e) { /* private window */ }
+    render();
+  });
+
+  try {
+    var saved = localStorage.getItem("orch-compare-lang");
+    if (saved && OTHERS.some(function (o) { return o.id === saved; })) {
+      current = saved;
+      tabsEl.querySelectorAll("button").forEach(function (x) {
+        x.setAttribute("aria-selected", String(x.dataset.id === current));
+      });
+    }
+  } catch (e) { /* ignore */ }
+
+  render();
+})();
+</script>
 </body>
 </html>
