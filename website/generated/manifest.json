@@ -1,0 +1,122 @@
+{
+  "compiler": "rust-version",
+  "generated_on": "2026-09-19",
+  "examples": {
+    "async_parallel": {
+      "status": "ok",
+      "lines": 151
+    },
+    "closures": {
+      "status": "ok",
+      "lines": 165
+    },
+    "enums": {
+      "status": "ok",
+      "lines": 163
+    },
+    "error_handling": {
+      "status": "ok",
+      "lines": 171
+    },
+    "for_loops": {
+      "status": "ok",
+      "lines": 135
+    },
+    "foreign_c_math": {
+      "status": "ok",
+      "lines": 220
+    },
+    "foreign_cpp_stats": {
+      "status": "ok",
+      "lines": 218
+    },
+    "foreign_mixed_all": {
+      "status": "ok",
+      "lines": 218
+    },
+    "foreign_rust_math": {
+      "status": "ok",
+      "lines": 218
+    },
+    "foreign_rust_mixed": {
+      "status": "ok",
+      "lines": 215
+    },
+    "foreign_rust_strings": {
+      "status": "ok",
+      "lines": 218
+    },
+    "foreign_swift_math": {
+      "status": "skipped",
+      "reason": "Error: load_foreign 'swift': `swiftc` was not found on PATH \u2014 install Swift 5.10 or newer (https://www.swift.org/install/)"
+    },
+    "foreign_typescript_math": {
+      "status": "skipped",
+      "reason": "Error: TypeScript 7 checker unavailable: No such file or directory (os error 2). Install with `bun add --dev typescript`, then put its bin directory on PATH or set ORCH_TSC."
+    },
+    "foreign_zig_math": {
+      "status": "skipped",
+      "reason": "Error: load_foreign 'zig': `zig` was not found on PATH \u2014 install Zig 0.16 or newer (https://ziglang.org/download/)"
+    },
+    "generics": {
+      "status": "ok",
+      "lines": 126
+    },
+    "hello": {
+      "status": "ok",
+      "lines": 224
+    },
+    "lifecycle_hooks": {
+      "status": "ok",
+      "lines": 135
+    },
+    "multi_process": {
+      "status": "ok",
+      "lines": 243
+    },
+    "persistent_serverlet": {
+      "status": "ok",
+      "lines": 223
+    },
+    "pipeline": {
+      "status": "ok",
+      "lines": 142
+    },
+    "prom_demo": {
+      "status": "ok",
+      "lines": 112
+    },
+    "python_landline": {
+      "status": "ok",
+      "lines": 325
+    },
+    "resilient_serverlet": {
+      "status": "ok",
+      "lines": 256
+    },
+    "secret_serverlet": {
+      "status": "ok",
+      "lines": 431
+    },
+    "serverlet": {
+      "status": "ok",
+      "lines": 253
+    },
+    "string_interpolation": {
+      "status": "ok",
+      "lines": 137
+    },
+    "supervised_process": {
+      "status": "ok",
+      "lines": 278
+    },
+    "task_demo": {
+      "status": "ok",
+      "lines": 271
+    },
+    "typescript_landline": {
+      "status": "skipped",
+      "reason": "Error: TypeScript 7 checker unavailable: No such file or directory (os error 2). Install with `bun add --dev typescript`, then put its bin directory on PATH or set ORCH_TSC."
+    }
+  }
+}
