@@ -1,9 +1,12 @@
 name: website
 
-# Publishes website/ to GitHub Pages from the `website` branch. The site has no
-# build step: the docs and examples pages fetch Markdown and .orch files at
-# runtime, so the repository files they read are copied next to the site in
-# the deployed artifact.
+# Publishes website/ to GitHub Pages from the `website` branch.
+#
+# The site reads documentation, examples and the version number from the default
+# branch at page load, so a docs change on `main` is live without a redeploy.
+# The copies placed beside the site here are only a fallback for when the raw
+# host cannot be reached, and they are taken from `main` rather than from this
+# branch so the fallback does not drift. The daily run refreshes that snapshot.
 #
 # To deploy: push to the `website` branch (or run this workflow by hand). The
 # first run enables Pages for the repository; if that step is refused, enable
@@ -12,6 +15,8 @@ name: website
 on:
   push:
     branches: [website]
+  schedule:
+    - cron: "17 6 * * *"   # refresh the fallback snapshot of main
   workflow_dispatch:
 
 permissions:
@@ -27,7 +32,15 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out the site
+        uses: actions/checkout@v4
+
+      # The fallback copies come from the default branch, not from this one.
+      - name: Check out the default branch for docs and examples
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: .source
 
       # Enables Pages when the token is allowed to; otherwise Pages must be switched
       # on once under Settings → Pages → Source: "GitHub Actions", and this step is
@@ -47,17 +60,20 @@ jobs:
           rm -f dist/README.md
           # Files the docs and examples pages fetch at runtime, at the same
           # repository-relative paths they use.
-          cp -R docs dist/docs
+          # Fallback snapshot, taken from the default branch.
+          src=.source
+          cp -R "$src/docs" dist/docs
           mkdir -p dist/examples
-          cp examples/*.orch dist/examples/
-          cp -R examples/modules dist/examples/modules
-          cp -R examples/python dist/examples/python
-          cp README.md CHANGELOG.md CONTRIBUTING.md LICENSE dist/
+          cp "$src"/examples/*.orch dist/examples/
+          cp -R "$src/examples/modules" dist/examples/modules
+          cp -R "$src/examples/python" dist/examples/python
+          cp "$src"/README.md "$src"/CHANGELOG.md "$src"/CONTRIBUTING.md "$src"/LICENSE dist/
           mkdir -p dist/sdk/python dist/sdk/typescript dist/benchmarks dist/editors/vscode
-          cp sdk/python/README.md dist/sdk/python/README.md
-          cp sdk/typescript/README.md dist/sdk/typescript/README.md
-          cp benchmarks/README.md dist/benchmarks/README.md
-          cp editors/vscode/README.md dist/editors/vscode/README.md
+          cp "$src/sdk/python/README.md" dist/sdk/python/README.md
+          cp "$src/sdk/typescript/README.md" dist/sdk/typescript/README.md
+          cp "$src/benchmarks/README.md" dist/benchmarks/README.md
+          cp "$src/editors/vscode/README.md" dist/editors/vscode/README.md
+          rm -rf dist/.source
           touch dist/.nojekyll
           find dist -type f | sort
 

@@ -51,7 +51,7 @@
   <div class="wrap">
     <a class="brand" href="./" aria-label="OrchestrateLang home">
       <svg viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round"><path d="M32 10 A22 22 0 0 1 43 51.05"/><path d="M35.82 53.67 A22 22 0 0 1 15.15 46.14"/><path d="M11.33 39.52 A22 22 0 0 1 24.48 11.33"/></g><circle cx="32" cy="32" r="6.5" fill="#d9911c"/></svg>
-      <span class="name">OrchestrateLang</span> <span class="ver">v0.8.0</span>
+      <span class="name">OrchestrateLang</span> <span class="ver" data-orch-version title="version on the main branch"></span>
     </a>
     <nav class="nav" aria-label="Site">
       <a href="./">Overview</a>
@@ -93,6 +93,7 @@
 (function () {
   "use strict";
   const REPO = window.ORCH_REPO;
+  const REF = window.ORCH_REF;
   const EXAMPLES = [
     { group: "Start here", items: [
       { id: "hello", title: "Hello", blurb: "The smallest program: one automatic block, then stop." },
@@ -177,7 +178,7 @@
       if (current !== ex) return;
     } catch (e) {
       box.innerHTML = '<div class="status error"><strong>Could not load <code>' + path + "</code>.</strong><br>" + esc(e.message) +
-        '<br><br>This page fetches the file from the repository at runtime. Serve the repository root with a static file server, or read it on <a href="' + REPO + "/blob/main/" + path + '">GitHub</a>.</div>';
+        '<br><br>This page reads the program from the ' + REF + ' branch at load time, with the deployed copy as a fallback. Both were unreachable. Read it on <a href="' + REPO + "/blob/" + REF + "/" + path + '">GitHub</a>.</div>';
       return;
     }
     const gen = await loadManifest();
@@ -189,7 +190,7 @@
         '<button type="button" role="tab" id="tab-rust" aria-selected="false" aria-controls="pane-rust"' + (entry && entry.status === "ok" ? "" : " disabled") + '>Generated Rust' + (entry && entry.status === "ok" ? " · " + entry.lines.toLocaleString() + " lines" : "") + '</button>' +
         (stamp ? '<span class="gen-note">' + esc(stamp) + "</span>" : "") +
       "</div>" +
-      '<div id="pane-orch" role="tabpanel" aria-labelledby="tab-orch"><div class="code"><div class="code-head"><span class="dot"></span>' + ex.id + '.orch<a class="copy" style="margin-left:auto;text-decoration:none" href="' + REPO + "/blob/main/" + path + '" rel="noopener">GitHub ↗</a><button class="copy" type="button" data-copy style="margin-left:8px">Copy</button></div><pre><code class="language-orchestrate">' + esc(source) + "</code></pre></div></div>" +
+      '<div id="pane-orch" role="tabpanel" aria-labelledby="tab-orch"><div class="code"><div class="code-head"><span class="dot"></span>' + ex.id + '.orch<a class="copy" style="margin-left:auto;text-decoration:none" href="' + REPO + "/blob/" + REF + "/" + path + '" rel="noopener">GitHub ↗</a><button class="copy" type="button" data-copy style="margin-left:8px">Copy</button></div><pre><code class="language-orchestrate">' + esc(source) + "</code></pre></div></div>" +
       '<div id="pane-rust" role="tabpanel" aria-labelledby="tab-rust" hidden></div>';
     if (!entry || entry.status !== "ok") {
       document.getElementById("pane-rust").innerHTML = '<div class="status">No generated Rust snapshot for this example' + (entry && entry.reason ? ": " + esc(entry.reason) : "") + ". Run <code>python3 website/generate-rust.py</code> with the toolchain installed to add one.</div>";

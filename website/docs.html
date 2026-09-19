@@ -95,7 +95,7 @@
   <div class="wrap">
     <a class="brand" href="./" aria-label="OrchestrateLang home">
       <svg viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round"><path d="M32 10 A22 22 0 0 1 43 51.05"/><path d="M35.82 53.67 A22 22 0 0 1 15.15 46.14"/><path d="M11.33 39.52 A22 22 0 0 1 24.48 11.33"/></g><circle cx="32" cy="32" r="6.5" fill="#d9911c"/></svg>
-      <span class="name">OrchestrateLang</span> <span class="ver">v0.8.0</span>
+      <span class="name">OrchestrateLang</span> <span class="ver" data-orch-version title="version on the main branch"></span>
     </a>
     <nav class="nav" aria-label="Site">
       <a href="./">Overview</a>
@@ -185,6 +185,7 @@
   const byId = Object.fromEntries(ALL.map(function (d) { return [d.id, d]; }));
   const byPath = Object.fromEntries(ALL.map(function (d) { return [d.path, d]; }));
   const REPO = window.ORCH_REPO;
+  const REF = window.ORCH_REF;
   const ROOT = window.ORCH_ROOT;
 
   /* ---------- sidebar ---------- */
@@ -227,7 +228,7 @@
     const known = byPath[target];
     if (known) return "#" + known.id + frag;
     if (/^examples\/[^/]+\.orch$/.test(target)) return "examples.html#" + target.replace(/^examples\//, "").replace(/\.orch$/, "");
-    return REPO + "/blob/main/" + target;
+    return REPO + "/blob/" + REF + "/" + target;
   }
   function escapeHtml(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
 
@@ -247,7 +248,7 @@
       return '<a href="' + h + '"' + (title ? ' title="' + escapeHtml(title) + '"' : "") + ext + ">" + text + "</a>";
     };
     renderer.image = function (href, title, text) {
-      const src = /^https?:/.test(href) ? href : ROOT + resolvePath(doc.path, href);
+      const src = /^https?:/.test(href) ? href : window.orchSourceUrl(resolvePath(doc.path, href));
       return '<img src="' + src + '" alt="' + escapeHtml(text || "") + '"' + (title ? ' title="' + escapeHtml(title) + '"' : "") + ">";
     };
     renderer.code = function (code, lang) {
@@ -321,8 +322,9 @@
         if (a.dataset.id === r.doc.id) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
       });
       document.getElementById("crumbs").innerHTML =
-        '<a href="./">OrchestrateLang</a><span>/</span><a href="docs.html">docs</a><span>/</span><span>' + r.doc.path + '</span>' +
-        '<a class="edit" href="' + REPO + '/blob/main/' + r.doc.path + '" rel="noopener">Edit on GitHub ↗</a>';
+        '<a href="./">OrchestrateLang</a><span>/</span><a href="' + REPO + '/tree/' + REF + '" rel="noopener">' + REF + '</a>' +
+        '<span>/</span><span>' + r.doc.path + '</span>' +
+        '<a class="edit" href="' + REPO + '/blob/' + REF + '/' + r.doc.path + '" rel="noopener">Edit on GitHub ↗</a>';
       md.innerHTML = '<div class="status">Loading ' + r.doc.path + '…</div>';
       tocEl.innerHTML = "";
       try {

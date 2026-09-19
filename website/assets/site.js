@@ -1,22 +1,36 @@
 /* OrchestrateLang website — shared behavior.
-   No build step. Works when the repository root is served by any static
-   file server (docs and examples are fetched from the repo at runtime). */
+   No build step. Documentation, examples and the version number are read from the
+   public repository's default branch at page load; the files deployed beside the
+   site are only a fallback for when that host cannot be reached. */
 
 (function () {
   "use strict";
 
-  /* ---------- where is the repository root? ----------
-     Served from the repo:   /website/index.html  -> root is /
-     Deployed by Pages:      /index.html          -> paths resolve relative to the page
-     (the Pages workflow copies docs/, examples/, README.md, CHANGELOG.md next to the site) */
+  /* ---------- where the content comes from ----------
+     Documentation, examples and the version number are read from the public
+     repository's default branch at page load, so the site follows `main` without
+     being redeployed. Nothing about the language is hardcoded here.
+
+     The copies the Pages workflow deploys beside the site are a fallback, used
+     only when the raw host cannot be reached (offline, or a blocked network). */
+  const SLUG = "Immanuel-Fowler/OrchestrateLang";
+  const REF = "main";
+  const RAW = "https://raw.githubusercontent.com/" + SLUG + "/" + REF + "/";
+
+  /* the local fallback root: /website/x.html -> /, deployed -> beside the page */
   const ROOT = (function () {
     const p = location.pathname;
     const i = p.indexOf("/website/");
     return i >= 0 ? p.slice(0, i + 1) : "";
   })();
+
   window.ORCH_ROOT = ROOT;
-  window.ORCH_REPO = "https://github.com/Immanuel-Fowler/OrchestrateLang";
-  window.ORCH_VERSION = "0.8.0";
+  window.ORCH_SLUG = SLUG;
+  window.ORCH_REF = REF;
+  window.ORCH_RAW = RAW;
+  window.ORCH_REPO = "https://github.com/" + SLUG;
+  window.ORCH_VERSION = null;               // filled in from Cargo.toml on main
+  window.orchSourceUrl = function (path) { return RAW + String(path).replace(/^\/+/, ""); };
 
   /* ---------- theme ---------- */
   const root = document.documentElement;
@@ -90,10 +104,40 @@
   });
 
   /* ---------- helpers other pages use ---------- */
+  /* Repository text, live from the default branch, falling back to the deployed copy.
+     `cache: "default"` lets the browser honour the raw host's 5 minute cache header
+     instead of re-downloading every document on every page view. */
   window.orchFetchText = async function (relPath) {
-    const res = await fetch(ROOT + relPath, { cache: "no-cache" });
-    if (!res.ok) throw new Error(res.status + " " + res.statusText + " for " + relPath);
-    return res.text();
+    const path = String(relPath).replace(/^\/+/, "");
+    try {
+      const live = await fetch(RAW + path, { cache: "default" });
+      if (live.ok) return await live.text();
+    } catch (e) { /* unreachable: fall through to the deployed copy */ }
+
+    const local = await fetch(ROOT + path, { cache: "no-cache" });
+    if (!local.ok) throw new Error(local.status + " " + local.statusText + " for " + path);
+    return local.text();
+  };
+
+  /* ---------- version, read from Cargo.toml on the default branch ---------- */
+  function parseVersion(toml) {
+    const pkg = toml.split(/^\[/m).filter(function (s) { return s.indexOf("package]") === 0; })[0];
+    const m = (pkg || toml).match(/^\s*version\s*=\s*"([^"]+)"/m);
+    return m ? m[1] : null;
+  }
+
+  window.orchVersion = async function () {
+    if (window.ORCH_VERSION) return window.ORCH_VERSION;
+    let v = null;
+    try {
+      v = parseVersion(await window.orchFetchText("Cargo.toml"));
+    } catch (e) { /* leave the badge as it is rather than show a number we cannot verify */ }
+    if (!v) return null;
+    window.ORCH_VERSION = v;
+    document.querySelectorAll("[data-orch-version]").forEach(function (el) {
+      el.textContent = el.dataset.orchVersion === "bare" ? v : "v" + v;
+    });
+    return v;
   };
   window.orchSlug = function (text) {
     return String(text).toLowerCase().replace(/<[^>]+>/g, "").replace(/[`*_]/g, "")
@@ -110,5 +154,6 @@
       if (href === here || (here === "index.html" && href === "./")) a.setAttribute("aria-current", "page");
     });
     window.orchHighlightAll();
+    window.orchVersion();
   });
 })();

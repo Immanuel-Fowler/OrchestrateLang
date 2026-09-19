@@ -3,12 +3,26 @@
 The project website: an overview page, a docs page, and an examples page. Static HTML,
 CSS, and JavaScript with no build step.
 
-## The docs page reads the repository
+## The site reads the repository, live
 
-`docs.html` and `examples.html` do not contain documentation. At page load they fetch
-the Markdown files under `docs/` (plus `README.md`, `CHANGELOG.md`, the SDK READMEs, and
-the benchmark README) and the `.orch` files under `examples/`, then render them. Editing a
-file under `docs/` updates the site; there is nothing to regenerate.
+`docs.html`, `examples.html` and `polyglot.html` contain no documentation and no version
+number. At page load they fetch from the public repository's default branch over
+`raw.githubusercontent.com`:
+
+| What | From |
+|---|---|
+| Documentation | `docs/**.md`, `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, the SDK and benchmark READMEs |
+| Example programs and modules | `examples/**` |
+| Version number in the header | `version` in `[package]` of `Cargo.toml` |
+
+Merging a docs change to `main` therefore updates the site with no redeploy, and a release
+that bumps `Cargo.toml` updates the version badge the same way. The repository, the branch
+and the raw base live in one place: the top of `assets/site.js`.
+
+Nothing caches the version beyond the raw host's own five minute header, so a release
+shows up without reopening the tab. If the raw host cannot be reached the page falls back
+to the copies deployed beside it, and the version badge hides itself rather than show a
+number it cannot verify.
 
 The manifest of pages lives at the top of the script in `docs.html`; add a new
 document there when a new file lands in `docs/`. The example list is at the top of
@@ -43,9 +57,13 @@ if you restore it; install the toolchain to regenerate them.
 ## Deploy
 
 The site is published at <https://immanuel-fowler.github.io/OrchestrateLang/> from the
-`website` branch. `.github/workflows/pages.yml` copies `website/` and the files it
-reads into one artifact and publishes it with GitHub Pages on every push to that
-branch. To ship a change, merge or push it to `website`:
+`website` branch. `.github/workflows/pages.yml` publishes `website/` with GitHub Pages on
+every push to that branch, and once a day to refresh the fallback snapshot. That snapshot
+is checked out from `main`, not from the `website` branch, so it cannot drift from what
+the pages read at runtime.
+
+Only changes to the site itself need a deploy. Documentation changes do not: push them to
+`main` and the live pages pick them up. To ship a change to the site:
 
 ```sh
 git push origin <your-branch>:website
