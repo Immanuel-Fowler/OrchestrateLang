@@ -339,6 +339,9 @@ impl Codegen {
                     format!("({})", compiled_args)
                 };
                 if self.library && event_name != "update_orchestrator" {
+                    if self.context_bound {
+                        return format!("{{ let value = std::sync::Arc::new({payload}); let handlers = __context.event_{event_name}.lock().unwrap().clone(); for handler in handlers {{ __context.queue_event(handler(value.clone())); }} }}");
+                    }
                     return format!("let context = crate::__orch_context(); let value = std::sync::Arc::new({payload}); let handlers = {func_name}().lock().unwrap().clone(); for handler in handlers {{ context.queue_event(handler(value.clone())); }}");
                 }
                 format!(

@@ -297,6 +297,10 @@ pub struct Codegen {
     /// Types of the entry file's top-level `let`s, from the typechecker, for the program struct.
     pub state_types: std::collections::BTreeMap<String, Type>,
     pub(super) state_rewrite: Option<StateRewrite>,
+    /// Active while code with `__context` and `__host` in scope is compiled: hook bodies,
+    /// event handlers, and worker bodies. A host call or trigger there uses the binding
+    /// instead of looking the instance up. Off inside closures, which may outlive the tick.
+    pub(super) context_bound: bool,
     /// Some C-ABI sidecar in the program uses `handle`, so the entry file defines the type.
     pub emit_handle_type: bool,
     /// Foreign functions with a handle parameter, by the name calls use, and which of
@@ -323,6 +327,7 @@ impl Codegen {
             io_driver_users: Vec::new(),
             state_types: std::collections::BTreeMap::new(),
             state_rewrite: None,
+            context_bound: false,
             emit_handle_type: false,
             foreign_handle_params: std::collections::HashMap::new(),
             sandbox_programs: Vec::new(),
