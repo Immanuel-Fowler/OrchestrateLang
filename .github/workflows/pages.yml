@@ -29,8 +29,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Enables Pages when the token is allowed to; otherwise Pages must be switched
+      # on once under Settings → Pages → Source: "GitHub Actions", and this step is
+      # a no-op after that.
       - name: Enable Pages
         uses: actions/configure-pages@v5
+        continue-on-error: true
         with:
           enablement: true
 
