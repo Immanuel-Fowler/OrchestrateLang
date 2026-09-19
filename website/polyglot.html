@@ -190,7 +190,62 @@ tr[aria-expanded="true"] .row-btn .name .chev { transform: rotate(90deg); }
       <a class="lang" href="#lang-python">Python <span class="pill pill-shipped">Shipped</span></a>
       <a class="lang" href="#roadmap">C# <span class="pill pill-planned">Planned</span></a>
       <a class="lang" href="#roadmap">Go <span class="pill pill-exploring">Exploring</span></a>
-      <a class="lang" href="#scorecard">+ 65 more, scored <span class="pill pill-exploring">Scorecard</span></a>
+      <a class="lang" href="#scorecard">+ 65 more, scored below <span class="pill pill-exploring">Scorecard</span></a>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SCORECARD ============ -->
+<section class="section" id="scorecard">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">Every language, scored</div>
+      <h2>Which languages could plug in next?</h2>
+      <p>The foreign-function slot takes a static library with plain C symbols: the <code>.orch_ffi</code> sidecar maps OrchestrateLang types onto them and a generated <code>build.rs</code> links the result. Every language below is scored on how well it fits that slot. Languages that cannot fit it are here too, with the route they would need instead, and some rows exist mainly because they would justify a new feature. Click a language to read the reasoning.</p>
+    </div>
+    <div class="tiers" id="tiers" role="group" aria-label="Filter by tier"></div>
+    <details class="axes-wrap">
+      <summary>What the eight scores mean</summary>
+      <div class="axes">
+        <div class="ax"><span class="k">EXPORT</span><span class="d"><b>C symbol export.</b> Can a function be given an exact C name without a wrapper? A one-keyword export is a 5; a hand-written C stub is a 1.</span></div>
+        <div class="ax"><span class="k">BUILD</span><span class="d"><b>Static library output.</b> Does the compiler emit a <code>.a</code> or <code>.o</code> from one file with one command?</span></div>
+        <div class="ax"><span class="k">RUNTIME</span><span class="d"><b>Runtime weight.</b> 5 means nothing extra to link or start; a runtime library that must be linked and initialised before the first call scores low.</span></div>
+        <div class="ax"><span class="k">TOOLING</span><span class="d"><b>Toolchain simplicity.</b> One program on <code>PATH</code>, quick install, fast builds.</span></div>
+        <div class="ax"><span class="k">TYPES</span><span class="d"><b>Type fit.</b> Do <code>int</code>, <code>float</code>, <code>bool</code>, <code>void</code> map exactly onto <code>i64</code>, <code>f64</code>, <code>bool</code>, <code>()</code>? Strings and handles, added in 0.8.0, follow the C allocator rule wherever the language can meet it.</span></div>
+        <div class="ax"><span class="k">CHECK</span><span class="d"><b>Syntax-only mode.</b> Is there a check-without-building flag for <code>check-foreign</code>?</span></div>
+        <div class="ax"><span class="k">CROSS</span><span class="d"><b>Cross-compile outlook.</b> How hard would <code>build --lib --target</code> be later? Not wired for any C-ABI language yet.</span></div>
+        <div class="ax"><span class="k">PAYOFF</span><span class="d"><b>Why bother.</b> Ecosystem, performance, or niche value a user would actually gain.</span></div>
+      </div>
+    </details>
+    <div class="sc-controls">
+      <input type="search" id="sc-q" placeholder="Search languages…" aria-label="Search languages">
+      <span class="hint" id="sc-count"></span>
+      <span class="hint">Click a column header to sort.</span>
+    </div>
+    <div class="sc-wrap">
+      <table class="sc" id="sc-tbl">
+        <thead>
+          <tr>
+            <th><button class="th-btn" data-key="name">Language <span class="arrow">↕</span></button></th>
+            <th><button class="th-btn" data-key="tier">Tier <span class="arrow">↕</span></button></th>
+            <th class="num"><button class="th-btn" data-key="export">Export <span class="arrow">↕</span></button></th>
+            <th class="num"><button class="th-btn" data-key="build">Build <span class="arrow">↕</span></button></th>
+            <th class="num"><button class="th-btn" data-key="runtime">Runtime <span class="arrow">↕</span></button></th>
+            <th class="num"><button class="th-btn" data-key="tooling">Tooling <span class="arrow">↕</span></button></th>
+            <th class="num"><button class="th-btn" data-key="types">Types <span class="arrow">↕</span></button></th>
+            <th class="num"><button class="th-btn" data-key="check">Check <span class="arrow">↕</span></button></th>
+            <th class="num"><button class="th-btn" data-key="cross">Cross <span class="arrow">↕</span></button></th>
+            <th class="num"><button class="th-btn" data-key="payoff">Payoff <span class="arrow">↕</span></button></th>
+            <th class="num"><button class="th-btn" data-key="total" data-active="true">Total <span class="arrow">↓</span></button></th>
+          </tr>
+        </thead>
+        <tbody id="sc-rows"></tbody>
+      </table>
+    </div>
+    <div class="sc-notes">
+      <p>Scores are 0 to 5 per column, 40 total. They describe fit with the current sidecar mechanism, not language quality. A language near the top of the table needs only four edits in the compiler: a <code>ForeignSource</code> variant, a toolchain entry, a <code>build.rs</code> emitter line, and a <code>check-foreign</code> entry.</p>
+      <p>The tier is a judgement about effort and route; the total is a measure of C-ABI fit. A language can rank low on the total yet be cheap to add through the TypeScript bridge, which is why JavaScript sits in "Ready to add". "Needs a different path" usually means a landline serverlet; "Would want a new feature" names the feature.</p>
+      <p>Scores were set against the <code>int</code>, <code>float</code>, <code>bool</code>, <code>void</code> sidecar. Version 0.8.0 added <code>string</code> and <code>handle</code> across the C ABI; arrays and structs would lift the whole table at once. The data lives in <code>website/assets/scorecard-data.js</code>; re-score there.</p>
     </div>
   </div>
 </section>
@@ -275,61 +330,6 @@ orchestrator main() {
     </div>
     <div class="langtabs" role="tablist" id="langtabs"></div>
     <div id="langpanel" class="panel"></div>
-  </div>
-</section>
-
-<!-- ============ SCORECARD ============ -->
-<section class="section" id="scorecard">
-  <div class="wrap">
-    <div class="section-head">
-      <div class="eyebrow">Every language, scored</div>
-      <h2>Which languages could plug in next?</h2>
-      <p>The foreign-function slot takes a static library with plain C symbols: the <code>.orch_ffi</code> sidecar maps OrchestrateLang types onto them and a generated <code>build.rs</code> links the result. Every language below is scored on how well it fits that slot. Languages that cannot fit it are here too, with the route they would need instead, and some rows exist mainly because they would justify a new feature. Click a language to read the reasoning.</p>
-    </div>
-    <div class="tiers" id="tiers" role="group" aria-label="Filter by tier"></div>
-    <details class="axes-wrap">
-      <summary>What the eight scores mean</summary>
-      <div class="axes">
-        <div class="ax"><span class="k">EXPORT</span><span class="d"><b>C symbol export.</b> Can a function be given an exact C name without a wrapper? A one-keyword export is a 5; a hand-written C stub is a 1.</span></div>
-        <div class="ax"><span class="k">BUILD</span><span class="d"><b>Static library output.</b> Does the compiler emit a <code>.a</code> or <code>.o</code> from one file with one command?</span></div>
-        <div class="ax"><span class="k">RUNTIME</span><span class="d"><b>Runtime weight.</b> 5 means nothing extra to link or start; a runtime library that must be linked and initialised before the first call scores low.</span></div>
-        <div class="ax"><span class="k">TOOLING</span><span class="d"><b>Toolchain simplicity.</b> One program on <code>PATH</code>, quick install, fast builds.</span></div>
-        <div class="ax"><span class="k">TYPES</span><span class="d"><b>Type fit.</b> Do <code>int</code>, <code>float</code>, <code>bool</code>, <code>void</code> map exactly onto <code>i64</code>, <code>f64</code>, <code>bool</code>, <code>()</code>? Strings and handles, added in 0.8.0, follow the C allocator rule wherever the language can meet it.</span></div>
-        <div class="ax"><span class="k">CHECK</span><span class="d"><b>Syntax-only mode.</b> Is there a check-without-building flag for <code>check-foreign</code>?</span></div>
-        <div class="ax"><span class="k">CROSS</span><span class="d"><b>Cross-compile outlook.</b> How hard would <code>build --lib --target</code> be later? Not wired for any C-ABI language yet.</span></div>
-        <div class="ax"><span class="k">PAYOFF</span><span class="d"><b>Why bother.</b> Ecosystem, performance, or niche value a user would actually gain.</span></div>
-      </div>
-    </details>
-    <div class="sc-controls">
-      <input type="search" id="sc-q" placeholder="Search languages…" aria-label="Search languages">
-      <span class="hint" id="sc-count"></span>
-      <span class="hint">Click a column header to sort.</span>
-    </div>
-    <div class="sc-wrap">
-      <table class="sc" id="sc-tbl">
-        <thead>
-          <tr>
-            <th><button class="th-btn" data-key="name">Language <span class="arrow">↕</span></button></th>
-            <th><button class="th-btn" data-key="tier">Tier <span class="arrow">↕</span></button></th>
-            <th class="num"><button class="th-btn" data-key="export">Export <span class="arrow">↕</span></button></th>
-            <th class="num"><button class="th-btn" data-key="build">Build <span class="arrow">↕</span></button></th>
-            <th class="num"><button class="th-btn" data-key="runtime">Runtime <span class="arrow">↕</span></button></th>
-            <th class="num"><button class="th-btn" data-key="tooling">Tooling <span class="arrow">↕</span></button></th>
-            <th class="num"><button class="th-btn" data-key="types">Types <span class="arrow">↕</span></button></th>
-            <th class="num"><button class="th-btn" data-key="check">Check <span class="arrow">↕</span></button></th>
-            <th class="num"><button class="th-btn" data-key="cross">Cross <span class="arrow">↕</span></button></th>
-            <th class="num"><button class="th-btn" data-key="payoff">Payoff <span class="arrow">↕</span></button></th>
-            <th class="num"><button class="th-btn" data-key="total" data-active="true">Total <span class="arrow">↓</span></button></th>
-          </tr>
-        </thead>
-        <tbody id="sc-rows"></tbody>
-      </table>
-    </div>
-    <div class="sc-notes">
-      <p>Scores are 0 to 5 per column, 40 total. They describe fit with the current sidecar mechanism, not language quality. A language near the top of the table needs only four edits in the compiler: a <code>ForeignSource</code> variant, a toolchain entry, a <code>build.rs</code> emitter line, and a <code>check-foreign</code> entry.</p>
-      <p>The tier is a judgement about effort and route; the total is a measure of C-ABI fit. A language can rank low on the total yet be cheap to add through the TypeScript bridge, which is why JavaScript sits in "Ready to add". "Needs a different path" usually means a landline serverlet; "Would want a new feature" names the feature.</p>
-      <p>Scores were set against the <code>int</code>, <code>float</code>, <code>bool</code>, <code>void</code> sidecar. Version 0.8.0 added <code>string</code> and <code>handle</code> across the C ABI; arrays and structs would lift the whole table at once. The data lives in <code>website/assets/scorecard-data.js</code>; re-score there.</p>
-    </div>
   </div>
 </section>
 
