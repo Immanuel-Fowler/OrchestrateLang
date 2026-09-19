@@ -190,7 +190,7 @@ tr[aria-expanded="true"] .row-btn .name .chev { transform: rotate(90deg); }
       <a class="lang" href="#lang-python">Python <span class="pill pill-shipped">Shipped</span></a>
       <a class="lang" href="#roadmap">C# <span class="pill pill-planned">Planned</span></a>
       <a class="lang" href="#roadmap">Go <span class="pill pill-exploring">Exploring</span></a>
-      <a class="lang" href="#scorecard">+ 65 more, scored <span class="pill pill-exploring">Scorecard</span></a>
+      <a class="lang" href="#scorecard">+ 27 more that fit the C ABI <span class="pill pill-exploring">Scored</span></a>
     </div>
   </div>
 </section>
@@ -282,9 +282,9 @@ orchestrator main() {
 <section class="section" id="scorecard">
   <div class="wrap">
     <div class="section-head">
-      <div class="eyebrow">Beyond the seven</div>
+      <div class="eyebrow">The C-ABI slot</div>
       <h2>Which languages could plug in the way Zig and Swift do?</h2>
-      <p>Zig and Swift work because their compilers emit a static library with plain C symbols, the <code>.orch_ffi</code> sidecar maps OrchestrateLang types onto them, and a generated <code>build.rs</code> links the result. Every language below is scored on how well it fits that same slot. Popular languages that cannot fit it are here too, with the route they would need instead, and a few rows exist mainly because they would justify a new feature. Click a language to read the reasoning.</p>
+      <p>Zig and Swift work because their compilers emit a static library with plain C symbols, the <code>.orch_ffi</code> sidecar maps OrchestrateLang types onto them, and a generated <code>build.rs</code> links the result. Every language below could take that same slot, and is scored on how well it fits. Languages that need a different route, a landline, the TypeScript bridge, or a feature that does not exist yet, are left out on purpose. Click a language to read the reasoning.</p>
     </div>
     <div class="tiers" id="tiers" role="group" aria-label="Filter by tier"></div>
     <details class="axes-wrap">
@@ -327,7 +327,7 @@ orchestrator main() {
     </div>
     <div class="sc-notes">
       <p>Scores are 0 to 5 per column, 40 total. They describe fit with the current sidecar mechanism, not language quality. The Zig and Swift rows are the reference points; anything scoring near them needs only the same four edits Zig did: a <code>ForeignSource</code> variant, a toolchain entry, a <code>build.rs</code> emitter line, and a <code>check-foreign</code> entry.</p>
-      <p>The tier is a judgement about effort and route; the total is a measure of C-ABI fit. A language can rank low on the total yet be cheap to add through the TypeScript bridge, which is why JavaScript sits in "Ready to add".</p>
+      <p>The tier is a judgement about effort; the total is a measure of C-ABI fit. "Ready to add" means the four edits and nothing else. "Fits with caveats" means the route works but carries a runtime to initialise, an extra build step, a platform limit, or a type mismatch the row explains.</p>
       <p>Scores were set against the <code>int</code>, <code>float</code>, <code>bool</code>, <code>void</code> sidecar. Version 0.8.0 added <code>string</code> and <code>handle</code> across the C ABI; arrays and structs would lift the whole table at once. The data lives in <code>website/assets/scorecard-data.js</code>; re-score there.</p>
     </div>
   </div>
@@ -571,7 +571,16 @@ orchestrator main() {
   "use strict";
   const D = window.ORCH_SCORECARD;
   if (!D) return;
-  const TIERS = D.TIERS, AXES = D.AXES, AXIS_LABEL = D.AXIS_LABEL, LANGS = D.LANGS;
+  // Only languages that could join the route Zig and Swift use: a static library with C
+  // symbols, linked by the generated build.rs. Rows whose route is a landline, the
+  // TypeScript bridge, or a feature that does not exist yet stay in the data file but
+  // are not this table's subject.
+  const CABI_TIERS = ["supported", "ready", "caveat"];
+  const OTHER_ROUTE = new Set(["Rust", "TypeScript", "JavaScript"]);
+  const TIERS = {};
+  CABI_TIERS.forEach(function (k) { TIERS[k] = D.TIERS[k]; });
+  const AXES = D.AXES, AXIS_LABEL = D.AXIS_LABEL;
+  const LANGS = D.LANGS.filter(function (l) { return CABI_TIERS.includes(l.tier) && !OTHER_ROUTE.has(l.name); });
   for (const l of LANGS) {
     l.export = l.s[0]; l.build = l.s[1]; l.runtime = l.s[2]; l.tooling = l.s[3];
     l.types = l.s[4]; l.check = l.s[5]; l.cross = l.s[6]; l.payoff = l.s[7];
