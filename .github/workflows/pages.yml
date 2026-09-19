@@ -49,6 +49,8 @@ jobs:
           cp -R docs dist/docs
           mkdir -p dist/examples
           cp examples/*.orch dist/examples/
+          cp -R examples/modules dist/examples/modules
+          cp -R examples/python dist/examples/python
           cp README.md CHANGELOG.md CONTRIBUTING.md LICENSE dist/
           mkdir -p dist/sdk/python dist/sdk/typescript dist/benchmarks dist/editors/vscode
           cp sdk/python/README.md dist/sdk/python/README.md

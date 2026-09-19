@@ -25,6 +25,21 @@ python3 -m http.server 8000
 Then open <http://localhost:8000/website/>. Opening the files directly with `file://`
 will not work: browsers block `fetch` there.
 
+## Regenerating the Rust snapshots
+
+The examples page shows the `src/main.rs` the compiler writes for each program. The
+snapshots are committed so the site needs no Rust toolchain to deploy; refresh them
+after a compiler change:
+
+```sh
+cargo build --release
+python3 website/generate-rust.py
+```
+
+Examples whose foreign toolchain is not installed (Zig, Swift, TypeScript) are
+recorded as skipped in `generated/manifest.json` and keep their previous snapshot only
+if you restore it; install the toolchain to regenerate them.
+
 ## Deploy
 
 `.github/workflows/pages.yml` copies `website/` and the files it reads into one
@@ -38,7 +53,11 @@ Source: GitHub Actions**.
 |---|---|
 | `index.html` | Overview: the language in one program, constructs, pipeline, boundary ladder, serverlet family, interop table, latency chart, install, limitations |
 | `docs.html` | Renders repository Markdown with `marked`, highlights code with `highlight.js`, draws Mermaid diagrams, and indexes headings for search |
-| `examples.html` | Renders every example program with the OrchestrateLang grammar |
+| `examples.html` | Renders every example program with the OrchestrateLang grammar, with a tab for the Rust the compiler generated for it |
+| `polyglot.html` | Polyglot support: mechanisms, a decision flow, per-language module files fetched from `examples/modules/`, type rules, toolchains, costs |
+| `compare.html` | When to use what: OrchestrateLang beside hand-written Tokio, Erlang/OTP, Akka, and Temporal |
+| `generate-rust.py` | Snapshots the generated Rust for every example into `generated/` (run after `cargo build --release`) |
+| `generated/` | Committed snapshots the examples page shows, plus `manifest.json` with the compiler version and date |
 | `assets/site.css` | Design tokens (light and dark), layout, code, tables, pills |
 | `assets/site.js` | Theme toggle, repository-root resolution, the `orchestrate` grammar for highlight.js, copy buttons |
 | `assets/logo.svg`, `favicon.svg` | The mark: three arcs of unequal length kept in one orbit by the center |
