@@ -9,6 +9,10 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-09-19
+
+The glue around a synchronous tick is a few nanoseconds, down from about forty.
+
 ### Changed
 - Library mode: the glue around a synchronous tick is a few nanoseconds. `tick_sync` no
   longer enters the runtime, scopes a task-local, or takes an async mutex per frame: the
@@ -454,7 +458,8 @@ First tagged release.
   `option` / `result`, `try` / `catch`, supervision, `check`, the language server, or the
   standard library. See `examples/` for working code.
 
-[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.6.0...v0.6.1
