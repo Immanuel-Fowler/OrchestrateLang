@@ -190,7 +190,7 @@ tr[aria-expanded="true"] .row-btn .name .chev { transform: rotate(90deg); }
       <a class="lang" href="#lang-python">Python <span class="pill pill-shipped">Shipped</span></a>
       <a class="lang" href="#roadmap">C# <span class="pill pill-planned">Planned</span></a>
       <a class="lang" href="#roadmap">Go <span class="pill pill-exploring">Exploring</span></a>
-      <a class="lang" href="#scorecard">+ 27 more that fit the C ABI <span class="pill pill-exploring">Scored</span></a>
+      <a class="lang" href="#scorecard">+ 65 more, scored <span class="pill pill-exploring">Scorecard</span></a>
     </div>
   </div>
 </section>
@@ -282,17 +282,17 @@ orchestrator main() {
 <section class="section" id="scorecard">
   <div class="wrap">
     <div class="section-head">
-      <div class="eyebrow">The C-ABI slot</div>
-      <h2>Which languages could plug in the way Zig and Swift do?</h2>
-      <p>Zig and Swift work because their compilers emit a static library with plain C symbols, the <code>.orch_ffi</code> sidecar maps OrchestrateLang types onto them, and a generated <code>build.rs</code> links the result. Every language below could take that same slot, and is scored on how well it fits. Languages that need a different route, a landline, the TypeScript bridge, or a feature that does not exist yet, are left out on purpose. Click a language to read the reasoning.</p>
+      <div class="eyebrow">Every language, scored</div>
+      <h2>Which languages could plug in next?</h2>
+      <p>The foreign-function slot takes a static library with plain C symbols: the <code>.orch_ffi</code> sidecar maps OrchestrateLang types onto them and a generated <code>build.rs</code> links the result. Every language below is scored on how well it fits that slot. Languages that cannot fit it are here too, with the route they would need instead, and some rows exist mainly because they would justify a new feature. Click a language to read the reasoning.</p>
     </div>
     <div class="tiers" id="tiers" role="group" aria-label="Filter by tier"></div>
     <details class="axes-wrap">
       <summary>What the eight scores mean</summary>
       <div class="axes">
-        <div class="ax"><span class="k">EXPORT</span><span class="d"><b>C symbol export.</b> Can a function be given an exact C name without a wrapper? Zig's <code>export fn</code> is a 5.</span></div>
+        <div class="ax"><span class="k">EXPORT</span><span class="d"><b>C symbol export.</b> Can a function be given an exact C name without a wrapper? A one-keyword export is a 5; a hand-written C stub is a 1.</span></div>
         <div class="ax"><span class="k">BUILD</span><span class="d"><b>Static library output.</b> Does the compiler emit a <code>.a</code> or <code>.o</code> from one file with one command?</span></div>
-        <div class="ax"><span class="k">RUNTIME</span><span class="d"><b>Runtime weight.</b> 5 means nothing extra to link or start. Swift is a 2 because <code>swiftCore</code> must be linked.</span></div>
+        <div class="ax"><span class="k">RUNTIME</span><span class="d"><b>Runtime weight.</b> 5 means nothing extra to link or start; a runtime library that must be linked and initialised before the first call scores low.</span></div>
         <div class="ax"><span class="k">TOOLING</span><span class="d"><b>Toolchain simplicity.</b> One program on <code>PATH</code>, quick install, fast builds.</span></div>
         <div class="ax"><span class="k">TYPES</span><span class="d"><b>Type fit.</b> Do <code>int</code>, <code>float</code>, <code>bool</code>, <code>void</code> map exactly onto <code>i64</code>, <code>f64</code>, <code>bool</code>, <code>()</code>? Strings and handles, added in 0.8.0, follow the C allocator rule wherever the language can meet it.</span></div>
         <div class="ax"><span class="k">CHECK</span><span class="d"><b>Syntax-only mode.</b> Is there a check-without-building flag for <code>check-foreign</code>?</span></div>
@@ -326,8 +326,8 @@ orchestrator main() {
       </table>
     </div>
     <div class="sc-notes">
-      <p>Scores are 0 to 5 per column, 40 total. They describe fit with the current sidecar mechanism, not language quality. The Zig and Swift rows are the reference points; anything scoring near them needs only the same four edits Zig did: a <code>ForeignSource</code> variant, a toolchain entry, a <code>build.rs</code> emitter line, and a <code>check-foreign</code> entry.</p>
-      <p>The tier is a judgement about effort; the total is a measure of C-ABI fit. "Ready to add" means the four edits and nothing else. "Fits with caveats" means the route works but carries a runtime to initialise, an extra build step, a platform limit, or a type mismatch the row explains.</p>
+      <p>Scores are 0 to 5 per column, 40 total. They describe fit with the current sidecar mechanism, not language quality. A language near the top of the table needs only four edits in the compiler: a <code>ForeignSource</code> variant, a toolchain entry, a <code>build.rs</code> emitter line, and a <code>check-foreign</code> entry.</p>
+      <p>The tier is a judgement about effort and route; the total is a measure of C-ABI fit. A language can rank low on the total yet be cheap to add through the TypeScript bridge, which is why JavaScript sits in "Ready to add". "Needs a different path" usually means a landline serverlet; "Would want a new feature" names the feature.</p>
       <p>Scores were set against the <code>int</code>, <code>float</code>, <code>bool</code>, <code>void</code> sidecar. Version 0.8.0 added <code>string</code> and <code>handle</code> across the C ABI; arrays and structs would lift the whole table at once. The data lives in <code>website/assets/scorecard-data.js</code>; re-score there.</p>
     </div>
   </div>
@@ -571,16 +571,7 @@ orchestrator main() {
   "use strict";
   const D = window.ORCH_SCORECARD;
   if (!D) return;
-  // Only languages that could join the route Zig and Swift use: a static library with C
-  // symbols, linked by the generated build.rs. Rows whose route is a landline, the
-  // TypeScript bridge, or a feature that does not exist yet stay in the data file but
-  // are not this table's subject.
-  const CABI_TIERS = ["supported", "ready", "caveat"];
-  const OTHER_ROUTE = new Set(["Rust", "TypeScript", "JavaScript"]);
-  const TIERS = {};
-  CABI_TIERS.forEach(function (k) { TIERS[k] = D.TIERS[k]; });
-  const AXES = D.AXES, AXIS_LABEL = D.AXIS_LABEL;
-  const LANGS = D.LANGS.filter(function (l) { return CABI_TIERS.includes(l.tier) && !OTHER_ROUTE.has(l.name); });
+  const TIERS = D.TIERS, AXES = D.AXES, AXIS_LABEL = D.AXIS_LABEL, LANGS = D.LANGS;
   for (const l of LANGS) {
     l.export = l.s[0]; l.build = l.s[1]; l.runtime = l.s[2]; l.tooling = l.s[3];
     l.types = l.s[4]; l.check = l.s[5]; l.cross = l.s[6]; l.payoff = l.s[7];
