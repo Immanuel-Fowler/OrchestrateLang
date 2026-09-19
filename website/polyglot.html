@@ -78,6 +78,12 @@ h3.sub { margin: 26px 0 10px; font-size: 1.1rem; }
 :root { --t-supported: #197a73; --t-ready: #2e49a3; --t-caveat: #8f5d0d; --t-path: #6b4fa6; --t-feature: #a23b72; --t-no: #a83a32; --bar-empty: #dfe5ed; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --t-supported: #6fd3ca; --t-ready: #a3b4f2; --t-caveat: #f0b95a; --t-path: #b597dd; --t-feature: #e08ab8; --t-no: #e07c74; --bar-empty: #2a3646; } }
 :root[data-theme="dark"] { --t-supported: #6fd3ca; --t-ready: #a3b4f2; --t-caveat: #f0b95a; --t-path: #b597dd; --t-feature: #e08ab8; --t-no: #e07c74; --bar-empty: #2a3646; }
+.sc-fold > summary { list-style: none; cursor: pointer; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 12px 16px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--radius); font-weight: 600; color: var(--ink); margin-bottom: 16px; }
+.sc-fold > summary::-webkit-details-marker { display: none; }
+.sc-fold > summary:hover { border-color: var(--brass); }
+.sc-fold > summary .chev { color: var(--brass-ink); transition: transform 0.15s; display: inline-block; }
+.sc-fold[open] > summary .chev { transform: rotate(90deg); }
+.sc-fold > summary .meta { margin-left: auto; font-weight: 400; font-size: 0.85rem; color: var(--muted); font-family: var(--font-mono); }
 .tiers { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
 .tier-chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px 6px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--ink); font: inherit; font-size: 0.85rem; cursor: pointer; }
 .tier-chip .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--c); }
@@ -148,7 +154,7 @@ tr[aria-expanded="true"] .row-btn .name .chev { transform: rotate(90deg); }
 .sc .empty { padding: 32px 20px; color: var(--muted); text-align: center; }
 .sc-notes { margin-top: 14px; font-size: 0.85rem; color: var(--muted); max-width: 76ch; display: grid; gap: 6px; }
 @media (max-width: 720px) { .detail-inner { grid-template-columns: 1fr; } .why .item { grid-template-columns: 1fr; gap: 2px; } }
-@media (prefers-reduced-motion: reduce) { .row-btn .name .chev, details.axes-wrap summary::before { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .row-btn .name .chev, details.axes-wrap summary::before, .sc-fold > summary .chev { transition: none; } }
 </style>
 </head>
 <body>
@@ -203,6 +209,8 @@ tr[aria-expanded="true"] .row-btn .name .chev { transform: rotate(90deg); }
       <h2>Which languages could plug in next?</h2>
       <p>The foreign-function slot takes a static library with plain C symbols: the <code>.orch_ffi</code> sidecar maps OrchestrateLang types onto them and a generated <code>build.rs</code> links the result. Every language below is scored on how well it fits that slot. Languages that cannot fit it are here too, with the route they would need instead, and some rows exist mainly because they would justify a new feature. Click a language to read the reasoning.</p>
     </div>
+    <details class="sc-fold" id="sc-fold">
+      <summary><span class="chev" aria-hidden="true">▸</span><span class="lbl" data-open="Hide the table" data-closed="Show the table">Show the table</span><span class="meta" id="sc-fold-meta">72 languages, 8 scores each</span></summary>
     <div class="tiers" id="tiers" role="group" aria-label="Filter by tier"></div>
     <details class="axes-wrap">
       <summary>What the eight scores mean</summary>
@@ -247,6 +255,7 @@ tr[aria-expanded="true"] .row-btn .name .chev { transform: rotate(90deg); }
       <p>The tier is a judgement about effort and route; the total is a measure of C-ABI fit. A language can rank low on the total yet be cheap to add through the TypeScript bridge, which is why JavaScript sits in "Ready to add". "Needs a different path" usually means a landline serverlet; "Would want a new feature" names the feature.</p>
       <p>Scores were set against the <code>int</code>, <code>float</code>, <code>bool</code>, <code>void</code> sidecar. Version 0.8.0 added <code>string</code> and <code>handle</code> across the C ABI; arrays and structs would lift the whole table at once. The data lives in <code>website/assets/scorecard-data.js</code>; re-score there.</p>
     </div>
+    </details>
   </div>
 </section>
 
@@ -668,6 +677,20 @@ orchestrator main() {
   document.getElementById("sc-q").addEventListener("input", function (e) { state.q = e.target.value; renderRows(); });
   renderTiers();
   renderRows();
+  document.getElementById("sc-fold-meta").textContent = LANGS.length + " languages, " + AXES.length + " scores each";
+
+  /* collapsible: closed by default, remembered per browser, opened by a link to #scorecard */
+  const fold = document.getElementById("sc-fold");
+  const lbl = fold.querySelector(".lbl");
+  function syncLabel() { lbl.textContent = fold.open ? lbl.dataset.open : lbl.dataset.closed; }
+  try { if (localStorage.getItem("orch-scorecard") === "open") fold.open = true; } catch (e) { /* private window */ }
+  if (location.hash === "#scorecard") fold.open = true;
+  fold.addEventListener("toggle", function () {
+    syncLabel();
+    try { localStorage.setItem("orch-scorecard", fold.open ? "open" : "closed"); } catch (e) { /* ignore */ }
+  });
+  window.addEventListener("hashchange", function () { if (location.hash === "#scorecard") fold.open = true; });
+  syncLabel();
 })();
 </script>
 </body>
