@@ -7,12 +7,12 @@
 
   /* ---------- where is the repository root? ----------
      Served from the repo:   /website/index.html  -> root is /
-     Deployed by Pages:      /index.html          -> root is the page's directory
+     Deployed by Pages:      /index.html          -> paths resolve relative to the page
      (the Pages workflow copies docs/, examples/, README.md, CHANGELOG.md next to the site) */
   const ROOT = (function () {
     const p = location.pathname;
     const i = p.indexOf("/website/");
-    return i >= 0 ? p.slice(0, i + 1) : p.replace(/[^/]*$/, "");
+    return i >= 0 ? p.slice(0, i + 1) : "";
   })();
   window.ORCH_ROOT = ROOT;
   window.ORCH_REPO = "https://github.com/Immanuel-Fowler/OrchestrateLang";
