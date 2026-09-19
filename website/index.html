@@ -35,20 +35,24 @@
 .tok-kw { color: var(--code-kw); } .tok-ty { color: var(--code-type); } .tok-str { color: var(--code-str); }
 .tok-num { color: var(--code-num); } .tok-fn { color: var(--code-fn); } .tok-bi { color: var(--code-builtin); } .tok-cm { color: var(--code-comment); font-style: italic; }
 .topology { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px 10px; }
-.topology svg { width: 100%; height: auto; display: block; }
+.topology .scroll { overflow-x: auto; }
+.topology svg { width: 100%; max-width: 620px; height: auto; display: block; margin-inline: auto; }
+@media (max-width: 560px) { .topology svg { min-width: 470px; } }
 .topology .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; font-size: 0.8rem; color: var(--muted); }
 .topology .legend button { appearance: none; background: none; border: 0; padding: 4px 6px; border-radius: 4px; color: var(--ink-2); font: inherit; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
 .topology .legend button:hover, .topology .legend button.hot { background: var(--surface-2); color: var(--ink); }
 .topology .legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
 .node { transition: opacity 0.15s; }
 .topology.focus .node:not(.hot), .topology.focus .edge:not(.hot) { opacity: 0.25; }
-.node text { font-family: var(--font-mono); font-size: 11px; fill: var(--ink); }
-.node text.sub { font-family: var(--font-body); font-size: 10px; fill: var(--muted); }
+.node text { font-family: var(--font-mono); font-size: 12px; fill: var(--ink); }
+.node text.sub { font-family: var(--font-body); font-size: 10.5px; fill: var(--muted); }
+.topology .caption { font-family: var(--font-body); font-size: 10.5px; fill: var(--muted); }
 .edge { fill: none; stroke: var(--line-strong); stroke-width: 1.5; }
 .edge.flow { stroke-dasharray: 4 4; animation: flow 1.2s linear infinite; }
 @keyframes flow { to { stroke-dashoffset: -16; } }
 @media (prefers-reduced-motion: reduce) { .edge.flow { animation: none; } }
-.edge-label { font-family: var(--font-body); font-size: 10px; fill: var(--muted); }
+.edge-label { font-family: var(--font-body); font-size: 10.5px; fill: var(--muted); paint-order: stroke; stroke: var(--surface); stroke-width: 4px; stroke-linejoin: round; transition: opacity 0.15s; }
+.topology.focus .edge-label:not(.hot) { opacity: 0.25; }
 
 /* ---------- sections ---------- */
 .section { padding-block: clamp(40px, 7vw, 88px); }
@@ -120,7 +124,7 @@
 .legend-row span { display: inline-flex; align-items: center; gap: 6px; }
 .legend-row i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
 .chart-scroll { overflow-x: auto; margin-top: 8px; }
-.chart-scroll svg { min-width: 600px; width: 100%; height: auto; display: block; }
+.chart-scroll svg { min-width: 600px; width: 100%; max-width: 880px; height: auto; display: block; }
 .axis text, .rowlab { font-family: var(--font-body); font-size: 11px; fill: var(--muted); }
 .rowlab.kind { font-family: var(--font-mono); fill: var(--ink-2); }
 .grid { stroke: var(--line); stroke-width: 1; }
@@ -211,45 +215,48 @@
 <pre><code class="nohighlight"><span class="ln" data-k="fn"><span class="tok-kw">fn</span> <span class="tok-fn">read_sensor</span>() -&gt; <span class="tok-ty">int</span> {</span><span class="ln" data-k="fn">    <span class="tok-num">95</span></span><span class="ln" data-k="fn">}</span><span class="ln"></span><span class="ln" data-k="automatic"><span class="tok-kw">let</span> monitor = <span class="tok-kw">automatic</span>(restart: always) {</span><span class="ln" data-k="automatic">    <span class="tok-kw">let</span> reading = <span class="tok-fn">read_sensor</span>()</span><span class="ln" data-k="automatic">    <span class="tok-kw">if</span> reading &gt; <span class="tok-num">90</span> {</span><span class="ln" data-k="automatic on">        <span class="tok-kw">trigger</span> <span class="tok-fn">overheated</span>(reading)</span><span class="ln" data-k="automatic">    }</span><span class="ln" data-k="automatic">    <span class="tok-bi">sleep</span>(<span class="tok-num">500</span>)</span><span class="ln" data-k="automatic">} <span class="tok-kw">on_crash</span> error {</span><span class="ln" data-k="automatic">    <span class="tok-bi">print</span>(<span class="tok-str">"monitor crashed: {error}"</span>)</span><span class="ln" data-k="automatic">}</span><span class="ln"></span><span class="ln" data-k="on"><span class="tok-kw">let</span> alarm = <span class="tok-kw">on</span> <span class="tok-fn">overheated</span>(reading: <span class="tok-ty">int</span>) {</span><span class="ln" data-k="on">    <span class="tok-bi">print</span>(<span class="tok-str">"temperature is {reading}"</span>)</span><span class="ln" data-k="on">}</span><span class="ln"></span><span class="ln" data-k="orchestrator"><span class="tok-kw">orchestrator</span> <span class="tok-fn">main</span>(workers: <span class="tok-ty">process</span>[monitor]) {</span><span class="ln" data-k="orchestrator">}</span></code></pre>
       </div>
       <div class="topology" id="topology">
-        <svg viewBox="0 0 420 170" role="img" aria-labelledby="topo-title">
+        <div class="scroll">
+        <svg viewBox="0 0 520 210" role="img" aria-labelledby="topo-title">
           <title id="topo-title">The topology this program describes: the orchestrator owns the monitor worker, the monitor triggers the overheated event, and the alarm handler reacts.</title>
           <defs>
             <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="var(--line-strong)"/></marker>
           </defs>
-          <!-- edges -->
-          <path class="edge" data-k="orchestrator" d="M120 60 C150 60 150 40 180 40" marker-end="url(#arr)"/>
-          <path class="edge flow" data-k="automatic on" d="M270 40 C295 40 295 40 320 40" marker-end="url(#arr)"/>
-          <path class="edge" data-k="orchestrator on" d="M120 66 C170 66 200 120 260 120" marker-end="url(#arr)"/>
-          <text class="edge-label" x="139" y="34">starts, restarts</text>
-          <text class="edge-label" x="278" y="30">trigger</text>
-          <text class="edge-label" x="176" y="112">registers on boot</text>
+          <!-- edges: drawn first so nodes sit on top -->
+          <path class="edge" data-k="orchestrator" d="M150 84 C175 84 170 46 195 46" marker-end="url(#arr)"/>
+          <path class="edge" data-k="orchestrator on" d="M150 108 C260 108 300 156 385 156" marker-end="url(#arr)"/>
+          <path class="edge flow" data-k="automatic on" d="M345 46 L385 46" marker-end="url(#arr)"/>
+          <path class="edge flow" data-k="on" d="M447 72 L447 130" marker-end="url(#arr)"/>
+          <text class="edge-label" data-k="orchestrator" x="150" y="30" text-anchor="middle">starts, restarts</text>
+          <text class="edge-label" data-k="automatic on" x="365" y="36" text-anchor="middle">trigger</text>
+          <text class="edge-label" data-k="on" x="455" y="104">reading: int</text>
+          <text class="edge-label" data-k="orchestrator on" x="262" y="174" text-anchor="middle">registers on boot</text>
           <!-- orchestrator -->
           <g class="node" data-k="orchestrator">
-            <rect x="12" y="38" width="108" height="50" rx="5" fill="var(--blue-wash)" stroke="var(--blue)" stroke-width="1.5"/>
-            <text x="24" y="58">orchestrator main</text>
-            <text class="sub" x="24" y="76">owns the lifecycle</text>
+            <rect x="10" y="70" width="140" height="52" rx="6" fill="var(--blue-wash)" stroke="var(--blue)" stroke-width="1.5"/>
+            <text x="24" y="91">orchestrator main</text>
+            <text class="sub" x="24" y="109">owns the lifecycle</text>
           </g>
-          <!-- automatic -->
+          <!-- automatic worker -->
           <g class="node" data-k="automatic">
-            <rect x="180" y="18" width="90" height="46" rx="5" fill="var(--brass-wash)" stroke="var(--brass)" stroke-width="1.5"/>
-            <text x="192" y="38">monitor</text>
-            <text class="sub" x="192" y="54">automatic, restart: always</text>
+            <rect x="195" y="20" width="150" height="52" rx="6" fill="var(--brass-wash)" stroke="var(--brass)" stroke-width="1.5"/>
+            <text x="209" y="41">monitor</text>
+            <text class="sub" x="209" y="59">automatic, restart: always</text>
           </g>
-          <!-- event -->
+          <!-- typed event -->
           <g class="node" data-k="on automatic">
-            <rect x="320" y="18" width="90" height="46" rx="23" fill="var(--teal-wash)" stroke="var(--teal)" stroke-width="1.5"/>
-            <text x="336" y="38">overheated</text>
-            <text class="sub" x="336" y="54">typed event</text>
+            <rect x="385" y="20" width="125" height="52" rx="26" fill="var(--teal-wash)" stroke="var(--teal)" stroke-width="1.5"/>
+            <text x="407" y="41">overheated</text>
+            <text class="sub" x="407" y="59">typed event</text>
           </g>
-          <path class="edge flow" data-k="on" d="M365 64 C365 90 330 120 300 120" marker-end="url(#arr)"/>
           <!-- handler -->
           <g class="node" data-k="on">
-            <rect x="260" y="100" width="94" height="46" rx="5" fill="var(--teal-wash)" stroke="var(--teal)" stroke-width="1.5"/>
-            <text x="272" y="120">alarm</text>
-            <text class="sub" x="272" y="136">on overheated(...)</text>
+            <rect x="385" y="130" width="125" height="52" rx="6" fill="var(--teal-wash)" stroke="var(--teal)" stroke-width="1.5"/>
+            <text x="399" y="151">alarm</text>
+            <text class="sub" x="399" y="169">on overheated(...)</text>
           </g>
-          <text class="edge-label" x="12" y="160">The compiler supplies the Tokio tasks, channels, event registry, and shutdown plumbing.</text>
+          <text class="caption" x="10" y="204">The compiler supplies the Tokio tasks, channels, event registry, and shutdown plumbing.</text>
         </svg>
+        </div>
         <div class="legend" aria-label="Highlight a construct">
           <button type="button" data-k="orchestrator"><i style="background:var(--blue)"></i>orchestrator owns lifecycle</button>
           <button type="button" data-k="automatic"><i style="background:var(--brass)"></i>automatic loops and restarts</button>
