@@ -42,10 +42,17 @@ if you restore it; install the toolchain to regenerate them.
 
 ## Deploy
 
-`.github/workflows/pages.yml` copies `website/` and the files it reads into one
-artifact and publishes it with GitHub Pages on every push to `main` that touches the
-site or the docs. Enable it once in the repository settings: **Settings → Pages →
-Source: GitHub Actions**.
+The site is published at <https://immanuel-fowler.github.io/OrchestrateLang/> from the
+`website` branch. `.github/workflows/pages.yml` copies `website/` and the files it
+reads into one artifact and publishes it with GitHub Pages on every push to that
+branch. To ship a change, merge or push it to `website`:
+
+```sh
+git push origin <your-branch>:website
+```
+
+The workflow enables Pages on its first run. If that step is refused, enable it once
+under **Settings → Pages → Source: GitHub Actions** and re-run the workflow.
 
 ## Layout
 
