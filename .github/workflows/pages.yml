@@ -65,12 +65,14 @@ jobs:
         with:
           path: dist
 
+  # The job deliberately does not bind to the `github-pages` environment: that
+  # environment's default protection rule only lets the default branch deploy,
+  # and this site deploys from `website`. The URL is printed at the end.
   deploy:
     needs: build
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+      - name: Site URL
+        run: echo "Deployed to ${{ steps.deployment.outputs.page_url }}"
