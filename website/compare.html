@@ -40,23 +40,35 @@
 .pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
 .pair .code pre { font-size: 0.8rem; }
 
-/* gallery */
-.gal-bar { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; margin-bottom: 22px; padding: 12px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); position: sticky; top: calc(var(--header-h) + env(safe-area-inset-top, 0px)); z-index: 20; }
+/* gallery carousel */
+.gal-bar { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; margin-bottom: 12px; padding: 12px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
 .gal-bar .lbl { font-size: 0.82rem; color: var(--muted); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
 .gal-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
 .gal-tabs button { appearance: none; border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink-2); padding: 6px 12px; border-radius: 4px; font: inherit; font-size: 0.88rem; cursor: pointer; }
 .gal-tabs button[aria-selected="true"] { background: var(--ink); color: var(--ground); border-color: var(--ink); font-weight: 600; }
-.gal-bar .jump { margin-left: auto; font-size: 0.82rem; color: var(--muted); }
-.gal-bar .jump a { color: var(--blue-ink); text-decoration: none; }
-.gal-bar .jump a:hover { text-decoration: underline; }
-.gallery { display: grid; gap: 28px; }
+.gal-bar .counter { margin-left: auto; font-family: var(--font-mono); font-size: 0.82rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.gal-nav { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; }
+.gal-arrow { appearance: none; flex: none; width: 38px; height: 38px; display: grid; place-items: center; border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); border-radius: 50%; cursor: pointer; }
+.gal-arrow:hover { border-color: var(--brass); color: var(--brass-ink); }
+.gal-arrow svg { width: 18px; height: 18px; }
+.gal-dots { display: flex; gap: 6px; overflow-x: auto; flex: 1 1 auto; padding-bottom: 2px; scrollbar-width: thin; }
+.gal-dots button { appearance: none; flex: none; display: inline-flex; align-items: baseline; gap: 7px; border: 1px solid var(--line); background: var(--surface); color: var(--ink-2); padding: 7px 13px; border-radius: 999px; font: inherit; font-size: 0.86rem; cursor: pointer; white-space: nowrap; }
+.gal-dots button:hover { border-color: var(--line-strong); color: var(--ink); }
+.gal-dots button .n { font-family: var(--font-mono); font-size: 0.7rem; color: var(--muted); }
+.gal-dots button[aria-selected="true"] { border-color: var(--brass); background: var(--brass-wash); color: var(--ink); font-weight: 600; }
+.gal-dots button[aria-selected="true"] .n { color: var(--brass-ink); }
+@media (max-width: 720px) { .gal-dots button .t { display: none; } .gal-dots button { padding: 7px 11px; } .gal-dots button .n { font-size: 0.78rem; } }
+
+.gallery { display: grid; gap: 12px; }
+.gallery:focus { outline: none; }
 .ex-card { display: grid; gap: 12px; }
 .ex-card > header { display: grid; gap: 6px; max-width: 80ch; }
-.ex-card h3 { font-size: 1.2rem; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.ex-card h3 { font-size: 1.25rem; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .ex-card h3 .n { font-family: var(--font-mono); font-size: 0.72rem; color: var(--brass-ink); font-weight: 600; }
 .ex-card header p { font-size: 0.92rem; color: var(--ink-2); }
 .two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
-@media (max-width: 900px) { .two { grid-template-columns: 1fr; } .gal-bar { position: static; } }
+@media (max-width: 900px) { .two { grid-template-columns: 1fr; } }
 .two .code pre { font-size: 0.78rem; max-height: 560px; overflow: auto; line-height: 1.55; }
 .two .code-head .who { font-weight: 600; color: var(--code-ink); }
 .two .code.ours { box-shadow: 0 0 0 2px var(--brass-wash), var(--shadow); }
@@ -64,7 +76,10 @@
 .two .code .code-head .dot { background: var(--line-strong); }
 .takeaway { font-size: 0.9rem; color: var(--ink-2); background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--teal); border-radius: 0 var(--radius) var(--radius) 0; padding: 11px 14px; max-width: 90ch; }
 .takeaway b { color: var(--ink); font-weight: 600; }
-.gal-note { margin-top: 24px; font-size: 0.85rem; color: var(--muted); max-width: 80ch; }
+.gal-note { margin-top: 20px; font-size: 0.85rem; color: var(--muted); max-width: 80ch; }
+.ex-card { animation: gal-in 0.18s ease-out; }
+@keyframes gal-in { from { opacity: 0; transform: translateX(var(--from, 10px)); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .ex-card { animation: none; } }
 
 .honest { background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--brass); border-radius: var(--radius); padding: 16px 18px; max-width: 76ch; color: var(--ink-2); }
 .honest strong { color: var(--ink); }
@@ -98,7 +113,38 @@
   <div class="wrap">
     <div class="eyebrow">When to use what</div>
     <h1>Where OrchestrateLang fits, and where it does not.</h1>
-    <p class="lede">Four well-known ways to coordinate concurrent work, compared with OrchestrateLang on the axes that decide a choice: what it compiles to, what owns state, what happens on failure, how other languages plug in, and whether it crosses machines. No scores. Several of these are the right answer for problems OrchestrateLang is not built for, and the page says so. Below the table, a <a href="#gallery">gallery</a> shows five ordinary jobs written in each one.</p>
+    <p class="lede">Four well-known ways to coordinate concurrent work, compared with OrchestrateLang on the axes that decide a choice: what it compiles to, what owns state, what happens on failure, how other languages plug in, and whether it crosses machines. No scores. Several of these are the right answer for problems OrchestrateLang is not built for, and the page says so. The <a href="#gallery">gallery</a> below shows five ordinary jobs written in each one; the table after it answers the same questions in prose.</p>
+  </div>
+</section>
+
+<!-- ============ GALLERY ============ -->
+<section class="section" id="gallery">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">Gallery</div>
+      <h2>The same job, written five ways.</h2>
+      <p>Five ordinary orchestration jobs, one at a time. Step left and right through them, and pick which system to see beside OrchestrateLang. The alternatives are written the way their own documentation would write them, not strawmen.</p>
+    </div>
+
+    <div class="gal-bar">
+      <span class="lbl">Compare with</span>
+      <div class="gal-tabs" role="tablist" aria-label="Comparison language" id="gal-tabs"></div>
+      <span class="counter" id="gal-counter"></span>
+    </div>
+
+    <div class="gal-nav">
+      <button class="gal-arrow" type="button" id="gal-prev" aria-label="Previous example">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+      </button>
+      <div class="gal-dots" role="tablist" aria-label="Choose an example" id="gal-dots"></div>
+      <button class="gal-arrow" type="button" id="gal-next" aria-label="Next example">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
+      </button>
+    </div>
+
+    <div class="gallery" id="gallery-body" tabindex="-1" aria-live="polite"></div>
+
+    <p class="gal-note">Imports and helper functions are trimmed where they are not the point. Elixir stands in for the Erlang/OTP runtime because it reads more clearly; the supervision behaviour shown is OTP's. Akka examples use Akka Typed in Scala. Temporal examples use the Go SDK. Arrow keys step through the gallery, and the table below answers the same questions in prose.</p>
   </div>
 </section>
 
@@ -284,27 +330,6 @@
         <div class="not"><strong>Trade:</strong> an external service and a replay-based programming model. OrchestrateLang coordinates work inside one process at microsecond cost; Temporal coordinates work across a fleet at durable-execution cost. They solve different problems and can coexist: a Temporal activity could be an OrchestrateLang binary.</div>
       </div>
     </div>
-  </div>
-</section>
-
-<!-- ============ GALLERY ============ -->
-<section class="section" id="gallery">
-  <div class="wrap">
-    <div class="section-head">
-      <div class="eyebrow">Gallery</div>
-      <h2>The same job, written five ways.</h2>
-      <p>Five ordinary orchestration jobs. The left column is always OrchestrateLang; the right column is whichever system you pick. The alternatives are written the way their own documentation would write them, not strawmen, and each one is doing real work that the language happens to make a declaration.</p>
-    </div>
-
-    <div class="gal-bar">
-      <span class="lbl">Compare with</span>
-      <div class="gal-tabs" role="tablist" id="gal-tabs"></div>
-      <span class="jump">Jump to <a href="#ex-workers">workers</a> · <a href="#ex-state">state</a> · <a href="#ex-events">events</a> · <a href="#ex-parallel">parallel</a> · <a href="#ex-lifecycle">lifecycle</a></span>
-    </div>
-
-    <div class="gallery" id="gallery-body"></div>
-
-    <p class="gal-note">Imports and helper functions are trimmed where they are not the point. Elixir stands in for the Erlang/OTP runtime because it reads more clearly; the supervision behaviour shown is OTP's. Akka examples use Akka Typed in Scala. Temporal examples use the Go SDK. Nothing here is a benchmark: see the <a href="./#benchmarks">latency chart</a> for measured numbers.</p>
   </div>
 </section>
 
@@ -1183,19 +1208,19 @@ func main() {
   ];
 
   var EXAMPLES = [
-    { id: "workers", n: "01", title: "Several supervised workers at once",
+    { id: "workers", tag: "Workers", n: "01", title: "Several supervised workers at once",
       blurb: "Three recurring jobs on different intervals, each with its own restart policy, all owned by one lifecycle. This is the shape most orchestration code actually has.",
       takeaway: "<b>What the language removes:</b> the supervisor loop, the backoff arithmetic, the restart bookkeeping, and the abort handles. <code>restart: always</code>, <code>restart: 3</code>, and <code>restart: never</code> are the whole policy, and the worker set is a list the orchestrator owns." },
-    { id: "state", n: "02", title: "A service that owns state",
+    { id: "state", tag: "State", n: "02", title: "A service that owns state",
       blurb: "A counter that keeps a private value and answers typed calls, one at a time, with no lock held by the caller.",
       takeaway: "<b>What the language removes:</b> the message enum, the reply channels, the client struct, and the receive loop. A <code>serverlet</code> is the actor; <code>start Counter()</code> returns the typed client the compiler wrote." },
-    { id: "events", n: "03", title: "One producer, several consumers",
+    { id: "events", tag: "Events", n: "03", title: "One producer, several consumers",
       blurb: "A typed event with two independent reactions, neither of which the producer knows about.",
       takeaway: "<b>What the language removes:</b> subscription wiring, per-consumer tasks, and the lag and loss cases. An <code>on</code> block registers on boot and its parameter list <em>is</em> the payload's checked signature." },
-    { id: "parallel", n: "04", title: "Fan out, then join",
+    { id: "parallel", tag: "Parallel", n: "04", title: "Fan out, then join",
       blurb: "Two independent pieces of work that must both finish before the next step runs.",
       takeaway: "<b>What the language removes:</b> the choice between concurrency and parallelism, and the ordering trap where starting work too late silently serializes it. A <code>parallel</code> block is one join point." },
-    { id: "lifecycle", n: "05", title: "Start up and shut down cleanly",
+    { id: "lifecycle", tag: "Lifecycle", n: "05", title: "Start up and shut down cleanly",
       blurb: "Setup before any worker runs, and coordinated cleanup when the program is asked to stop.",
       takeaway: "<b>What the language removes:</b> signal handling, the grace period, and the teardown order. <code>on_start</code> and <code>on_stop</code> name both ends, and library mode hands both to the Rust host instead of taking the process." }
   ];
@@ -1216,29 +1241,66 @@ func main() {
   }
 
   var current = "tokio";
+  var idx = 0;
+  var dir = 1;
+
   var tabsEl = document.getElementById("gal-tabs");
+  var dotsEl = document.getElementById("gal-dots");
   var bodyEl = document.getElementById("gallery-body");
+  var countEl = document.getElementById("gal-counter");
 
   tabsEl.innerHTML = OTHERS.map(function (o) {
     return '<button type="button" role="tab" data-id="' + o.id + '" aria-selected="' + (o.id === current) + '">' + o.name + "</button>";
   }).join("");
 
+  dotsEl.innerHTML = EXAMPLES.map(function (ex, i) {
+    return '<button type="button" role="tab" data-i="' + i + '" aria-selected="' + (i === idx) + '">' +
+      '<span class="n">' + ex.n + '</span><span class="t">' + ex.tag + "</span></button>";
+  }).join("");
+
   function render() {
     var other = OTHERS.filter(function (o) { return o.id === current; })[0];
-    bodyEl.innerHTML = EXAMPLES.map(function (ex) {
-      var mine = snippets[ex.id + ":orch"] || "";
-      var theirs = snippets[ex.id + ":" + other.id] || "";
-      return '<article class="ex-card" id="ex-' + ex.id + '">' +
+    var ex = EXAMPLES[idx];
+    var mine = snippets[ex.id + ":orch"] || "";
+    var theirs = snippets[ex.id + ":" + other.id] || "";
+
+    bodyEl.innerHTML =
+      '<article class="ex-card" id="ex-' + ex.id + '" style="--from:' + (dir >= 0 ? "14px" : "-14px") + '">' +
         "<header><h3><span class=\"n\">" + ex.n + "</span>" + ex.title + "</h3><p>" + ex.blurb + "</p></header>" +
         '<div class="two">' +
           codeBlock("OrchestrateLang", ex.id + ".orch", "orchestrate", mine, true) +
           codeBlock(other.name, other.file, other.hl, theirs, false) +
         "</div>" +
         '<p class="takeaway">' + ex.takeaway + "</p>" +
-        "</article>";
-    }).join("");
+      "</article>";
+
+    countEl.textContent = ex.n + " / " + EXAMPLES[EXAMPLES.length - 1].n;
+    dotsEl.querySelectorAll("button").forEach(function (b, i) {
+      b.setAttribute("aria-selected", String(i === idx));
+    });
+    var active = dotsEl.querySelector('button[aria-selected="true"]');
+    if (active && active.scrollIntoView) active.scrollIntoView({ block: "nearest", inline: "nearest" });
     if (window.orchHighlightAll) window.orchHighlightAll(bodyEl);
   }
+
+  function go(next, keepPlace) {
+    var count = EXAMPLES.length;
+    dir = next > idx || (idx === count - 1 && next === 0) ? 1 : -1;
+    idx = (next + count) % count;
+    try { history.replaceState(null, "", "#ex-" + EXAMPLES[idx].id); } catch (e) { /* ignore */ }
+    render();
+    if (!keepPlace) {
+      var top = document.getElementById("gallery").getBoundingClientRect().top;
+      if (top < 0) document.getElementById("gallery").scrollIntoView({ block: "start" });
+    }
+  }
+
+  document.getElementById("gal-prev").addEventListener("click", function () { go(idx - 1); });
+  document.getElementById("gal-next").addEventListener("click", function () { go(idx + 1); });
+  dotsEl.addEventListener("click", function (ev) {
+    var b = ev.target.closest("button[data-i]");
+    if (b) go(+b.dataset.i);
+  });
 
   tabsEl.addEventListener("click", function (ev) {
     var b = ev.target.closest("button[data-id]");
@@ -1248,8 +1310,33 @@ func main() {
       x.setAttribute("aria-selected", String(x.dataset.id === current));
     });
     try { localStorage.setItem("orch-compare-lang", current); } catch (e) { /* private window */ }
+    dir = 1;
     render();
   });
+
+  // arrow keys, while the gallery is on screen and nothing is being typed into
+  var visible = false;
+  if ("IntersectionObserver" in window) {
+    new IntersectionObserver(function (es) { visible = es[0].isIntersecting; }, { threshold: 0.15 })
+      .observe(document.getElementById("gallery"));
+  }
+  document.addEventListener("keydown", function (ev) {
+    if (!visible || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+    var t = ev.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+    if (ev.key === "ArrowLeft") { go(idx - 1, true); ev.preventDefault(); }
+    if (ev.key === "ArrowRight") { go(idx + 1, true); ev.preventDefault(); }
+  });
+
+  // swipe on touch
+  var x0 = null;
+  bodyEl.addEventListener("touchstart", function (e) { x0 = e.changedTouches[0].clientX; }, { passive: true });
+  bodyEl.addEventListener("touchend", function (e) {
+    if (x0 === null) return;
+    var dx = e.changedTouches[0].clientX - x0;
+    x0 = null;
+    if (Math.abs(dx) > 60) go(idx + (dx < 0 ? 1 : -1), true);
+  }, { passive: true });
 
   try {
     var saved = localStorage.getItem("orch-compare-lang");
@@ -1260,6 +1347,17 @@ func main() {
       });
     }
   } catch (e) { /* ignore */ }
+
+  function fromHash() {
+    var m = (location.hash || "").match(/^#ex-([a-z]+)$/);
+    if (!m) return false;
+    for (var i = 0; i < EXAMPLES.length; i++) {
+      if (EXAMPLES[i].id === m[1]) { idx = i; return true; }
+    }
+    return false;
+  }
+  fromHash();
+  window.addEventListener("hashchange", function () { if (fromHash()) render(); });
 
   render();
 })();
