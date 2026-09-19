@@ -56,6 +56,7 @@ Source: GitHub Actions**.
 | `examples.html` | Renders every example program with the OrchestrateLang grammar, with a tab for the Rust the compiler generated for it |
 | `polyglot.html` | Polyglot support: mechanisms, a decision flow, per-language module files fetched from `examples/modules/`, type rules, toolchains, costs |
 | `compare.html` | When to use what: OrchestrateLang beside hand-written Tokio, Erlang/OTP, Akka, and Temporal |
+| `assets/scorecard-data.js` | The polyglot page's scorecard: 72 languages scored 0 to 5 on eight axes for fitting the C-ABI `load_foreign` slot, with tiers and reasoning. Edit here to re-score |
 | `generate-rust.py` | Snapshots the generated Rust for every example into `generated/` (run after `cargo build --release`) |
 | `generated/` | Committed snapshots the examples page shows, plus `manifest.json` with the compiler version and date |
 | `assets/site.css` | Design tokens (light and dark), layout, code, tables, pills |

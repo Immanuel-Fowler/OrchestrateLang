@@ -74,6 +74,81 @@ h3.sub { margin: 26px 0 10px; font-size: 1.1rem; }
 .cost .n small { font-size: 0.85rem; color: var(--muted); font-weight: 400; margin-left: 4px; }
 .cost .l { font-size: 0.85rem; color: var(--muted); }
 .cost.hot .n { color: var(--brass-ink); }
+/* scorecard */
+:root { --t-supported: #197a73; --t-ready: #2e49a3; --t-caveat: #8f5d0d; --t-path: #6b4fa6; --t-feature: #a23b72; --t-no: #a83a32; --bar-empty: #dfe5ed; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --t-supported: #6fd3ca; --t-ready: #a3b4f2; --t-caveat: #f0b95a; --t-path: #b597dd; --t-feature: #e08ab8; --t-no: #e07c74; --bar-empty: #2a3646; } }
+:root[data-theme="dark"] { --t-supported: #6fd3ca; --t-ready: #a3b4f2; --t-caveat: #f0b95a; --t-path: #b597dd; --t-feature: #e08ab8; --t-no: #e07c74; --bar-empty: #2a3646; }
+.tiers { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.tier-chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px 6px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--ink); font: inherit; font-size: 0.85rem; cursor: pointer; }
+.tier-chip .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--c); }
+.tier-chip .n { font-family: var(--font-mono); font-size: 0.75rem; color: var(--muted); }
+.tier-chip[aria-pressed="true"] { border-color: var(--c); box-shadow: inset 0 0 0 1px var(--c); }
+.tier-chip[aria-pressed="false"] { opacity: 0.55; }
+details.axes-wrap { margin-bottom: 16px; }
+details.axes-wrap summary { cursor: pointer; list-style: none; display: inline-flex; gap: 8px; align-items: center; font-weight: 600; font-size: 0.9rem; color: var(--blue-ink); margin-bottom: 8px; }
+details.axes-wrap summary::-webkit-details-marker { display: none; }
+details.axes-wrap summary::before { content: "▸"; transition: transform 0.15s; }
+details.axes-wrap[open] summary::before { transform: rotate(90deg); }
+.axes { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px 20px; padding: 14px 18px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.axes .ax { display: grid; grid-template-columns: 62px 1fr; gap: 10px; align-items: start; }
+.axes .k { font-family: var(--font-mono); font-size: 0.72rem; font-weight: 600; color: var(--brass-ink); padding-top: 3px; letter-spacing: 0.04em; }
+.axes .d { font-size: 0.85rem; color: var(--muted); }
+.axes .d b { color: var(--ink); font-weight: 600; }
+.sc-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 10px; }
+.sc-controls input[type="search"] { flex: 1 1 220px; max-width: 360px; padding: 8px 12px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--surface); color: var(--ink); font: inherit; font-size: 0.9rem; }
+.sc-controls .hint { font-size: 0.82rem; color: var(--muted); }
+.sc-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+.sc { border-collapse: collapse; width: 100%; min-width: 980px; font-size: 0.9rem; }
+.sc thead th { position: sticky; top: 0; background: var(--surface-2); border-bottom: 1px solid var(--line); text-align: left; padding: 8px 10px; font-size: 0.7rem; color: var(--ink-2); white-space: nowrap; z-index: 1; text-transform: uppercase; letter-spacing: 0.04em; }
+.sc thead th.num { text-align: center; }
+.th-btn { all: unset; cursor: pointer; display: inline-flex; gap: 4px; align-items: center; font-weight: 600; }
+.th-btn .arrow { opacity: 0.35; font-size: 0.65rem; }
+.th-btn[data-active="true"] { color: var(--brass-ink); }
+.th-btn[data-active="true"] .arrow { opacity: 1; }
+.sc tbody tr.row { border-top: 1px solid var(--line); }
+.sc tbody tr.row:hover { background: color-mix(in srgb, var(--brass) 6%, var(--surface)); }
+.sc tbody tr.row[aria-expanded="true"] { background: color-mix(in srgb, var(--brass) 10%, var(--surface)); }
+.sc tbody td { padding: 8px 10px; vertical-align: middle; border-bottom: 0; }
+.sc td.lang { min-width: 230px; }
+.row-btn { all: unset; cursor: pointer; display: grid; gap: 2px; width: 100%; }
+.row-btn .name { font-weight: 600; font-size: 0.95rem; display: flex; align-items: center; gap: 8px; color: var(--ink); }
+.row-btn .name .chev { color: var(--muted); font-size: 0.65rem; transition: transform 0.15s; }
+tr[aria-expanded="true"] .row-btn .name .chev { transform: rotate(90deg); }
+.row-btn .one { font-size: 0.78rem; color: var(--muted); line-height: 1.35; }
+.tier-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 0.72rem; font-weight: 600; white-space: nowrap; padding: 3px 8px; border-radius: 999px; color: var(--c); background: color-mix(in srgb, var(--c) 12%, transparent); }
+.tier-pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--c); }
+.sc td.num { text-align: center; }
+.score { display: inline-grid; justify-items: center; gap: 3px; }
+.score .v { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 0.8rem; }
+.score .bar { display: flex; gap: 2px; }
+.score .bar i { display: block; width: 6px; height: 6px; border-radius: 1px; background: var(--bar-empty); }
+.score .bar i.on { background: var(--blue); }
+.score[data-v="1"] .bar i.on, .score[data-v="2"] .bar i.on { background: var(--t-no); }
+.score[data-v="3"] .bar i.on { background: var(--brass); }
+.sc td.total { text-align: center; }
+.total .v { font-family: var(--font-display); font-size: 1.2rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.total .of { font-size: 0.68rem; color: var(--muted); font-family: var(--font-mono); }
+.sc tr.detail td { padding: 0; border-top: 1px dashed var(--line); background: var(--surface-2); }
+.detail-inner { display: grid; grid-template-columns: 1.4fr 1fr; gap: 20px 32px; padding: 18px 20px 22px; }
+.detail-inner .why { display: grid; gap: 10px; }
+.why .item { display: grid; grid-template-columns: 96px 1fr; gap: 10px; font-size: 0.85rem; align-items: baseline; }
+.why .item .k { display: flex; gap: 8px; align-items: baseline; }
+.why .item .k b { font-family: var(--font-mono); font-size: 0.72rem; font-weight: 600; color: var(--muted); }
+.why .item .k .sv { font-family: var(--font-mono); font-size: 0.72rem; color: var(--brass-ink); }
+.why .item .t { color: var(--ink); }
+.plain { display: grid; gap: 12px; align-content: start; }
+.plain h4 { margin: 0 0 4px; font-size: 0.85rem; font-family: var(--font-body); }
+.plain ul { margin: 0; padding-left: 18px; font-size: 0.85rem; display: grid; gap: 3px; color: var(--ink-2); }
+.plain .pros h4 { color: var(--t-supported); }
+.plain .cons h4 { color: var(--t-no); }
+.plain .work { font-size: 0.85rem; padding: 10px 12px; border-left: 3px solid var(--brass); background: var(--surface); border-radius: 0 4px 4px 0; color: var(--ink-2); }
+.plain .work b, .plain .feat b { font-weight: 600; color: var(--ink); }
+.plain .feat { font-size: 0.85rem; padding: 10px 12px; border-left: 3px solid var(--t-feature); background: color-mix(in srgb, var(--t-feature) 8%, var(--surface)); border-radius: 0 4px 4px 0; color: var(--ink-2); }
+.plain .feat b { color: var(--t-feature); }
+.sc .empty { padding: 32px 20px; color: var(--muted); text-align: center; }
+.sc-notes { margin-top: 14px; font-size: 0.85rem; color: var(--muted); max-width: 76ch; display: grid; gap: 6px; }
+@media (max-width: 720px) { .detail-inner { grid-template-columns: 1fr; } .why .item { grid-template-columns: 1fr; gap: 2px; } }
+@media (prefers-reduced-motion: reduce) { .row-btn .name .chev, details.axes-wrap summary::before { transition: none; } }
 </style>
 </head>
 <body>
@@ -115,6 +190,7 @@ h3.sub { margin: 26px 0 10px; font-size: 1.1rem; }
       <a class="lang" href="#lang-python">Python <span class="pill pill-shipped">Shipped</span></a>
       <a class="lang" href="#roadmap">C# <span class="pill pill-planned">Planned</span></a>
       <a class="lang" href="#roadmap">Go <span class="pill pill-exploring">Exploring</span></a>
+      <a class="lang" href="#scorecard">+ 65 more, scored <span class="pill pill-exploring">Scorecard</span></a>
     </div>
   </div>
 </section>
@@ -199,6 +275,61 @@ orchestrator main() {
     </div>
     <div class="langtabs" role="tablist" id="langtabs"></div>
     <div id="langpanel" class="panel"></div>
+  </div>
+</section>
+
+<!-- ============ SCORECARD ============ -->
+<section class="section" id="scorecard">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">Beyond the seven</div>
+      <h2>Which languages could plug in the way Zig and Swift do?</h2>
+      <p>Zig and Swift work because their compilers emit a static library with plain C symbols, the <code>.orch_ffi</code> sidecar maps OrchestrateLang types onto them, and a generated <code>build.rs</code> links the result. Every language below is scored on how well it fits that same slot. Popular languages that cannot fit it are here too, with the route they would need instead, and a few rows exist mainly because they would justify a new feature. Click a language to read the reasoning.</p>
+    </div>
+    <div class="tiers" id="tiers" role="group" aria-label="Filter by tier"></div>
+    <details class="axes-wrap">
+      <summary>What the eight scores mean</summary>
+      <div class="axes">
+        <div class="ax"><span class="k">EXPORT</span><span class="d"><b>C symbol export.</b> Can a function be given an exact C name without a wrapper? Zig's <code>export fn</code> is a 5.</span></div>
+        <div class="ax"><span class="k">BUILD</span><span class="d"><b>Static library output.</b> Does the compiler emit a <code>.a</code> or <code>.o</code> from one file with one command?</span></div>
+        <div class="ax"><span class="k">RUNTIME</span><span class="d"><b>Runtime weight.</b> 5 means nothing extra to link or start. Swift is a 2 because <code>swiftCore</code> must be linked.</span></div>
+        <div class="ax"><span class="k">TOOLING</span><span class="d"><b>Toolchain simplicity.</b> One program on <code>PATH</code>, quick install, fast builds.</span></div>
+        <div class="ax"><span class="k">TYPES</span><span class="d"><b>Type fit.</b> Do <code>int</code>, <code>float</code>, <code>bool</code>, <code>void</code> map exactly onto <code>i64</code>, <code>f64</code>, <code>bool</code>, <code>()</code>? Strings and handles, added in 0.8.0, follow the C allocator rule wherever the language can meet it.</span></div>
+        <div class="ax"><span class="k">CHECK</span><span class="d"><b>Syntax-only mode.</b> Is there a check-without-building flag for <code>check-foreign</code>?</span></div>
+        <div class="ax"><span class="k">CROSS</span><span class="d"><b>Cross-compile outlook.</b> How hard would <code>build --lib --target</code> be later? Not wired for any C-ABI language yet.</span></div>
+        <div class="ax"><span class="k">PAYOFF</span><span class="d"><b>Why bother.</b> Ecosystem, performance, or niche value a user would actually gain.</span></div>
+      </div>
+    </details>
+    <div class="sc-controls">
+      <input type="search" id="sc-q" placeholder="Search languages…" aria-label="Search languages">
+      <span class="hint" id="sc-count"></span>
+      <span class="hint">Click a column header to sort.</span>
+    </div>
+    <div class="sc-wrap">
+      <table class="sc" id="sc-tbl">
+        <thead>
+          <tr>
+            <th><button class="th-btn" data-key="name">Language <span class="arrow">↕</span></button></th>
+            <th><button class="th-btn" data-key="tier">Tier <span class="arrow">↕</span></button></th>
+            <th class="num"><button class="th-btn" data-key="export">Export <span class="arrow">↕</span></button></th>
+            <th class="num"><button class="th-btn" data-key="build">Build <span class="arrow">↕</span></button></th>
+            <th class="num"><button class="th-btn" data-key="runtime">Runtime <span class="arrow">↕</span></button></th>
+            <th class="num"><button class="th-btn" data-key="tooling">Tooling <span class="arrow">↕</span></button></th>
+            <th class="num"><button class="th-btn" data-key="types">Types <span class="arrow">↕</span></button></th>
+            <th class="num"><button class="th-btn" data-key="check">Check <span class="arrow">↕</span></button></th>
+            <th class="num"><button class="th-btn" data-key="cross">Cross <span class="arrow">↕</span></button></th>
+            <th class="num"><button class="th-btn" data-key="payoff">Payoff <span class="arrow">↕</span></button></th>
+            <th class="num"><button class="th-btn" data-key="total" data-active="true">Total <span class="arrow">↓</span></button></th>
+          </tr>
+        </thead>
+        <tbody id="sc-rows"></tbody>
+      </table>
+    </div>
+    <div class="sc-notes">
+      <p>Scores are 0 to 5 per column, 40 total. They describe fit with the current sidecar mechanism, not language quality. The Zig and Swift rows are the reference points; anything scoring near them needs only the same four edits Zig did: a <code>ForeignSource</code> variant, a toolchain entry, a <code>build.rs</code> emitter line, and a <code>check-foreign</code> entry.</p>
+      <p>The tier is a judgement about effort and route; the total is a measure of C-ABI fit. A language can rank low on the total yet be cheap to add through the TypeScript bridge, which is why JavaScript sits in "Ready to add".</p>
+      <p>Scores were set against the <code>int</code>, <code>float</code>, <code>bool</code>, <code>void</code> sidecar. Version 0.8.0 added <code>string</code> and <code>handle</code> across the C ABI; arrays and structs would lift the whole table at once. The data lives in <code>website/assets/scorecard-data.js</code>; re-score there.</p>
+    </div>
   </div>
 </section>
 
@@ -348,6 +479,7 @@ orchestrator main() {
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <script src="assets/site.js"></script>
+<script src="assets/scorecard-data.js"></script>
 <script>
 (function () {
   "use strict";
@@ -431,6 +563,111 @@ orchestrator main() {
   const m = location.hash.match(/^#lang-([a-z]+)$/);
   show(m ? m[1] : "rust");
   if (m) setTimeout(function () { document.getElementById("languages").scrollIntoView({ block: "start" }); }, 50);
+})();
+</script>
+<script>
+/* ---------- scorecard ---------- */
+(function () {
+  "use strict";
+  const D = window.ORCH_SCORECARD;
+  if (!D) return;
+  const TIERS = D.TIERS, AXES = D.AXES, AXIS_LABEL = D.AXIS_LABEL, LANGS = D.LANGS;
+  for (const l of LANGS) {
+    l.export = l.s[0]; l.build = l.s[1]; l.runtime = l.s[2]; l.tooling = l.s[3];
+    l.types = l.s[4]; l.check = l.s[5]; l.cross = l.s[6]; l.payoff = l.s[7];
+    l.total = l.s.reduce(function (a, b) { return a + b; }, 0);
+  }
+  const state = { sortKey: "total", sortDir: -1, tiers: new Set(Object.keys(TIERS)), q: "", open: null };
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+  function fmt(s) { return esc(s).replace(/`([^`]+)`/g, "<code>$1</code>"); }
+  function scoreCell(v) {
+    let bars = "";
+    for (let i = 1; i <= 5; i++) bars += '<i class="' + (i <= v ? "on" : "") + '"></i>';
+    return '<td class="num"><span class="score" data-v="' + v + '"><span class="v">' + v + '</span><span class="bar">' + bars + "</span></span></td>";
+  }
+  function renderTiers() {
+    const counts = {};
+    for (const l of LANGS) counts[l.tier] = (counts[l.tier] || 0) + 1;
+    const el = document.getElementById("tiers");
+    el.innerHTML = Object.entries(TIERS).map(function (e) {
+      const k = e[0], t = e[1];
+      return '<button type="button" class="tier-chip" style="--c:' + t.color + '" data-tier="' + k + '" aria-pressed="' + state.tiers.has(k) + '"><span class="dot"></span>' + t.label + '<span class="n">' + (counts[k] || 0) + "</span></button>";
+    }).join("");
+    el.querySelectorAll(".tier-chip").forEach(function (b) {
+      b.addEventListener("click", function () {
+        const k = b.dataset.tier;
+        if (state.tiers.has(k) && state.tiers.size === 1) state.tiers = new Set(Object.keys(TIERS));
+        else if (state.tiers.size === Object.keys(TIERS).length) state.tiers = new Set([k]);
+        else if (state.tiers.has(k)) state.tiers.delete(k);
+        else state.tiers.add(k);
+        renderTiers(); renderRows();
+      });
+    });
+  }
+  function sorted() {
+    const k = state.sortKey, d = state.sortDir;
+    return LANGS.slice().sort(function (a, b) {
+      let va, vb;
+      if (k === "name") { va = a.name.toLowerCase(); vb = b.name.toLowerCase(); }
+      else if (k === "tier") { va = TIERS[a.tier].order; vb = TIERS[b.tier].order; }
+      else { va = a[k]; vb = b[k]; }
+      if (va < vb) return -1 * d;
+      if (va > vb) return 1 * d;
+      return b.total - a.total || a.name.localeCompare(b.name);
+    });
+  }
+  function detail(l) {
+    const why = AXES.map(function (k) {
+      return '<div class="item"><span class="k"><b>' + AXIS_LABEL[k] + '</b><span class="sv">' + l[k] + '/5</span></span><span class="t">' + fmt(l.why[k]) + "</span></div>";
+    }).join("");
+    return '<div class="detail-inner"><div class="why">' + why + '</div><div class="plain">' +
+      '<div class="pros"><h4>Pros, plainly</h4><ul>' + l.pros.map(function (p) { return "<li>" + fmt(p) + "</li>"; }).join("") + "</ul></div>" +
+      '<div class="cons"><h4>Cons, plainly</h4><ul>' + l.cons.map(function (p) { return "<li>" + fmt(p) + "</li>"; }).join("") + "</ul></div>" +
+      '<div class="work"><b>What it would take:</b> ' + fmt(l.work) + "</div>" +
+      (l.feature ? '<div class="feat"><b>Feature it would justify:</b> ' + fmt(l.feature) + "</div>" : "") +
+      "</div></div>";
+  }
+  function renderRows() {
+    const q = state.q.trim().toLowerCase();
+    const list = sorted().filter(function (l) { return state.tiers.has(l.tier) && (!q || l.name.toLowerCase().includes(q) || l.one.toLowerCase().includes(q)); });
+    const tb = document.getElementById("sc-rows");
+    document.getElementById("sc-count").textContent = list.length + " of " + LANGS.length + " languages";
+    if (!list.length) { tb.innerHTML = '<tr><td colspan="11" class="empty">No languages match.</td></tr>'; return; }
+    tb.innerHTML = list.map(function (l) {
+      const t = TIERS[l.tier];
+      const open = state.open === l.name;
+      const id = "sc-d-" + l.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+      return '<tr class="row" data-name="' + esc(l.name) + '" aria-expanded="' + open + '">' +
+        '<td class="lang"><button type="button" class="row-btn" aria-expanded="' + open + '" aria-controls="' + id + '"><span class="name"><span class="chev">▶</span>' + esc(l.name) + '</span><span class="one">' + fmt(l.one) + "</span></button></td>" +
+        '<td><span class="tier-pill" style="--c:' + t.color + '">' + t.label + "</span></td>" +
+        AXES.map(function (k) { return scoreCell(l[k]); }).join("") +
+        '<td class="total"><span class="v">' + l.total + '</span><span class="of">/40</span></td></tr>' +
+        (open ? '<tr class="detail" id="' + id + '"><td colspan="11">' + detail(l) + "</td></tr>" : "");
+    }).join("");
+    tb.querySelectorAll(".row-btn").forEach(function (b) {
+      b.addEventListener("click", function () {
+        const name = b.closest("tr").dataset.name;
+        state.open = state.open === name ? null : name;
+        renderRows();
+      });
+    });
+  }
+  document.querySelectorAll("#sc-tbl .th-btn").forEach(function (b) {
+    b.addEventListener("click", function () {
+      const k = b.dataset.key;
+      if (state.sortKey === k) state.sortDir *= -1;
+      else { state.sortKey = k; state.sortDir = (k === "name" || k === "tier") ? 1 : -1; }
+      document.querySelectorAll("#sc-tbl .th-btn").forEach(function (x) {
+        const active = x.dataset.key === state.sortKey;
+        x.dataset.active = active;
+        x.querySelector(".arrow").textContent = active ? (state.sortDir === 1 ? "↑" : "↓") : "↕";
+      });
+      renderRows();
+    });
+  });
+  document.getElementById("sc-q").addEventListener("input", function (e) { state.q = e.target.value; renderRows(); });
+  renderTiers();
+  renderRows();
 })();
 </script>
 </body>
