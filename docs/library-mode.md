@@ -110,14 +110,25 @@ let output = scripts.tick_sync(&runtime, dt)?;   // tick_sync(&runtime, dt, inpu
 scripts.fixed_tick_sync(&runtime, step)?;
 ```
 
-The hooks run inside the caller, under the runtime's context. When the body finishes
-without waiting on anything — no serverlet or landline round trip, no `sleep` — the call
-returns with no task, channel, or park involved. When it has to wait, the rest of the tick
-finishes under `runtime.block_on`, so the result and the side effects are the same as
-`tick_blocking` would produce; only where the work runs differs. Events queued before the
-tick, events the hooks queue, deterministic mode, and `stop_orch()` behave exactly as they
-do through `tick_blocking`. Idle ticks no longer touch the event queues at all: a queue is
-inspected only after something was put on it.
+The hooks run inside the caller, without entering the runtime: the library spawns tasks
+and creates timers through the handle it was started with, so the calling thread needs no
+Tokio context of its own. When the body finishes without waiting on anything — no
+serverlet or landline round trip, no `sleep` — the call returns with no task, channel, or
+park involved. When it has to wait, the rest of the tick finishes under `runtime.block_on`,
+so the result and the side effects are the same as `tick_blocking` would produce; only
+where the work runs differs. Events queued before the tick, events the hooks queue,
+deterministic mode, and `stop_orch()` behave exactly as they do through `tick_blocking`.
+Idle ticks do not touch the event queues at all: a queue is inspected only after something
+was put on it.
+
+The glue around the hooks is a few nanoseconds. Every hook body binds its instance once,
+so a host call inside it is the trait call and one branch on its result; the program's
+state is entered with two flag stores and two loads rather than a lock; the clock advances
+with an integer add; and an idle tick builds no event drain. On an Apple M2, an empty
+`on_tick` costs about 8 ns per `tick_sync`, and each host call in the body costs what the
+host method costs on its own, about 2 ns. The ignored test
+`cargo test --test library_tests glue_cost -- --ignored --nocapture` measures this on your
+machine.
 
 `tick_sync` is for hosts that drive the library from synchronous code, like the blocking
 methods; call it from outside any Tokio context, since a waiting body blocks the caller.

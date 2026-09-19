@@ -245,6 +245,8 @@ impl Codegen {
         let mut stop = String::new();
         let mut tick = String::new();
         let mut fixed = String::new();
+        // Every hook body runs with `__context` and `__host` bound once, in scope.
+        self.context_bound = true;
         for stmt in self.local_stmts.clone() {
             match stmt.node {
                 StmtNode::OnStart(body) => {
@@ -277,6 +279,7 @@ impl Codegen {
                 _ => {}
             }
         }
+        self.context_bound = false;
         let (input, output) = self.tick_types();
         let input_param = input.as_ref().map(|ty| format!(", __input: {ty}")).unwrap_or_default();
         let input_arg = if input.is_some() { ", __input" } else { "" };
@@ -300,52 +303,53 @@ impl Codegen {
             r#"{errors}/// The top-level bindings the hooks reach, owned by the instance rather than by a task.
 {program_struct}
 {helper}
-async fn __orch_run_tick(__program: &mut __OrchProgram, __dt: f64{input_param}) -> {output} {{
-    let __context = crate::__orch_context();
+async fn __orch_run_tick(__context: &OrchContext, __program: &mut __OrchProgram, __dt: f64{input_param}) -> {output} {{
     __context.advance_time(__dt);
-    __context.drain_events().await;
+    if __context.events_pending() {{ __context.drain_events().await; }}
+    let __host = &*__context.host;
     let __output = async {{ {tick} }}.await;
-    __context.drain_events().await;
+    if __context.events_pending() {{ __context.drain_events().await; }}
     __output
 }}
-async fn __orch_run_fixed_tick(__program: &mut __OrchProgram, __dt: f64) {{
-    let __context = crate::__orch_context();
-    __context.drain_events().await;
+async fn __orch_run_fixed_tick(__context: &OrchContext, __program: &mut __OrchProgram, __dt: f64) {{
+    if __context.events_pending() {{ __context.drain_events().await; }}
+    let __host = &*__context.host;
     {fixed}
-    __context.drain_events().await;
+    if __context.events_pending() {{ __context.drain_events().await; }}
 }}
 async fn __orch_entry(mut commands: tokio::sync::mpsc::UnboundedReceiver<OrchCommand>, ready: tokio::sync::oneshot::Sender<()>) {{
     {declarations}
     let __context = crate::__orch_context();
+    let __host = &*__context.host;
     let mut __shutdown = __context.shutdown.subscribe();
     if !*__shutdown.borrow() {{
         tokio::select! {{ biased; _ = __shutdown.changed() => {{}}, _ = async {{ {start} }} => {{}} }}
     }}
     {execution}
     let __main = if __context.options.deterministic {{ orchestrator_main({args}).await; None }} else {{ Some(tokio::spawn(async move {{ orchestrator_main({args}).await; }})) }};
-    *__context.program.lock().await = Some({pack});
+    *__context.program.enter().await = Some({pack});
     let _ = ready.send(());
     while !*__shutdown.borrow() {{
         let command = tokio::select! {{ biased; _ = __shutdown.changed() => break, command = commands.recv() => command }};
         let Some(command) = command else {{ break; }};
         match command {{
             OrchCommand::Tick(__dt{input_arg}, reply) => {{
-                __context.frame.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                __context.dt_bits.store(__dt.to_bits(), std::sync::atomic::Ordering::Relaxed);
-                let mut __state = __context.program.lock().await;
+                let mut __state = __context.program.enter().await;
                 let __program = __state.as_mut().expect("program state");
-                tokio::select! {{ biased; _ = __shutdown.changed() => break, __output = __orch_run_tick(__program, __dt{input_arg}) => {{ let _ = reply.send(__output); }} }}
+                __context.frame.store(__context.frame.load(std::sync::atomic::Ordering::Relaxed).wrapping_add(1), std::sync::atomic::Ordering::Relaxed);
+                __context.dt_bits.store(__dt.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                tokio::select! {{ biased; _ = __shutdown.changed() => break, __output = __orch_run_tick(&__context, __program, __dt{input_arg}) => {{ let _ = reply.send(__output); }} }}
             }},
             OrchCommand::FixedTick(__dt, reply) => {{
-                let mut __state = __context.program.lock().await;
+                let mut __state = __context.program.enter().await;
                 let __program = __state.as_mut().expect("program state");
-                tokio::select! {{ biased; _ = __shutdown.changed() => break, _ = __orch_run_fixed_tick(__program, __dt) => {{ let _ = reply.send(()); }} }}
+                tokio::select! {{ biased; _ = __shutdown.changed() => break, _ = __orch_run_fixed_tick(&__context, __program, __dt) => {{ let _ = reply.send(()); }} }}
             }},
             OrchCommand::Shutdown => break,
         }}
     }}
     if let Some(__main) = __main {{ __main.abort(); let _ = __main.await; }}
-    let {unpack} = __context.program.lock().await.take().expect("program state");
+    let {unpack} = __context.program.enter().await.take().expect("program state");
     {stop}
 }}
 "#
@@ -355,6 +359,7 @@ async fn __orch_entry(mut commands: tokio::sync::mpsc::UnboundedReceiver<OrchCom
     pub(super) fn library_adjust(&self, code: String) -> String {
         escape_edition_identifiers(&code).replace("tokio::spawn(", "crate::__orch_spawn(")
             .replace("tokio::time::sleep(", "crate::__orch_sleep(")
+            .replace("tokio::time::timeout(", "crate::__orch_timeout(")
             .replace("__ORCH_LINE_SPAWN(", "crate::__orch_spawn_line(")
             .replace(
                 "fn stop_orch() {\n    std::process::exit(0);\n}",

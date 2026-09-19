@@ -191,27 +191,28 @@ struct __OrchProgram {}
 async fn orchestrator_main() {
     
 }
-async fn __orch_run_tick(__program: &mut __OrchProgram, __dt: f64) -> () {
-    let __context = crate::__orch_context();
+async fn __orch_run_tick(__context: &OrchContext, __program: &mut __OrchProgram, __dt: f64) -> () {
     __context.advance_time(__dt);
-    __context.drain_events().await;
+    if __context.events_pending() { __context.drain_events().await; }
+    let __host = &*__context.host;
     let __output = async { { let dt = __dt; {
     // orch:1:50
         stop_orch()
 }; }
  }.await;
-    __context.drain_events().await;
+    if __context.events_pending() { __context.drain_events().await; }
     __output
 }
-async fn __orch_run_fixed_tick(__program: &mut __OrchProgram, __dt: f64) {
-    let __context = crate::__orch_context();
-    __context.drain_events().await;
+async fn __orch_run_fixed_tick(__context: &OrchContext, __program: &mut __OrchProgram, __dt: f64) {
+    if __context.events_pending() { __context.drain_events().await; }
+    let __host = &*__context.host;
     
-    __context.drain_events().await;
+    if __context.events_pending() { __context.drain_events().await; }
 }
 async fn __orch_entry(mut commands: tokio::sync::mpsc::UnboundedReceiver<OrchCommand>, ready: tokio::sync::oneshot::Sender<()>) {
     
     let __context = crate::__orch_context();
+    let __host = &*__context.host;
     let mut __shutdown = __context.shutdown.subscribe();
     if !*__shutdown.borrow() {
         tokio::select! { biased; _ = __shutdown.changed() => {}, _ = async { {
@@ -222,29 +223,29 @@ async fn __orch_entry(mut commands: tokio::sync::mpsc::UnboundedReceiver<OrchCom
     }
     
     let __main = if __context.options.deterministic { orchestrator_main().await; None } else { Some(crate::__orch_spawn(async move { orchestrator_main().await; })) };
-    *__context.program.lock().await = Some(__OrchProgram {});
+    *__context.program.enter().await = Some(__OrchProgram {});
     let _ = ready.send(());
     while !*__shutdown.borrow() {
         let command = tokio::select! { biased; _ = __shutdown.changed() => break, command = commands.recv() => command };
         let Some(command) = command else { break; };
         match command {
             OrchCommand::Tick(__dt, reply) => {
-                __context.frame.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                __context.dt_bits.store(__dt.to_bits(), std::sync::atomic::Ordering::Relaxed);
-                let mut __state = __context.program.lock().await;
+                let mut __state = __context.program.enter().await;
                 let __program = __state.as_mut().expect("program state");
-                tokio::select! { biased; _ = __shutdown.changed() => break, __output = __orch_run_tick(__program, __dt) => { let _ = reply.send(__output); } }
+                __context.frame.store(__context.frame.load(std::sync::atomic::Ordering::Relaxed).wrapping_add(1), std::sync::atomic::Ordering::Relaxed);
+                __context.dt_bits.store(__dt.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                tokio::select! { biased; _ = __shutdown.changed() => break, __output = __orch_run_tick(&__context, __program, __dt) => { let _ = reply.send(__output); } }
             },
             OrchCommand::FixedTick(__dt, reply) => {
-                let mut __state = __context.program.lock().await;
+                let mut __state = __context.program.enter().await;
                 let __program = __state.as_mut().expect("program state");
-                tokio::select! { biased; _ = __shutdown.changed() => break, _ = __orch_run_fixed_tick(__program, __dt) => { let _ = reply.send(()); } }
+                tokio::select! { biased; _ = __shutdown.changed() => break, _ = __orch_run_fixed_tick(&__context, __program, __dt) => { let _ = reply.send(()); } }
             },
             OrchCommand::Shutdown => break,
         }
     }
     if let Some(__main) = __main { __main.abort(); let _ = __main.await; }
-    let __OrchProgram {} = __context.program.lock().await.take().expect("program state");
+    let __OrchProgram {} = __context.program.enter().await.take().expect("program state");
     {
     // orch:1:74
         print_val(String::from("stop"))
@@ -325,17 +326,155 @@ struct OrchContext {
     active: std::sync::atomic::AtomicUsize,
     idle: tokio::sync::Notify,
     assets: std::path::PathBuf,
+    /// The runtime the library was started on. Tasks are spawned and timers created
+    /// through it, so a tick polled on a thread outside the runtime's context enters nothing.
+    runtime: tokio::runtime::Handle,
     /// The program's top-level bindings, once startup has run them.
-    program: tokio::sync::Mutex<Option<__OrchProgram>>,
+    program: OrchSlot<__OrchProgram>,
     /// Set whenever an event is queued, so an idle tick skips the queues without locking.
     has_events: std::sync::atomic::AtomicBool,
     event_update_orchestrator: std::sync::Arc<std::sync::Mutex<Vec<tokio::sync::mpsc::Sender<std::sync::Arc<Vec<ProcessRef>>>>>>,
 
 }
 tokio::task_local! { static ORCH_CONTEXT: std::sync::Arc<OrchContext>; }
-fn __orch_context() -> std::sync::Arc<OrchContext> { ORCH_CONTEXT.with(Clone::clone) }
+thread_local! { static ORCH_SYNC_CONTEXT: std::cell::Cell<*const OrchContext> = const { std::cell::Cell::new(std::ptr::null()) }; }
+/// While `tick_sync` polls its body on the calling thread, this names the instance, so the
+/// body reaches it through `__orch_context()` without a task-local scope around every tick.
+/// A task polled meanwhile — the fallback `block_on` runs other tasks between polls of the
+/// body — clears it for its own poll and reaches its instance through the task-local. The
+/// previous value comes back when the scope drops, so calls nest.
+struct OrchSyncScope(*const OrchContext);
+impl OrchSyncScope {
+    fn enter(context: &std::sync::Arc<OrchContext>) -> Self {
+        Self(ORCH_SYNC_CONTEXT.with(|current| current.replace(std::sync::Arc::as_ptr(context))))
+    }
+    fn none() -> Self {
+        Self(ORCH_SYNC_CONTEXT.with(|current| current.replace(std::ptr::null())))
+    }
+}
+impl Drop for OrchSyncScope {
+    fn drop(&mut self) { ORCH_SYNC_CONTEXT.with(|current| current.set(self.0)); }
+}
+fn __orch_context() -> std::sync::Arc<OrchContext> {
+    let sync = ORCH_SYNC_CONTEXT.with(|current| current.get());
+    if sync.is_null() { return ORCH_CONTEXT.with(Clone::clone); }
+    // SAFETY: `sync` was taken with `Arc::as_ptr` from the Arc that a `tick_sync` call
+    // borrows from its `Scripts` for the whole call, and the scope that set it drops before
+    // that call returns, so the allocation is alive: this is `Arc::clone` through a raw pointer.
+    unsafe { std::sync::Arc::increment_strong_count(sync); std::sync::Arc::from_raw(sync) }
+}
+/// A task of this instance: the task-local names the instance, and the sync pointer is
+/// cleared around each poll, since a sync tick's `block_on` polls tasks in between.
+fn __orch_task<F>(context: std::sync::Arc<OrchContext>, future: F) -> impl std::future::Future<Output = F::Output> + Send
+where F: std::future::Future + Send + 'static, F::Output: Send + 'static {
+    ORCH_CONTEXT.scope(context, async move {
+        let mut future = std::pin::pin!(future);
+        std::future::poll_fn(|cx| { let _task = OrchSyncScope::none(); future.as_mut().poll(cx) }).await
+    })
+}
 fn __orch_log(level: LogLevel, message: String) { __orch_context().host.log(level, &message); }
 fn stop_orch() { __orch_context().stop_requested.store(true, std::sync::atomic::Ordering::Release); }
+/// Out of line, so a host call in a hook is the trait call and one branch. A failed call is
+/// logged through the host and yields the return type's default, as it always has.
+#[cold]
+#[inline(never)]
+fn __orch_host_failed(name: &str, error: &str) {
+    __orch_log(LogLevel::Error, format!("[orchestrate] host call {name} failed: {error}"));
+}
+/// `tokio::time::timeout` for code whose first poll may happen on a thread outside the
+/// runtime's context, as a synchronous tick's does: the timer is created under the runtime.
+fn __orch_timeout<F: std::future::Future>(duration: std::time::Duration, future: F) -> tokio::time::Timeout<F> {
+    let context = __orch_context();
+    let _runtime = context.runtime.enter();
+    tokio::time::timeout(duration, future)
+}
+
+/// The program's state between ticks, entered by a synchronous tick on the calling thread
+/// or by the coordinator on the runtime. Each side raises its own flag and then reads the
+/// other's, all sequentially consistent, so the two cannot both find the other's flag
+/// clear. A synchronous tick that finds the coordinator's flag raised fails with the
+/// "already running" error; a coordinator that finds the tick's raised registers with
+/// `released` and waits. So the fast path is two stores and two loads, with no
+/// read-modify-write, and it neither waits nor notifies.
+///
+/// Invariant: `value` is reached only through a guard, and a guard is created only by a
+/// side that raised its own flag and then observed the other side's flag clear. Both
+/// observing that is impossible (a store-buffering outcome, which sequential consistency
+/// rules out), each side is one caller at a time (`tick_sync` takes `&mut Scripts`; the
+/// coordinator is one task), so two guards never exist at once and the value is never
+/// aliased. That is a mutex's guarantee, which is why the slot is Sync when its value is
+/// Send, and why the guard, like a mutex guard, is Send but not Sync.
+struct OrchSlot<T> {
+    /// Raised by `tick_sync` while it holds the slot.
+    sync_held: std::sync::atomic::AtomicBool,
+    /// Raised by the coordinator while it holds the slot.
+    task_held: std::sync::atomic::AtomicBool,
+    /// Set by a coordinator that found the slot held; the tick that releases it notifies.
+    contended: std::sync::atomic::AtomicBool,
+    released: tokio::sync::Notify,
+    value: std::cell::UnsafeCell<Option<T>>,
+}
+unsafe impl<T: Send> Sync for OrchSlot<T> {}
+struct OrchSlotGuard<'a, T> {
+    slot: &'a OrchSlot<T>,
+    sync: bool,
+    _not_sync: std::marker::PhantomData<std::cell::Cell<()>>,
+}
+impl<T> OrchSlot<T> {
+    fn new() -> Self {
+        Self {
+            sync_held: false.into(), task_held: false.into(), contended: false.into(),
+            released: tokio::sync::Notify::new(), value: std::cell::UnsafeCell::new(None),
+        }
+    }
+    /// From the calling thread: fails rather than waits when the coordinator holds the slot.
+    fn try_enter_sync(&self) -> Option<OrchSlotGuard<'_, T>> {
+        self.sync_held.store(true, std::sync::atomic::Ordering::SeqCst);
+        if self.task_held.load(std::sync::atomic::Ordering::SeqCst) {
+            self.release_sync();
+            return None;
+        }
+        Some(OrchSlotGuard { slot: self, sync: true, _not_sync: std::marker::PhantomData })
+    }
+    /// From the coordinator: waits while a synchronous tick holds the slot.
+    async fn enter(&self) -> OrchSlotGuard<'_, T> {
+        self.task_held.store(true, std::sync::atomic::Ordering::SeqCst);
+        loop {
+            if !self.sync_held.load(std::sync::atomic::Ordering::SeqCst) { break; }
+            // Registered before the flag and the retry: notify_waiters reaches a Notified
+            // created before it, so a release between the retry and the wait is not lost.
+            let released = self.released.notified();
+            self.contended.store(true, std::sync::atomic::Ordering::SeqCst);
+            if !self.sync_held.load(std::sync::atomic::Ordering::SeqCst) { break; }
+            released.await;
+        }
+        OrchSlotGuard { slot: self, sync: false, _not_sync: std::marker::PhantomData }
+    }
+    fn release_sync(&self) {
+        self.sync_held.store(false, std::sync::atomic::Ordering::SeqCst);
+        // A load on the fast path. The coordinator stores `contended` and then loads
+        // `sync_held`; this side stores `sync_held` and then loads `contended`; both
+        // sequentially consistent, so a registration and this release cannot both go unseen.
+        if self.contended.load(std::sync::atomic::Ordering::SeqCst) {
+            self.contended.store(false, std::sync::atomic::Ordering::SeqCst);
+            self.released.notify_waiters();
+        }
+    }
+}
+impl<T> std::ops::Deref for OrchSlotGuard<'_, T> {
+    type Target = Option<T>;
+    // SAFETY: the guard is the only path to the value, and only one exists; see OrchSlot.
+    fn deref(&self) -> &Option<T> { unsafe { &*self.slot.value.get() } }
+}
+impl<T> std::ops::DerefMut for OrchSlotGuard<'_, T> {
+    // SAFETY: as for deref, through the guard's exclusive borrow.
+    fn deref_mut(&mut self) -> &mut Option<T> { unsafe { &mut *self.slot.value.get() } }
+}
+impl<T> Drop for OrchSlotGuard<'_, T> {
+    fn drop(&mut self) {
+        if self.sync { self.slot.release_sync(); } else { self.slot.task_held.store(false, std::sync::atomic::Ordering::SeqCst); }
+    }
+}
 
 struct OrchTaskGuard(std::sync::Arc<OrchContext>);
 impl Drop for OrchTaskGuard {
@@ -358,7 +497,7 @@ where F: std::future::Future + Send + 'static, F::Output: Send + 'static {
     assert!(!context.options.deterministic, "deterministic mode supports lifecycle and event hooks; spawned workers and serverlets are excluded");
     context.active.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     let guard = OrchTaskGuard(context.clone());
-    let task = tokio::spawn(ORCH_CONTEXT.scope(context.clone(), async move {
+    let task = context.runtime.spawn(__orch_task(context.clone(), async move {
         let _guard = guard;
         future.await
     }));
@@ -382,7 +521,12 @@ async fn __orch_read_frame<R: tokio::io::AsyncReadExt + Unpin>(reader: &mut R) -
 }
 async fn __orch_sleep(duration: std::time::Duration) {
     let context = __orch_context();
-    if !context.options.deterministic { tokio::time::sleep(duration).await; return; }
+    if !context.options.deterministic {
+        // Created under the runtime, since a synchronous tick polls its body outside it.
+        let sleep = { let _runtime = context.runtime.enter(); tokio::time::sleep(duration) };
+        sleep.await;
+        return;
+    }
     assert!(ORCH_EVENT.try_with(|_| ()).is_ok(), "deterministic sleep is supported only in event handlers");
     let deadline = context.clock_nanos.load(std::sync::atomic::Ordering::Relaxed).saturating_add(duration.as_nanos().min(u64::MAX as u128) as u64);
     std::future::poll_fn(|_| if context.clock_nanos.load(std::sync::atomic::Ordering::Relaxed) >= deadline { std::task::Poll::Ready(()) } else { std::task::Poll::Pending }).await
@@ -390,8 +534,11 @@ async fn __orch_sleep(duration: std::time::Duration) {
 impl OrchContext {
     fn advance_time(&self, dt: f64) {
         assert!(dt.is_finite() && dt >= 0.0, "tick dt must be finite and nonnegative");
-        let duration = std::time::Duration::from_secs_f64(dt);
-        self.clock_nanos.fetch_add(duration.as_nanos().min(u64::MAX as u128) as u64, std::sync::atomic::Ordering::Relaxed);
+        // Whole nanoseconds, rounded as Duration::from_secs_f64 rounds them (ties to even)
+        // and saturating where it would panic. Only a tick writes the clock, and it holds the
+        // program slot while it does, so a load and a store replace the atomic add.
+        let nanos = (dt * 1_000_000_000.0).round_ties_even() as u64;
+        self.clock_nanos.store(self.clock_nanos.load(std::sync::atomic::Ordering::Relaxed).wrapping_add(nanos), std::sync::atomic::Ordering::Relaxed);
     }
     /// Handle the events queued when the drain starts, and only those: a handler that
     /// triggers an event leaves it in `events` for the next drain, so a handler that
@@ -401,6 +548,10 @@ impl OrchContext {
         self.events.lock().unwrap().push_back(event);
         self.has_events.store(true, std::sync::atomic::Ordering::Release);
     }
+    /// Whether a drain has anything to do: checked before `drain_events` is even created,
+    /// since building and polling that future costs more than the idle tick around it.
+    #[inline]
+    fn events_pending(&self) -> bool { self.has_events.load(std::sync::atomic::Ordering::Acquire) }
     async fn drain_events(&self) {
         // Cleared before the queue is read, so an event queued during the drain is seen next time.
         if !self.has_events.swap(false, std::sync::atomic::Ordering::AcqRel) { return; }
@@ -445,6 +596,19 @@ enum OrchCommand {
     Tick(f64, tokio::sync::oneshot::Sender<()>),
     FixedTick(f64, tokio::sync::oneshot::Sender<()>),
     Shutdown,
+}
+/// A tick polled on the calling thread: the instance is reachable through the thread for
+/// every poll of the body, the first one and those under `block_on` alike.
+struct OrchSyncTick<'a, F> {
+    context: &'a std::sync::Arc<OrchContext>,
+    future: std::pin::Pin<&'a mut F>,
+}
+impl<F: std::future::Future> std::future::Future for OrchSyncTick<'_, F> {
+    type Output = F::Output;
+    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<F::Output> {
+        let _scope = OrchSyncScope::enter(self.context);
+        self.future.as_mut().poll(cx)
+    }
 }
 pub struct Scripts {
     commands: tokio::sync::mpsc::UnboundedSender<OrchCommand>,
@@ -491,24 +655,23 @@ impl Scripts {
         runtime.block_on(self.fixed_tick(step))
     }
 
-    /// Run the tick on the calling thread, with no coordinator task, command channel, or
-    /// park: a body that finishes without waiting returns straight away. One that has to
-    /// wait finishes under `runtime.block_on`, so the result matches `tick_blocking`.
+    /// Run the tick on the calling thread, with no coordinator task, command channel, park,
+    /// or entry into the runtime: a body that finishes without waiting returns straight
+    /// away. One that has to wait finishes under `runtime.block_on`, so the result matches
+    /// `tick_blocking`. The `shutdown` flag needs no check here: both ways of setting it
+    /// consume the `Scripts` this call borrows.
     pub fn tick_sync(&mut self, runtime: &tokio::runtime::Runtime, dt: f64) -> Result<(), String> {
         if self.ready.is_some() { self.ready_blocking(runtime)?; }
         if self.stop_requested() { return Err("orchestration requested stop".into()); }
-        if *self.context.shutdown.borrow() { return Err("library is stopped".into()); }
-        let context = self.context.clone();
-        let mut state = context.program.try_lock().map_err(|_| "a tick is already running")?;
+        let context = &self.context;
+        let mut state = context.program.try_enter_sync().ok_or("a tick is already running")?;
         let program = state.as_mut().ok_or("library is stopped")?;
-        context.frame.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Only a tick writes these, and it holds the program slot, so plain loads and stores do.
+        context.frame.store(context.frame.load(std::sync::atomic::Ordering::Relaxed).wrapping_add(1), std::sync::atomic::Ordering::Relaxed);
         context.dt_bits.store(dt.to_bits(), std::sync::atomic::Ordering::Relaxed);
-        let mut tick = std::pin::pin!(ORCH_CONTEXT.scope(context.clone(), __orch_run_tick(program, dt)));
-        let polled = {
-            let _runtime = runtime.enter();
-            std::future::Future::poll(tick.as_mut(), &mut std::task::Context::from_waker(std::task::Waker::noop()))
-        };
-        match polled {
+        let mut body = std::pin::pin!(__orch_run_tick(context, program, dt));
+        let mut tick = OrchSyncTick { context, future: body.as_mut() };
+        match std::future::Future::poll(std::pin::Pin::new(&mut tick), &mut std::task::Context::from_waker(std::task::Waker::noop())) {
             std::task::Poll::Ready(output) => Ok(output),
             std::task::Poll::Pending => Ok(runtime.block_on(tick)),
         }
@@ -517,16 +680,12 @@ impl Scripts {
     pub fn fixed_tick_sync(&mut self, runtime: &tokio::runtime::Runtime, step: f64) -> Result<(), String> {
         if self.ready.is_some() { self.ready_blocking(runtime)?; }
         if self.stop_requested() { return Err("orchestration requested stop".into()); }
-        if *self.context.shutdown.borrow() { return Err("library is stopped".into()); }
-        let context = self.context.clone();
-        let mut state = context.program.try_lock().map_err(|_| "a tick is already running")?;
+        let context = &self.context;
+        let mut state = context.program.try_enter_sync().ok_or("a tick is already running")?;
         let program = state.as_mut().ok_or("library is stopped")?;
-        let mut tick = std::pin::pin!(ORCH_CONTEXT.scope(context.clone(), __orch_run_fixed_tick(program, step)));
-        let polled = {
-            let _runtime = runtime.enter();
-            std::future::Future::poll(tick.as_mut(), &mut std::task::Context::from_waker(std::task::Waker::noop()))
-        };
-        match polled {
+        let mut body = std::pin::pin!(__orch_run_fixed_tick(context, program, step));
+        let mut tick = OrchSyncTick { context, future: body.as_mut() };
+        match std::future::Future::poll(std::pin::Pin::new(&mut tick), &mut std::task::Context::from_waker(std::task::Waker::noop())) {
             std::task::Poll::Ready(()) => Ok(()),
             std::task::Poll::Pending => Ok(runtime.block_on(tick)),
         }
@@ -576,14 +735,14 @@ pub fn start_with_options(runtime: &tokio::runtime::Handle, host: impl Host, opt
     let (shutdown, _) = tokio::sync::watch::channel(false);
     let context = std::sync::Arc::new(OrchContext {
         host: std::sync::Arc::new(host), options, events: Default::default(), batch: Default::default(), clock_nanos: 0.into(), frame: 0.into(), dt_bits: 0.into(), stop_requested: false.into(), closing, shutdown,
-        tasks: Default::default(), active: 0.into(), idle: tokio::sync::Notify::new(), assets,
-        program: tokio::sync::Mutex::new(None), has_events: false.into(),
+        tasks: Default::default(), active: 0.into(), idle: tokio::sync::Notify::new(), assets, runtime: runtime.clone(),
+        program: OrchSlot::new(), has_events: false.into(),
     event_update_orchestrator: Default::default(),
 
     });
     let (commands, rx) = tokio::sync::mpsc::unbounded_channel();
     let (ready_tx, ready) = tokio::sync::oneshot::channel();
-    let coordinator = runtime.spawn(ORCH_CONTEXT.scope(context.clone(), __orch_entry(rx, ready_tx)));
+    let coordinator = runtime.spawn(__orch_task(context.clone(), __orch_entry(rx, ready_tx)));
     let cleanup_context = context.clone();
     let supervisor = runtime.spawn(async move {
         let result = coordinator.await.map_err(|e| e.to_string());

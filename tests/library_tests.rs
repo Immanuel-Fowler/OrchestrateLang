@@ -56,11 +56,20 @@ fn build(root: &Path, source: &str) {
     );
 }
 fn host(root: &Path, source: &str) -> String {
+    host_in(root, source, false)
+}
+/// Runs a host program against the library built in `root`, optimized when `release` is
+/// set, and returns its stdout.
+fn host_in(root: &Path, source: &str, release: bool) -> String {
     fs::create_dir_all(root.join("host/src")).unwrap();
     fs::write(root.join("host/Cargo.toml"), "[package]\nname=\"host_test\"\nversion=\"0.1.0\"\nedition=\"2021\"\n[dependencies]\nscripts={path=\"../scripts\"}\ntokio={version=\"1.35\",features=[\"full\"]}\n").unwrap();
     fs::write(root.join("host/src/main.rs"), source).unwrap();
+    let mut args = vec!["run", "--quiet"];
+    if release {
+        args.push("--release");
+    }
     let result = Command::new("cargo")
-        .args(["run", "--quiet"])
+        .args(args)
         .current_dir(root.join("host"))
         .output()
         .unwrap();
@@ -984,4 +993,112 @@ fn main() {
 "#);
     assert!(output.starts_with("channel "), "{output}");
     println!("{}", output.trim());
+}
+
+/// The cost of the generated glue around `tick_sync`, against a no-op host: an empty tick,
+/// one host call, and five, each the median of 21 rounds, next to the host method called
+/// through its vtable alone. A benchmark rather than a check, so it is ignored:
+/// `cargo test --test library_tests glue_cost -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn bench_sync_tick_glue_cost() {
+    const HOST: &str = r#"
+use std::sync::atomic::{AtomicU64, Ordering};
+struct Host(AtomicU64);
+impl scripts::Host for Host {
+    fn world_count(&self) -> Result<(), String> { self.0.fetch_add(1, Ordering::Relaxed); Ok(()) }
+}
+fn median(mut samples: Vec<f64>) -> f64 { samples.sort_by(|a, b| a.partial_cmp(b).unwrap()); samples[samples.len() / 2] }
+fn main() {
+    const N: u64 = 200_000;
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let mut scripts = scripts::start(runtime.handle(), Host(AtomicU64::new(0))).unwrap();
+    scripts.ready_blocking(&runtime).unwrap();
+    // Warmed up first, so the clock ramp does not land on whichever program runs first.
+    for _ in 0..N * 5 { scripts.tick_sync(&runtime, 0.016).unwrap(); }
+    let mut ticks = Vec::new();
+    for _ in 0..21 {
+        let start = std::time::Instant::now();
+        for _ in 0..N { scripts.tick_sync(&runtime, 0.016).unwrap(); }
+        ticks.push(start.elapsed().as_nanos() as f64 / N as f64);
+    }
+    scripts.shutdown_blocking(&runtime).unwrap();
+    // The trait method through the same vtable is the floor for a host call.
+    let host: std::sync::Arc<dyn scripts::Host> = std::hint::black_box(std::sync::Arc::new(Host(AtomicU64::new(0))));
+    for _ in 0..N * 5 { std::hint::black_box(host.world_count()).unwrap(); }
+    let mut calls = Vec::new();
+    for _ in 0..21 {
+        let start = std::time::Instant::now();
+        for _ in 0..N { std::hint::black_box(host.world_count()).unwrap(); }
+        calls.push(start.elapsed().as_nanos() as f64 / N as f64);
+    }
+    println!("{:.2} {:.2}", median(ticks), median(calls));
+}
+"#;
+    let mut results = Vec::new();
+    for (name, body) in [
+        ("empty", ""),
+        ("one host call", "world.count()"),
+        ("five host calls", "world.count() world.count() world.count() world.count() world.count()"),
+    ] {
+        let root = root(&format!("glue_{}", name.replace(' ', "_")));
+        build(&root, &format!("host world {{ fn count() }}\non_tick(dt: float) {{ {body} }}\norchestrator main() {{}}\n"));
+        let output = host_in(&root, HOST, true);
+        let mut numbers = output.split_whitespace().map(|n| n.parse::<f64>().unwrap());
+        let (tick, method) = (numbers.next().unwrap(), numbers.next().unwrap());
+        println!("{name:<16} tick_sync {tick:7.2} ns    host method alone {method:5.2} ns");
+        results.push((tick, method));
+    }
+    let (empty, one, five, method) = (results[0].0, results[1].0, results[2].0, results[1].1);
+    let per_call = (five - one) / 4.0;
+    println!(
+        "empty tick {empty:.2} ns; one call adds {:.2} ns; each further call {per_call:.2} ns, {:.2} ns over the method",
+        one - empty,
+        per_call - method
+    );
+}
+
+/// A synchronous tick's body runs on the caller's thread, outside any runtime context,
+/// and what it does on its first poll — spawn a worker, queue an event, start a budgeted
+/// landline call, or sleep — still works, because the library carries the handle it was
+/// started with. The host never enters the runtime itself.
+#[test]
+fn engine_sync_tick_body_needs_no_runtime_context() {
+    let root = root("sync_no_context");
+    fs::write(root.join("impl.py"), "from orchestratelang import landline\nclass P(landline.Serverlet):\n    def ping(self) -> int: return 42\nlandline.serve(P)\n").unwrap();
+    build(&root, r#"
+host world { fn record(n: int) }
+serverlet P via python(source: "impl.py", budget: "2s") { on ping() -> int }
+let worker = automatic { world.record(9) sleep(1000) }
+let p = start P()
+let ticks = 0
+on hit(n: int) { world.record(n) }
+on_tick(dt: float) {
+    ticks = ticks + 1
+    if ticks == 1 { start worker trigger hit(3) world.record(1) }
+    if ticks == 2 { world.record(p.ping()) }
+    if ticks == 3 { sleep(1) world.record(5) }
+}
+orchestrator main() {}
+"#);
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<i64>>>);
+impl scripts::Host for Host { fn world_record(&self, n: i64) -> Result<(), String> { self.0.lock().unwrap().push(n); Ok(()) } }
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut scripts = scripts::start(runtime.handle(), Host(log.clone())).unwrap();
+    scripts.ready_blocking(&runtime).unwrap();
+    assert!(tokio::runtime::Handle::try_current().is_err(), "the host stays outside the runtime");
+    for _ in 0..3 { scripts.tick_sync(&runtime, 0.1).unwrap(); }
+    let recorded = log.lock().unwrap().clone();
+    assert_eq!(&recorded[..2], [1, 3], "the first tick finished on the calling thread: {recorded:?}");
+    assert!(recorded.contains(&9) && recorded.contains(&42), "the worker and the landline ran under the fallback: {recorded:?}");
+    assert_eq!(recorded.last(), Some(&5), "{recorded:?}");
+    assert_eq!(recorded.len(), 5, "{recorded:?}");
+    scripts.shutdown_blocking(&runtime).unwrap();
+}
+"#);
+    assert!(output.is_empty(), "{output}");
 }

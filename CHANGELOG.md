@@ -9,6 +9,26 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+### Changed
+- Library mode: the glue around a synchronous tick is a few nanoseconds. `tick_sync` no
+  longer enters the runtime, scopes a task-local, or takes an async mutex per frame: the
+  program's state sits in a slot entered with two flag stores and two loads, every hook
+  body binds its instance once so a host call is the trait call and one branch, the clock
+  advances with an integer add, and an idle tick never builds the event drain. On an Apple
+  M2 an empty tick went from 45 ns to 8 ns per `tick_sync`, and each host call in a hook
+  from about 3 ns to about 1.5 ns, no more than the trait call itself. Nothing observable changed: `tick`,
+  `fixed_tick`, the `block_on` fallback for a body that waits, deterministic mode,
+  `stop_orch()`, shutdown, event ordering, and the "a tick is already running" error on a
+  re-entered tick are as before. The ignored test `glue_cost` in `tests/library_tests.rs`
+  measures the three cases.
+- Library mode: `sleep`, landline budgets, and workers started inside a hook no longer need
+  the calling thread to be inside the runtime's context; the library carries the handle it
+  was started with, so `tick_sync` works from any thread that holds the runtime.
+- Library mode: a failed host call is reported as
+  `[orchestrate] host call <group>.<name> failed: <error>` — the call's name is now part of
+  the message — still at error level through `Host::log`, still yielding the return type's
+  default, through one shared cold function rather than a closure at every call site.
+
 ## [0.8.0] - 2026-09-18
 
 Errors of any type, strings and handles across the C ABI, and a generic standard library.

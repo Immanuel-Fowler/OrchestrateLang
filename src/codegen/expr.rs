@@ -171,7 +171,14 @@ impl Codegen {
                 let args_str = args.iter().map(|a| self.compile_expr(a)).collect::<Vec<String>>().join(", ");
 
                 if self.library && self.host_functions.iter().any(|(g, h)| g == module_local_name && h.name == *function) {
-                    return format!("crate::__orch_context().host.{}({}).unwrap_or_else(|error| {{ eprintln!(\"[orchestrate] host call failed: {{}}\", error); Default::default() }})", Self::host_method(module_local_name, function), args_str);
+                    // The trait call and one branch, with the failure out of line; the
+                    // parentheses keep the match a statement where its value is dropped.
+                    let receiver = if self.context_bound { "__host" } else { "crate::__orch_context().host" };
+                    return format!(
+                        "(match {receiver}.{}({args_str}) {{ Ok(__value) => __value, Err(__error) => {{ crate::__orch_host_failed({:?}, &__error); Default::default() }} }})",
+                        Self::host_method(module_local_name, function),
+                        format!("{module_local_name}.{function}")
+                    );
                 }
                 if self.modules.contains(module_local_name) {
                     let full_name = format!("{}::{}", module_local_name, function);
@@ -211,6 +218,9 @@ impl Codegen {
                 // Inside the closure every captured name is the clone above, not a program field.
                 self.push_scope();
                 for var in &free_vars { self.define_local(var); }
+                // Each of the worker's tasks binds the instance once, at its top.
+                let bound = std::mem::replace(&mut self.context_bound, self.library);
+                let bind = if self.library { "let __context = crate::__orch_context(); let __host = &*__context.host;\n            " } else { "" };
 
                 let crash_handler_code = if let Some((err_name, handler)) = crash_handler {
                     self.push_scope();
@@ -249,6 +259,7 @@ impl Codegen {
                     (vec![], vec![self.compile_expr(body)])
                 };
                 self.pop_scope();
+                self.context_bound = bound;
 
                 let setup_inner = setup_code.join("\n                ");
                 let loop_inner = loop_code.join("\n                    ");
@@ -269,10 +280,10 @@ impl Codegen {
                     r#"{{
     {capture}std::sync::Arc::new(move || {{
         tokio::spawn(async move {{
-            let mut __restart_count: u32 = 0;
+            {bind}let mut __restart_count: u32 = 0;
             loop {{
                 {setup}let __inner_handle = tokio::spawn(async move {{
-                    loop {{
+                    {bind}loop {{
                         {loop_body}
                     }}
                 }});
@@ -290,6 +301,7 @@ impl Codegen {
     }}) as ProcessRef
 }}"#,
                     capture = capture_code,
+                    bind = bind,
                     setup = setup_block,
                     loop_body = loop_inner,
                     crash_handler = crash_handler_code,
@@ -330,11 +342,15 @@ impl Codegen {
                     format!("({})", names)
                 };
 
+                // A library handler binds the instance once, at its top.
+                let handler = self.library && event_name != "update_orchestrator";
+                let bound = std::mem::replace(&mut self.context_bound, handler);
                 let body_str = self.compile_expr(body);
+                self.context_bound = bound;
                 self.pop_scope();
-                if self.library && event_name != "update_orchestrator" {
+                if handler {
                     let clones = capture_code.clone();
-                    return format!("{{ {capture_code} std::sync::Arc::new(move || {{ {clones} crate::{func_name}().lock().unwrap().push(std::sync::Arc::new(move |msg: {arc_type_str}| {{ {clones} Box::pin(async move {{ let {bindings} = (*msg).clone(); {body_str}; }}) as crate::OrchEvent }})); }}) }}");
+                    return format!("{{ {capture_code} std::sync::Arc::new(move || {{ {clones} crate::{func_name}().lock().unwrap().push(std::sync::Arc::new(move |msg: {arc_type_str}| {{ {clones} Box::pin(async move {{ let __context = crate::__orch_context(); let __host = &*__context.host; let {bindings} = (*msg).clone(); {body_str}; }}) as crate::OrchEvent }})); }}) }}");
                 }
 
                 format!(
@@ -432,7 +448,10 @@ impl Codegen {
                 };
                 self.push_scope();
                 for p in params { self.define_local(&p.name); }
+                // A closure may outlive the tick, so it cannot borrow the tick's bindings.
+                let bound = std::mem::replace(&mut self.context_bound, false);
                 let body_str = self.compile_expr(body);
+                self.context_bound = bound;
                 self.pop_scope();
                 format!("move |{}|{} {}", params_str, ret_str, body_str)
             }
