@@ -17,9 +17,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # wasm32-wasip1 builds sandboxed serverlets' guests; wasm32-unknown-unknown builds
+      # the module the `load_foreign "wasm"` test loads.
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-wasip1
+          targets: wasm32-wasip1, wasm32-unknown-unknown
 
       - uses: actions/setup-python@v5
         with:

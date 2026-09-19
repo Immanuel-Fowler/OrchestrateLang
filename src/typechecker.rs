@@ -13,6 +13,10 @@ pub struct TypeChecker {
     pub type_map: HashMap<(usize, usize), Type>,  // (line, col) → inferred type
     /// One collector per open `try` block: the error types its `?`s propagate.
     try_errors: Vec<Vec<Type>>,
+    /// Each serverlet's state, in declaration order, with the type each binding was given
+    /// or inferred. A sandboxed serverlet's state crosses into a WASM guest, where it
+    /// becomes struct fields, and a field needs a type the generator can name.
+    pub serverlet_state: HashMap<String, Vec<(String, Type)>>,
 }
 
 impl TypeChecker {
@@ -28,6 +32,7 @@ impl TypeChecker {
             host_groups: HashSet::new(),
             type_map: HashMap::new(),
             try_errors: Vec::new(),
+            serverlet_state: HashMap::new(),
         };
 
         tc.functions.insert("print".to_string(), (vec![Type::Str], Type::Void));
@@ -360,7 +365,7 @@ impl TypeChecker {
             StmtNode::Break | StmtNode::Continue => {}
             StmtNode::UseModule { .. } | StmtNode::Load { .. } | StmtNode::LoadForeign { .. } |
             StmtNode::StructDef { .. } | StmtNode::EnumDef { .. } => {}
-            StmtNode::Serverlet { state, handlers, crash_handler, landline, grants, .. } => {
+            StmtNode::Serverlet { name: serverlet, state, handlers, crash_handler, landline, grants, .. } => {
                 let mut seen = HashSet::new();
                 for grant in grants {
                     if !seen.insert(grant) || !self.functions.contains_key(&grant.replace(".", "::")) || !self.host_groups.contains(grant.split('.').next().unwrap()) {
@@ -381,6 +386,20 @@ impl TypeChecker {
                 for s in state {
                     self.check_stmt(s)?;
                 }
+                // Recorded before the handlers run, so a handler's locals cannot be
+                // mistaken for state. A name declared twice keeps its last type.
+                let mut recorded: Vec<(String, Type)> = Vec::new();
+                for s in state {
+                    if let StmtNode::Let { name, .. } = &s.node {
+                        if let Some(ty) = self.lookup_var(name) {
+                            match recorded.iter_mut().find(|(existing, _)| existing == name) {
+                                Some(entry) => entry.1 = ty,
+                                None => recorded.push((name.clone(), ty)),
+                            }
+                        }
+                    }
+                }
+                self.serverlet_state.insert(serverlet.clone(), recorded);
                 for h in handlers {
                     let prev_return = self.current_return_type.clone();
                     self.current_return_type = Some(h.return_type.clone());

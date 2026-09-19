@@ -9,6 +9,53 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+### Added
+- **Sandboxed serverlets contain their code.** `serverlet X sandbox(memory_limit: "64mb",
+  timeout: "5s")` has parsed since 0.5, and since 0.6 its handlers compiled to a
+  `wasm32-wasip1` guest, but the serverlet still ran in-process and the compiler warned
+  that nothing was isolated. It is isolated now: the guest runs under
+  [wasmtime](https://wasmtime.dev), `memory_limit` caps its linear memory, `timeout`
+  bounds a single call through epoch interruption, and its state lives inside the guest
+  between calls. Imports are denied by default, so a guest that reaches for the host traps
+  instead of arriving. From the caller's side nothing changed — same `start`, same client,
+  same methods. `int`, `float`, `bool`, `string`, and `void` cross the boundary.
+
+  A call that exceeds a limit or stops itself is logged, answered with the return type's
+  default, and the program carries on. The guest is then replaced, because a trap abandons
+  it where it stands rather than unwinding it — so **a failed call resets that serverlet's
+  state**. The guest is given two host functions and no others: one carries its own stderr
+  out, so a panic or an allocation failure is reported as `[orchestrate] sandbox guest:
+  ...`, and one lets it stop itself. Neither is a capability; they exist so a contained
+  failure can say what it was.
+
+  Not yet: `grant` and `on_crash` on a sandboxed serverlet are compile errors rather than
+  holes that open quietly, and arrays and structs do not cross the boundary.
+- **`load_foreign "wasm"`.** A module's exports become ordinary functions:
+
+  ```orchestrate
+  load_foreign "wasm" "./math.wasm"
+  ```
+
+  There is no toolchain to install and no language to name, because a `.wasm` is already
+  compiled — whatever produced it is the author's business. The compiler reads the
+  module's own export table and checks every sidecar signature against it, so a name that
+  is not exported, or a type that does not line up, is a build error naming both sides;
+  `orchestrate check` runs the same check without building. The module is embedded in the
+  program, and its imports are denied by default, so it reaches nothing it was not given.
+  `int` is `i64`, `float` is `f64`, `bool` is an `i32`, and a `string` is a pointer and a
+  length, which means a module carrying strings must export `orch_alloc(i32) -> i32` and
+  `orch_free(i32, i32)` so both sides use one allocator.
+
+### Changed
+- `sandbox(...)` validates `memory_limit` and `timeout` when it parses them, so a typo is
+  an error rather than a limit that quietly misses.
+- `orchestrate check` now registers C, C++, Zig, and Swift sidecar signatures as well as
+  TypeScript's, so a call into one of those modules is typed during a check instead of
+  drawing an "unknown method call" warning.
+- Programs that use neither a wasm module nor a sandboxed serverlet gain no new
+  dependency. Those that do gain `wasmtime`, which is large; building a sandboxed
+  serverlet also needs the `wasm32-wasip1` target.
+
 ## [0.8.1] - 2026-09-19
 
 The glue around a synchronous tick is a few nanoseconds, down from about forty.

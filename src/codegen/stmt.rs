@@ -1,5 +1,5 @@
 use crate::ast::{ExprNode, StmtNode, Stmt, Type, Handler};
-use super::core::{Codegen, pascal_case, runtime_preamble, SECRET_CHILD_FRAMES};
+use super::core::{Codegen, StateRewrite, pascal_case, runtime_preamble, SECRET_CHILD_FRAMES};
 
 fn type_params_str(type_params: &[String]) -> String {
     if type_params.is_empty() {
@@ -431,6 +431,20 @@ impl Codegen {
                 // driver). The orchestrator still runs the serverlet in-process for
                 // now — host integration is step 3 — and the driver warns about it.
                 if sandbox.is_some() {
+                    // A grant is a hole punched in the wall on purpose, and each one has
+                    // to become a mediated host function before it can be honoured.
+                    if !grants.is_empty() {
+                        return format!(
+                            "compile_error!({:?});",
+                            format!("sandboxed serverlet '{name}': grants are not supported yet; a sandboxed serverlet cannot reach the host, so remove the grant or drop sandbox(...)")
+                        );
+                    }
+                    if crash_handler.is_some() {
+                        return format!(
+                            "compile_error!({:?});",
+                            format!("sandboxed serverlet '{name}': on_crash is not supported yet; a call that traps is logged and answered with a default")
+                        );
+                    }
                     let guest = self.compile_sandbox_guest(name, state, handlers);
                     self.sandbox_programs.push((name.clone(), guest));
                 }
@@ -582,6 +596,19 @@ impl Codegen {
                     return format!("{}\n\n{}\n\n{}", msg_enum, client_struct, start_fn);
                 }
 
+                if let Some(config) = sandbox {
+                    // The handlers run in the guest, so the host loop marshals rather
+                    // than executing anything the serverlet declared.
+                    let start_fn = self.compile_sandbox_host(name, handlers, config);
+                    let start_fn = if self.library {
+                        start_fn.replace("tokio::spawn(", "__ORCH_LINE_SPAWN(")
+                            .replace("rx.recv().await", "crate::__orch_recv(&mut rx).await")
+                    } else {
+                        start_fn
+                    };
+                    return format!("{}\n\n{}\n\n{}", msg_enum, client_struct, start_fn);
+                }
+
                 let start_fn = format!(
                     "#[allow(non_snake_case)]\npub fn start_{}() -> {}Client {{\n    let (tx, mut rx) = tokio::sync::mpsc::channel::<{}Msg>(100);\n    tokio::spawn(async move {{\n{}\n        while let Some(msg) = rx.recv().await {{\n            match msg {{\n{}\n            }}\n        }}\n    }});\n    {}Client {{ tx }}\n}}",
                     name, name, name,
@@ -728,53 +755,277 @@ impl Codegen {
 }
 
 impl Codegen {
-    /// The WASM guest crate `lib.rs` for a sandboxed serverlet: one exported
-    /// `extern "C"` function per handler. STEP 2 SCAFFOLD — state is re-initialized
-    /// per call; cross-call persistence and host integration land in step 3. The
-    /// orchestrator still runs the real serverlet in-process for now.
-    fn compile_sandbox_guest(&mut self, name: &str, state: &[Stmt], handlers: &[Handler]) -> String {
-        if let Some(reason) = secret_unsupported_reason(handlers) {
-            return format!("compile_error!(\"sandbox serverlet '{}': {}\");\n", name, reason);
-        }
-
-        // State bindings, re-created per call for now (step 3 makes them persist).
-        let mut state_lets = Vec::new();
-        for s in state {
-            if let StmtNode::Let { name: vname, ty, value } = &s.node {
-                let val_str = self.compile_expr(value);
-                if let Some(t) = ty {
-                    state_lets.push(format!("    let mut {}: {} = {};", vname, self.compile_type(t), val_str));
-                } else {
-                    state_lets.push(format!("    let mut {} = {};", vname, val_str));
-                }
-            }
-        }
-        let state_block = state_lets.join("\n");
-
-        let mut exports = Vec::new();
+    /// The actor loop for a sandboxed serverlet. It looks like any other serverlet's from
+    /// the outside — same `XMsg`, same `XClient` — but each call crosses into a wasmtime
+    /// guest instead of running inline, under the declared memory cap and timeout. A call
+    /// that traps is reported and answered with the return type's default, so one hostile
+    /// or broken call cannot take the program with it.
+    fn compile_sandbox_host(
+        &mut self,
+        name: &str,
+        handlers: &[Handler],
+        config: &crate::ast::SandboxConfig,
+    ) -> String {
+        let mut arms = Vec::new();
         for h in handlers {
-            let params = h.params.iter()
-                .map(|p| format!("{}: {}", p.name, self.compile_type(&p.ty)))
+            let variant = pascal_case(&h.name);
+            let bindings = h
+                .params
+                .iter()
+                .map(|p| p.name.clone())
+                .chain(std::iter::once("reply_to".to_string()))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let ret = if h.return_type == Type::Void {
-                String::new()
-            } else {
-                format!(" -> {}", self.compile_type(&h.return_type))
+
+            // Strings are copied into guest memory first; numbers go as they are.
+            let mut setup = String::new();
+            let mut arguments = Vec::new();
+            let mut wasm_params = Vec::new();
+            for p in &h.params {
+                match p.ty {
+                    Type::Str => {
+                        setup.push_str(&format!(
+                            "                    let ({0}_pointer, {0}_length) = match __guest.write_string(&{0}) {{\n                        Ok(__written) => __written,\n                        Err(__error) => {{ eprintln!(\"[orchestrate] {{}}\", __error); __guest.reset(); let _ = reply_to.send(Default::default()); continue; }}\n                    }};\n",
+                            p.name
+                        ));
+                        arguments.push(format!("{}_pointer", p.name));
+                        arguments.push(format!("{}_length", p.name));
+                        wasm_params.push("i32".to_string());
+                        wasm_params.push("i32".to_string());
+                    }
+                    Type::Bool => {
+                        arguments.push(format!("{} as i32", p.name));
+                        wasm_params.push("i32".to_string());
+                    }
+                    Type::Float => {
+                        arguments.push(p.name.clone());
+                        wasm_params.push("f64".to_string());
+                    }
+                    _ => {
+                        arguments.push(p.name.clone());
+                        wasm_params.push("i64".to_string());
+                    }
+                }
+            }
+            let results = match h.return_type {
+                Type::Void => "()",
+                Type::Float => "f64",
+                Type::Bool => "i32",
+                Type::Str => "i64",
+                _ => "i64",
             };
-            let body = self.compile_expr(&h.body);
-            exports.push(format!(
-                "#[unsafe(no_mangle)]\npub extern \"C\" fn {hname}({params}){ret} {{\n{state}\n    {{ {body} }}\n}}",
-                hname = h.name, params = params, ret = ret, state = state_block, body = body
+            // A one-element tuple keeps its trailing comma, or it stops being a tuple.
+            let tuple_type = match wasm_params.len() {
+                1 => format!("({},)", wasm_params[0]),
+                _ => format!("({})", wasm_params.join(", ")),
+            };
+            let tuple_args = match arguments.len() {
+                1 => format!("{},", arguments[0]),
+                _ => arguments.join(", "),
+            };
+            let convert = match h.return_type {
+                Type::Bool => "                    let __value = __value != 0;\n".to_string(),
+                Type::Str => "                    let __value = match __guest.read_string(__value) {\n                        Ok(__text) => __text,\n                        Err(__error) => { eprintln!(\"[orchestrate] {}\", __error); __guest.reset(); let _ = reply_to.send(Default::default()); continue; }\n                    };\n".to_string(),
+                _ => String::new(),
+            };
+
+            arms.push(format!(
+                "                {name}Msg::{variant} {{ {bindings} }} => {{\n                    \
+                     __guest.begin();\n{setup}                    \
+                     let __outcome = match __guest.instance.get_typed_func::<{tuple_type}, {results}>(&mut __guest.store, {handler:?}) {{\n                        \
+                         Ok(__function) => {{\n                            \
+                             let __called = __function.call(&mut __guest.store, ({tuple_args}));\n                            \
+                             __called.map_err(|__error| __guest.failed({handler:?}, &__error))\n                        \
+                         }}\n                        \
+                         Err(__error) => Err(format!(\"sandboxed serverlet '{name}' exports no '{handler}': {{}}\", __error)),\n                    \
+                     }};\n                    \
+                     let __value = match __outcome {{\n                        \
+                         Ok(__value) => __value,\n                        \
+                         Err(__error) => {{ eprintln!(\"[orchestrate] {{}}\", __error); __guest.reset(); let _ = reply_to.send(Default::default()); continue; }}\n                    \
+                     }};\n{convert}                    \
+                     let _ = reply_to.send(__value);\n                \
+                 }}",
+                name = name,
+                variant = variant,
+                bindings = bindings,
+                setup = setup,
+                tuple_type = tuple_type,
+                results = results,
+                handler = h.name,
+                tuple_args = tuple_args,
+                convert = convert,
             ));
         }
 
         format!(
-"// Generated by Orchestrate Compiler — sandbox guest for serverlet '{name}'\n#![allow(unused_variables)]\n#![allow(dead_code)]\n#![allow(unused_imports)]\n#![allow(unused_parens)]\n#![allow(unused_mut)]\n#![allow(improper_ctypes_definitions)]\n\n{preamble}\n{exports}\n",
+            "#[allow(non_snake_case)]\npub fn start_{name}() -> {name}Client {{\n    \
+                 let (tx, mut rx) = tokio::sync::mpsc::channel::<{name}Msg>(100);\n    \
+                 tokio::spawn(async move {{\n        \
+                     let mut __guest = match crate::__OrchGuest::new({name:?}, include_bytes!(\"sandbox_{name}.wasm\"), Some({memory}), Some({timeout})) {{\n            \
+                         Ok(__guest) => __guest,\n            \
+                         Err(__error) => {{ eprintln!(\"[orchestrate] {{}}\", __error); return; }}\n        \
+                     }};\n        \
+                     while let Some(msg) = rx.recv().await {{\n            \
+                         match msg {{\n{arms}\n            }}\n        }}\n    \
+                 }});\n    \
+                 {name}Client {{ tx }}\n}}",
+            name = name,
+            memory = config.memory_bytes().unwrap_or(64 * 1024 * 1024),
+            timeout = config.timeout_ms().unwrap_or(5_000),
+            arms = arms.join("\n"),
+        )
+    }
+
+    /// The WASM guest crate `lib.rs` for a sandboxed serverlet: the serverlet's state as a
+    /// struct that lives inside the guest between calls, and one exported `extern "C"`
+    /// function per handler. Numbers cross as themselves; a string crosses as a pointer
+    /// and a length into the guest's own memory, allocated by the allocator both sides
+    /// share.
+    fn compile_sandbox_guest(&mut self, name: &str, state: &[Stmt], handlers: &[Handler]) -> String {
+        if let Some(reason) = secret_unsupported_reason(handlers) {
+            return format!(
+                "compile_error!({:?});\n",
+                format!("sandbox serverlet '{}': {}", name, reason.replace("secret serverlets", "sandboxed serverlets"))
+            );
+        }
+
+        // The state's types come from the typechecker, since a struct field cannot be
+        // written as `let mut x = ...` and inferred.
+        let declared = self.serverlet_state_types.get(name).cloned().unwrap_or_default();
+        let mut fields = Vec::new();
+        let mut initializers = Vec::new();
+        let mut names = Vec::new();
+        for s in state {
+            let StmtNode::Let { name: field, ty, value } = &s.node else { continue };
+            let resolved = ty
+                .clone()
+                .or_else(|| declared.iter().find(|(n, _)| n == field).map(|(_, t)| t.clone()))
+                .or_else(|| literal_type(value));
+            let Some(resolved) = resolved else {
+                return format!(
+                    "compile_error!({:?});\n",
+                    format!("sandbox serverlet '{name}': state '{field}' has no type the compiler can name; add a type annotation")
+                );
+            };
+            let value = self.compile_expr(value);
+            initializers.push(format!("        let mut {field}: {} = {value};", self.compile_type(&resolved)));
+            if !names.contains(field) {
+                fields.push(format!("    {field}: {},", self.compile_type(&resolved)));
+                names.push(field.clone());
+            }
+        }
+        let rewrite_fields: std::collections::BTreeMap<String, bool> =
+            names.iter().map(|field| (field.clone(), false)).collect();
+
+        let mut exports = Vec::new();
+        for h in handlers {
+            // Handler parameters shadow state of the same name, as they do in-process.
+            let mut scope = std::collections::HashSet::new();
+            for p in &h.params {
+                scope.insert(p.name.clone());
+            }
+            self.state_rewrite = Some(StateRewrite {
+                fields: rewrite_fields.clone(),
+                scopes: vec![scope],
+                receiver: "__state",
+            });
+            let body = self.compile_expr(&h.body);
+            self.state_rewrite = None;
+
+            let mut params = Vec::new();
+            let mut unpack = String::new();
+            for p in &h.params {
+                match p.ty {
+                    Type::Str => {
+                        params.push(format!("{}_pointer: i32", p.name));
+                        params.push(format!("{}_length: i32", p.name));
+                        unpack.push_str(&format!(
+                            "    let {0} = __orch_unpack({0}_pointer, {0}_length);\n",
+                            p.name
+                        ));
+                    }
+                    Type::Bool => {
+                        params.push(format!("{}_flag: i32", p.name));
+                        unpack.push_str(&format!("    let {0} = {0}_flag != 0;\n", p.name));
+                    }
+                    _ => params.push(format!("{}: {}", p.name, self.compile_type(&p.ty))),
+                }
+            }
+            let (returns, open, close) = match h.return_type {
+                Type::Void => (String::new(), String::new(), String::new()),
+                Type::Str => (" -> i64".to_string(), "__orch_pack(".to_string(), ")".to_string()),
+                Type::Bool => (" -> i32".to_string(), "(".to_string(), ") as i32".to_string()),
+                _ => (format!(" -> {}", self.compile_type(&h.return_type)), String::new(), String::new()),
+            };
+            exports.push(format!(
+                "#[unsafe(no_mangle)]\npub extern \"C\" fn {hname}({params}){returns} {{\n{unpack}    {open}__orch_state(|__state| {{ {body} }}){close}\n}}",
+                hname = h.name,
+                params = params.join(", "),
+                returns = returns,
+                unpack = unpack,
+                open = open,
+                body = body,
+                close = close,
+            ));
+        }
+
+        format!(
+"// Generated by Orchestrate Compiler — sandbox guest for serverlet '{name}'\n\
+#![allow(unused_variables)]\n#![allow(dead_code)]\n#![allow(unused_imports)]\n#![allow(unused_parens)]\n#![allow(unused_mut)]\n#![allow(improper_ctypes_definitions)]\n\n\
+{preamble}\n\
+/// The serverlet's state. It lives here, inside the guest, for as long as the instance\n\
+/// does, so one call sees what the call before it left.\n\
+struct __OrchState {{\n{fields}\n}}\n\
+impl __OrchState {{\n    fn new() -> __OrchState {{\n{initializers}\n        __OrchState {{ {names} }}\n    }}\n}}\n\
+thread_local! {{ static __ORCH_STATE: std::cell::RefCell<__OrchState> = std::cell::RefCell::new(__OrchState::new()); }}\n\
+fn __orch_state<R>(body: impl FnOnce(&mut __OrchState) -> R) -> R {{\n    __ORCH_STATE.with(|cell| body(&mut cell.borrow_mut()))\n}}\n\n\
+/// The allocator the host shares, so a string is allocated and released on one side.\n\
+#[unsafe(no_mangle)]\npub extern \"C\" fn orch_alloc(len: i32) -> i32 {{\n    \
+if len <= 0 {{ return 0; }}\n    \
+let layout = std::alloc::Layout::from_size_align(len as usize, 1).expect(\"layout\");\n    \
+unsafe {{ std::alloc::alloc(layout) as i32 }}\n}}\n\
+#[unsafe(no_mangle)]\npub extern \"C\" fn orch_free(ptr: i32, len: i32) {{\n    \
+if ptr == 0 || len <= 0 {{ return; }}\n    \
+let layout = std::alloc::Layout::from_size_align(len as usize, 1).expect(\"layout\");\n    \
+unsafe {{ std::alloc::dealloc(ptr as *mut u8, layout) }}\n}}\n\
+/// A string the host wrote into guest memory; the host owns that allocation.\n\
+fn __orch_unpack(ptr: i32, len: i32) -> String {{\n    \
+if ptr == 0 || len <= 0 {{ return String::new(); }}\n    \
+let bytes = unsafe {{ std::slice::from_raw_parts(ptr as *const u8, len as usize) }};\n    \
+String::from_utf8_lossy(bytes).into_owned()\n}}\n\
+/// A string for the host, as (pointer << 32) | length. The host reads it and hands the\n\
+/// allocation back through `orch_free`.\n\
+fn __orch_pack(text: String) -> i64 {{\n    \
+let bytes = text.into_bytes();\n    \
+if bytes.is_empty() {{ return 0; }}\n    \
+let pointer = orch_alloc(bytes.len() as i32);\n    \
+unsafe {{ std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer as *mut u8, bytes.len()) }};\n    \
+((pointer as i64) << 32) | bytes.len() as i64\n}}\n\n{exports}\n",
             name = name,
             preamble = runtime_preamble(true, false),
+            fields = fields.join("\n"),
+            initializers = initializers.join("\n"),
+            names = names.join(", "),
             exports = exports.join("\n\n")
         )
+    }
+}
+
+/// The type of a literal initializer, for state whose type nothing else supplies — a
+/// serverlet inside an imported module, whose body the typechecker does not walk.
+fn literal_type(value: &crate::ast::Expr) -> Option<Type> {
+    match &value.node {
+        ExprNode::Literal(crate::ast::Literal::Int(_)) => Some(Type::Int),
+        ExprNode::Literal(crate::ast::Literal::Float(_)) => Some(Type::Float),
+        ExprNode::Literal(crate::ast::Literal::Str(_)) => Some(Type::Str),
+        ExprNode::Literal(crate::ast::Literal::Bool(_)) => Some(Type::Bool),
+        ExprNode::StringInterp { .. } => Some(Type::Str),
+        ExprNode::Unary { operand, .. } => literal_type(operand),
+        ExprNode::ArrayLiteral(items) => {
+            let inner = literal_type(items.first()?)?;
+            Some(Type::Array(Box::new(inner), Vec::new()))
+        }
+        _ => None,
     }
 }
 

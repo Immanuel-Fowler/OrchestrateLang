@@ -34,6 +34,28 @@ pub fn builtin_tokio() -> Dependency {
     }
 }
 
+/// The WebAssembly runtime, added only to a program that loads a wasm module or sandboxes
+/// a serverlet. It is a large dependency, so a program that does neither never sees it.
+/// Default features are off: the generated host compiles and runs modules and needs
+/// neither the component model nor the pooling allocator.
+pub fn builtin_wasmtime() -> Dependency {
+    Dependency {
+        name: "wasmtime".into(),
+        spec: BTreeMap::from([
+            ("version".to_string(), Value::Str("37".into())),
+            ("default-features".to_string(), Value::Bool(false)),
+            (
+                "features".to_string(),
+                Value::Array(vec![
+                    Value::Str("cranelift".into()),
+                    Value::Str("runtime".into()),
+                    Value::Str("std".into()),
+                ]),
+            ),
+        ]),
+    }
+}
+
 /// Separates a sidecar's `[dependencies]` section from its signatures. The section's lines
 /// are blanked rather than removed, so signature diagnostics keep their line numbers.
 pub fn split_sidecar(text: &str) -> (String, Option<String>) {

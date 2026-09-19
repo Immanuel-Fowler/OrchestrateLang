@@ -1,14 +1,13 @@
 # Sandboxed Serverlets — Design & Build Plan
 
-> Status: **🚧 IN PROGRESS — steps 1–2 of 8 shipped.** The `sandbox(...)` syntax
-> parses and validates (step 1), and each sandboxed serverlet's handler logic is
-> now codegen'd into a standalone WASM guest crate that the driver compiles to a
-> `wasm32-wasip1` `.wasm` artifact (step 2). The serverlet still runs **in-process**
-> and the compiler warns loudly that containment is not yet active — the `.wasm` is
-> built but not yet loaded. The heavy lift — running the guest under `wasmtime` with
-> memory/time limits (steps 3–7) — is next. Goal: run untrusted or semi-trusted
-> serverlet logic with enforced limits by wrapping audited sandbox technology
-> (`wasmtime`), not by building a sandbox ourselves.
+> Status: **✅ SHIPPED in 0.9.0, except grants (step 7).** `sandbox(...)` parses and
+> validates (step 1), the handlers are codegen'd into a WASM guest crate compiled to
+> `wasm32-wasip1` (step 2), and the orchestrator loads that guest under `wasmtime` and
+> calls it (step 3), with the memory cap (step 4), the per-call timeout via epoch
+> interruption (step 5), and `string` marshaling (step 6) all enforced. State lives in
+> the guest and persists between calls. What remains is step 7: turning a `grant` into a
+> narrow, mediated host function. Until that exists, a `grant` on a sandboxed serverlet
+> is a compile error rather than a hole that opens quietly.
 
 ---
 
@@ -18,7 +17,7 @@
 |---|---|---|---|
 | **Serverlet** | In-process tokio actor | Speed, simplicity (you wrote it, you trust it) | ✅ Shipped |
 | **Secret serverlet** | Separate OS process, talked to via a mirror | **Secrecy + isolation** — orchestrator never holds the code | ✅ Shipped (`secret-serverlets.md`) |
-| **Sandboxed serverlet** | WASM guest (`wasmtime`) | **Containment** — hostile code genuinely can't touch the host | 🚧 This doc |
+| **Sandboxed serverlet** | WASM guest (`wasmtime`) | **Containment** — hostile code genuinely can't touch the host | ✅ Shipped (this doc) |
 | **Landline serverlet** | Foreign runtime (Python, TypeScript, C#, C++) over a pipe or embedded in-process | **Polyglot scripting** — handler bodies written in other languages | 📋 `landline-serverlets.md` |
 
 These solve different problems and are **not** substitutes. *Secret* hides and
@@ -212,24 +211,24 @@ two sides: the grant declares intent; the wasmtime linker enforces it.
    persistence and actually loading the `.wasm` are step 3. Primitives only
    (non-primitive handler types emit a clear `compile_error!`).
 
-3. **Host-side wasmtime wiring for primitive handlers.**
+3. ✅ **Host-side wasmtime wiring for primitive handlers. (DONE)**
    Add `wasmtime` to the generated `Cargo.toml` (only when a sandboxed serverlet
    exists). In the actor loop, replace the inline handler call with: instantiate
    the embedded `.wasm`, call the exported guest fn with the message args, return
    the result over `reply_to`. *First end-to-end: a sandboxed serverlet with an
    `int -> int` handler runs in wasm and returns the right value. Runtime test.*
 
-4. **Memory limit enforcement.**
+4. ✅ **Memory limit enforcement. (DONE)**
    Wire `memory_limit` into the wasmtime `Store` via a `ResourceLimiter`. *Test: a
    guest that tries to allocate past the limit traps cleanly and the host surfaces
    a structured error to the caller rather than crashing.*
 
-5. **Timeout enforcement (epoch interruption).**
+5. ✅ **Timeout enforcement (epoch interruption). (DONE)**
    Wire `timeout` to epoch deadlines + a background epoch-bumping timer. *Test: a
    guest that loops forever is interrupted at ~timeout and the caller gets a
    timeout error.*
 
-6. **`string` marshaling across the boundary.**
+6. ✅ **`string` marshaling across the boundary. (DONE)**
    ptr+len protocol into guest linear memory. *Test: `string -> string` handler
    round-trips correctly.*
 
@@ -240,7 +239,7 @@ two sides: the grant declares intent; the wasmtime linker enforces it.
    can read a granted path and CANNOT read a non-granted one (the host fn doesn't
    exist for it).*
 
-8. **Docs.** Update `../language-reference.md` with the sandboxed serverlet section
+8. ✅ **Docs. (DONE)** Update `../language-reference.md` with the sandboxed serverlet section
    and the precise, honest security statement from §2. Flip the
    `../roadmap.md` entry to **[SHIPPED]**.
 

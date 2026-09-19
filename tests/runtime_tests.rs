@@ -474,10 +474,10 @@ fn benchmark_programs_typecheck() {
 }
 
 #[test]
-fn runtime_sandbox_guest_compiles_to_wasm() {
-    // Step 2: a sandboxed serverlet's handler logic must compile to a wasm32-wasip1
-    // artifact. (Host integration via wasmtime is step 3; for now the serverlet
-    // still runs in-process and the compiler warns about it.)
+fn runtime_sandbox_serverlet_runs_in_wasm_with_state() {
+    // A sandboxed serverlet keeps state between calls, carries strings both ways, and
+    // does it from inside the guest: the artifact must exist and the answers must be the
+    // ones the handlers compute.
     let test_name = "sandbox_wasm";
     let tmp = std::env::temp_dir().join(format!("orch_runtime_{}", test_name));
     let _ = fs::remove_dir_all(&tmp);
@@ -490,10 +490,13 @@ serverlet Plugin sandbox(memory_limit: "64mb", timeout: "5s") {
         count = count + n
         return count
     }
+    on shout(text: string) -> string { return text + "!" }
 }
 orchestrator main() {
     let p = start Plugin()
     print(to_string(p.tally(7)))
+    print(to_string(p.tally(5)))
+    print(p.shout("quiet"))
     stop_orch()
 }
 "#).unwrap();
@@ -503,17 +506,75 @@ orchestrator main() {
         .output()
         .expect("failed to run orchestrate");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(),
-        "compile/run failed:\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&out.stdout), stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "compile/run failed:\nstdout: {}\nstderr: {}", stdout, stderr);
 
-    // The WASM guest artifact must exist.
     let wasm = tmp.join(".orch_cache/sandbox_Plugin/target/wasm32-wasip1/release/sandbox_Plugin.wasm");
     assert!(wasm.exists(), "expected wasm guest artifact at {:?}", wasm);
 
-    // And the honesty warning must be present (containment not yet active).
-    assert!(stderr.contains("WITHOUT ISOLATION"),
-        "expected the no-isolation warning in stderr, got: {}", stderr);
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.starts_with("[orchestrate]")).collect();
+    // 12, not 5, is the proof that the guest kept its state between the two calls.
+    assert_eq!(lines, vec!["7", "12", "quiet!"], "stdout: {}", stdout);
+    // Containment is real now, so nothing should claim otherwise.
+    assert!(!stderr.contains("WITHOUT ISOLATION"), "stale no-isolation warning: {}", stderr);
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn runtime_sandbox_contains_a_runaway_guest() {
+    // The two limits a sandbox promises: a guest that will not return is interrupted, and
+    // a guest that allocates without bound is stopped. Both leave the host running and
+    // the serverlet usable, because a trapped guest is replaced rather than kept.
+    let test_name = "sandbox_limits";
+    let tmp = std::env::temp_dir().join(format!("orch_runtime_{}", test_name));
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(&tmp).unwrap();
+    let src_file = tmp.join("test.orch");
+    fs::write(&src_file, r#"
+serverlet Hostile sandbox(memory_limit: "16mb", timeout: "300ms") {
+    let calls = 0
+    on spin() -> int {
+        while true { calls = calls + 1 }
+        return calls
+    }
+    on devour() -> int {
+        let blob = []
+        while true { append(blob, 1) }
+        return 1
+    }
+    on behave(n: int) -> int { return n + 1 }
+}
+orchestrator main() {
+    let h = start Hostile()
+    print(to_string(h.behave(1)))
+    print(to_string(h.spin()))
+    print(to_string(h.behave(2)))
+    print(to_string(h.devour()))
+    print(to_string(h.behave(3)))
+    print("alive")
+    stop_orch()
+}
+"#).unwrap();
+
+    let started = std::time::Instant::now();
+    let out = Command::new(orchestrate_bin())
+        .args(["run", src_file.to_str().unwrap()])
+        .output()
+        .expect("failed to run orchestrate");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "run failed:\nstdout: {}\nstderr: {}", stdout, stderr);
+
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.starts_with("[orchestrate]")).collect();
+    // The two contained calls answer with a default; the calls around them still work,
+    // which is what "the host survives" has to mean.
+    assert_eq!(lines, vec!["2", "0", "3", "0", "4", "alive"], "stdout: {}\nstderr: {}", stdout, stderr);
+    assert!(stderr.contains("ran past its timeout"), "expected a timeout report: {}", stderr);
+    assert!(stderr.contains("memory allocation") || stderr.contains("stopped itself"),
+        "expected the guest's own failure reported: {}", stderr);
+    // An unbounded loop that was actually stopped cannot have taken long.
+    assert!(started.elapsed() < std::time::Duration::from_secs(300), "the run did not finish promptly");
+    let _ = fs::remove_dir_all(&tmp);
 }
 
 #[test]
@@ -676,4 +737,87 @@ orchestrator main() {
         assert!(stderr.contains("interface mismatch"), "{}", stderr);
         assert!(stderr.contains("echo(int)->int"), "{}", stderr);
     }
+}
+
+#[test]
+fn runtime_wasm_foreign_module_is_called_and_checked() {
+    // A module someone else compiled, loaded by `load_foreign "wasm"`: every declared
+    // type crosses, and a sidecar that disagrees with the module's export table is a
+    // build error rather than a surprise at run time.
+    let tmp = std::env::temp_dir().join("orch_runtime_wasm_foreign");
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(tmp.join("mathmod")).unwrap();
+
+    let guest = tmp.join("math.rs");
+    fs::write(&guest, r#"
+#[unsafe(no_mangle)]
+pub extern "C" fn double(n: i64) -> i64 { n * 2 }
+#[unsafe(no_mangle)]
+pub extern "C" fn scale(x: f64, by: f64) -> f64 { x * by }
+#[unsafe(no_mangle)]
+pub extern "C" fn flip(b: i32) -> i32 { if b == 0 { 1 } else { 0 } }
+#[unsafe(no_mangle)]
+pub extern "C" fn orch_alloc(len: i32) -> i32 {
+    if len <= 0 { return 0; }
+    let layout = std::alloc::Layout::from_size_align(len as usize, 1).unwrap();
+    unsafe { std::alloc::alloc(layout) as i32 }
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn orch_free(ptr: i32, len: i32) {
+    if ptr == 0 || len <= 0 { return; }
+    let layout = std::alloc::Layout::from_size_align(len as usize, 1).unwrap();
+    unsafe { std::alloc::dealloc(ptr as *mut u8, layout) }
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn shout(ptr: i32, len: i32) -> i64 {
+    let input = unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) };
+    let out = format!("{}!", String::from_utf8_lossy(input)).into_bytes();
+    let out_ptr = orch_alloc(out.len() as i32);
+    unsafe { std::ptr::copy_nonoverlapping(out.as_ptr(), out_ptr as *mut u8, out.len()) };
+    ((out_ptr as i64) << 32) | out.len() as i64
+}
+"#).unwrap();
+    let wasm = tmp.join("mathmod/math.wasm");
+    let built = Command::new("rustc")
+        .args(["--target", "wasm32-unknown-unknown", "--crate-type", "cdylib", "-O", "-o"])
+        .arg(&wasm)
+        .arg(&guest)
+        .output()
+        .expect("failed to run rustc");
+    assert!(built.status.success(), "building the wasm module failed: {}", String::from_utf8_lossy(&built.stderr));
+
+    fs::write(tmp.join("mathmod/module.orch"), "load_foreign \"wasm\" \"./math.wasm\"\n").unwrap();
+    fs::write(tmp.join("mathmod/math.orch_ffi"), "double(n: int) -> int\nscale(x: float, by: float) -> float\nflip(b: bool) -> bool\nshout(text: string) -> string\n").unwrap();
+    let src_file = tmp.join("main.orch");
+    fs::write(&src_file, r#"
+use module math: "./mathmod"
+orchestrator main() {
+    print(to_string(math.double(21)))
+    print(to_string(math.scale(1.5, 4.0)))
+    print(to_string(math.flip(false)))
+    print(math.shout("hello"))
+    stop_orch()
+}
+"#).unwrap();
+
+    let out = Command::new(orchestrate_bin())
+        .args(["run", src_file.to_str().unwrap()])
+        .output()
+        .expect("failed to run orchestrate");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "run failed:\nstdout: {}\nstderr: {}", stdout, String::from_utf8_lossy(&out.stderr));
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.starts_with("[orchestrate]")).collect();
+    assert_eq!(lines, vec!["42", "6", "true", "hello!"], "stdout: {}", stdout);
+
+    // A sidecar that disagrees with the module is caught by `check`, before any build.
+    fs::write(tmp.join("mathmod/math.orch_ffi"), "double(n: float) -> int\n").unwrap();
+    let checked = Command::new(orchestrate_bin())
+        .args(["check", src_file.to_str().unwrap()])
+        .output()
+        .expect("failed to run orchestrate check");
+    let report = format!("{}{}", String::from_utf8_lossy(&checked.stdout), String::from_utf8_lossy(&checked.stderr));
+    assert!(!checked.status.success(), "a mismatched sidecar must not check clean: {}", report);
+    assert!(report.contains("declared to take (f64)") && report.contains("exports it taking (i64)"),
+        "the error should name both sides: {}", report);
+    let _ = fs::remove_dir_all(&tmp);
 }

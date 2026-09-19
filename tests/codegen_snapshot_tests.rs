@@ -64,6 +64,9 @@ fn compile_sandbox_guest(source: &str) -> String {
     let mut tc = typechecker::TypeChecker::new();
     tc.type_check(&ast).expect("typecheck failed");
     let mut gen = codegen::Codegen::new(std::collections::HashSet::new());
+    // As the driver does: the guest's state becomes struct fields, which need the types
+    // the typechecker worked out.
+    gen.serverlet_state_types = tc.serverlet_state.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     let _ = gen.generate(&ast, true);
     gen.sandbox_programs.first().map(|(_, src)| src.clone())
         .expect("expected a sandbox guest program")

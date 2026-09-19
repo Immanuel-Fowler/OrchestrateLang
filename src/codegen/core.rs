@@ -277,6 +277,9 @@ pub(super) struct StateRewrite {
     /// Field name to whether the field boxes a closure, which changes how it is read.
     pub fields: std::collections::BTreeMap<String, bool>,
     pub scopes: Vec<HashSet<String>>,
+    /// What the fields hang off: the library's program struct, or a sandbox guest's
+    /// state, which lives on the guest side of the boundary.
+    pub receiver: &'static str,
 }
 
 pub struct Codegen {
@@ -301,6 +304,12 @@ pub struct Codegen {
     /// event handlers, and worker bodies. A host call or trigger there uses the binding
     /// instead of looking the instance up. Off inside closures, which may outlive the tick.
     pub(super) context_bound: bool,
+    /// The program loads a wasm module or sandboxes a serverlet, so the entry file
+    /// carries the wasmtime host: the engine, the guest wrapper, and the limits.
+    pub needs_wasm: bool,
+    /// Each serverlet's state and its types, from the typechecker. A sandboxed
+    /// serverlet's state becomes fields of a struct inside its guest.
+    pub serverlet_state_types: std::collections::BTreeMap<String, Vec<(String, Type)>>,
     /// Some C-ABI sidecar in the program uses `handle`, so the entry file defines the type.
     pub emit_handle_type: bool,
     /// Foreign functions with a handle parameter, by the name calls use, and which of
@@ -328,6 +337,8 @@ impl Codegen {
             state_types: std::collections::BTreeMap::new(),
             state_rewrite: None,
             context_bound: false,
+            needs_wasm: false,
+            serverlet_state_types: std::collections::BTreeMap::new(),
             emit_handle_type: false,
             foreign_handle_params: std::collections::HashMap::new(),
             sandbox_programs: Vec::new(),
@@ -633,9 +644,10 @@ impl Codegen {
 
     /// A name read as a value: a local, a program field, or a boxed closure by reference.
     pub(super) fn read_name(&self, name: &str) -> String {
+        let receiver = self.state_rewrite.as_ref().map_or("", |rewrite| rewrite.receiver);
         match self.state_field(name) {
-            Some(true) => format!("(&__program.{name})"),
-            Some(false) => format!("__program.{name}"),
+            Some(true) => format!("(&{receiver}.{name})"),
+            Some(false) => format!("{receiver}.{name}"),
             None => name.to_string(),
         }
     }
@@ -651,8 +663,9 @@ impl Codegen {
 
     /// A name in call position; a program field needs parentheses to be called.
     pub(super) fn call_name(&self, name: &str) -> String {
+        let receiver = self.state_rewrite.as_ref().map_or("", |rewrite| rewrite.receiver);
         match self.state_field(name) {
-            Some(_) => format!("(__program.{name})"),
+            Some(_) => format!("({receiver}.{name})"),
             None => name.to_string(),
         }
     }
@@ -732,6 +745,9 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
         } else { preamble });
         if is_main && self.emit_handle_type {
             code.push_str(HANDLE_TYPE);
+        }
+        if is_main && self.needs_wasm {
+            code.push_str(include_str!("wasm_host.rs.txt"));
         }
 
         if self.has_secret {

@@ -259,7 +259,7 @@ impl Codegen {
                     // Hook bodies run after the bindings are packed, so they read the struct.
                     let mut scope = std::collections::HashSet::new();
                     scope.insert(param.clone());
-                    self.state_rewrite = Some(StateRewrite { fields: rewrite_fields.clone(), scopes: vec![scope] });
+                    self.state_rewrite = Some(StateRewrite { fields: rewrite_fields.clone(), scopes: vec![scope], receiver: "__program" });
                     let compiled = self.compile_expr(&body);
                     self.state_rewrite = None;
                     fixed.push_str(&format!("{{ let {} = __dt; {}; }}\n", param, compiled));
@@ -269,7 +269,7 @@ impl Codegen {
                     let mut scope = std::collections::HashSet::new();
                     scope.insert(param.clone());
                     if let Some(p) = &input { scope.insert(p.name.clone()); }
-                    self.state_rewrite = Some(StateRewrite { fields: rewrite_fields.clone(), scopes: vec![scope] });
+                    self.state_rewrite = Some(StateRewrite { fields: rewrite_fields.clone(), scopes: vec![scope], receiver: "__program" });
                     let compiled = self.compile_expr(&body);
                     self.state_rewrite = None;
                     if input.is_some() || return_type != Type::Void {

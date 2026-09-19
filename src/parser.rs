@@ -393,7 +393,24 @@ impl Parser {
             let _ = self.match_token(TokenKind::Comma);
         }
         self.consume(TokenKind::RParen, "Expected ')' to close sandbox config")?;
-        Ok(crate::ast::SandboxConfig { memory_limit, timeout })
+        if memory_limit.is_empty() || timeout.is_empty() {
+            return Err("sandbox(...) needs both 'memory_limit' and 'timeout'".into());
+        }
+        let config = crate::ast::SandboxConfig { memory_limit, timeout };
+        // Checked here so a typo is a parse error, not a limit that silently misses.
+        if config.memory_bytes().is_none() {
+            return Err(format!(
+                "Invalid sandbox memory_limit '{}' (expected a size such as \"64mb\" or \"512kb\")",
+                config.memory_limit
+            ));
+        }
+        if config.timeout_ms().is_none() {
+            return Err(format!(
+                "Invalid sandbox timeout '{}' (expected a duration such as \"5s\" or \"250ms\")",
+                config.timeout
+            ));
+        }
+        Ok(config)
     }
 
     fn parse_handler(&mut self, foreign: bool) -> Result<Handler, String> {

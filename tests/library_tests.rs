@@ -1102,3 +1102,43 @@ fn main() {
 "#);
     assert!(output.is_empty(), "{output}");
 }
+
+/// A sandboxed serverlet under a Rust host: the guest is staged into the generated crate,
+/// embedded, and driven through `tick_sync`, with its state living inside the guest across
+/// ticks the way it does for a standalone program.
+#[test]
+fn library_sandboxed_serverlet_runs_under_a_host() {
+    let root = root("sandbox_library");
+    build(&root, r#"
+host world { fn record(n: int) }
+serverlet Plugin sandbox(memory_limit: "16mb", timeout: "300ms") {
+    let total = 0
+    on tally(n: int) -> int {
+        total = total + n
+        return total
+    }
+}
+let p = start Plugin()
+on_tick(dt: float) { world.record(p.tally(2)) }
+orchestrator main() {}
+"#);
+    // The guest has to travel with the crate, not be left behind in the build cache.
+    assert!(root.join("scripts/src/sandbox_Plugin.wasm").is_file(), "the guest was not staged into the crate");
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<i64>>>);
+impl scripts::Host for Host { fn world_record(&self, n: i64) -> Result<(), String> { self.0.lock().unwrap().push(n); Ok(()) } }
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut scripts = scripts::start(runtime.handle(), Host(log.clone())).unwrap();
+    scripts.ready_blocking(&runtime).unwrap();
+    for _ in 0..3 { scripts.tick_sync(&runtime, 0.1).unwrap(); }
+    scripts.shutdown_blocking(&runtime).unwrap();
+    // 2, 4, 6 rather than 2, 2, 2: the guest kept its state between ticks.
+    assert_eq!(*log.lock().unwrap(), vec![2, 4, 6]);
+    println!("sandboxed serverlet ran under the host");
+}
+"#);
+    assert!(output.contains("sandboxed serverlet ran under the host"), "{output}");
+}

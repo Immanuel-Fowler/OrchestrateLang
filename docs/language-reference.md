@@ -880,12 +880,13 @@ All functions and tasks in the loaded files become part of the module namespace 
 
 ### 6.4 Calling Foreign Functions (`load_foreign`)
 
-OrchestrateLang loads Rust, C, C++, Zig, Swift, and TypeScript functions into a module's
-namespace. Native C-ABI calls are in-process and stateless. TypeScript uses a generated,
-synchronous executable bridge and is also stateless; use a landline serverlet for persistent
-state. C, C++, Zig, and Swift functions currently take and return only `int`, `float`,
-`bool`, and `void`. TypeScript supports `int`, `float`, `bool`, `string`, arrays, and
-same-file structs through its Bun bridge. More C-ABI languages are planned
+OrchestrateLang loads Rust, C, C++, Zig, Swift, TypeScript, and WebAssembly functions into
+a module's namespace. Native C-ABI calls are in-process and stateless. TypeScript uses a
+generated, synchronous executable bridge and is also stateless; use a landline serverlet
+for persistent state. C, C++, Zig, and Swift functions take and return `int`, `float`,
+`bool`, `string`, `handle`, and `void`. TypeScript supports `int`, `float`, `bool`,
+`string`, arrays, and same-file structs through its Bun bridge. WebAssembly modules take
+and return `int`, `float`, `bool`, `string`, and `void`. More C-ABI languages are planned
 ([roadmap](roadmap.md) §1b).
 
 #### Foreign Rust (`load_foreign "rust"`)
@@ -1123,7 +1124,47 @@ through `swiftc -print-target-info`.
 | `string` | `String` / `&str` |
 | `bool` | `bool` |
 
+#### Foreign WebAssembly (`load_foreign "wasm"`)
 
+A `.wasm` module is already compiled, so there is no toolchain to install and no language
+to name — whatever produced it is the author's business:
+
+```orchestrate
+// module.orch
+load_foreign "wasm" "./math.wasm"
+```
+
+```
+// math.orch_ffi — the contract, checked against the module itself
+double(n: int) -> int
+scale(x: float, by: float) -> float
+shout(text: string) -> string
+```
+
+The compiler reads the module's export table and checks every declared signature against
+it, so a name that is not exported, or a type that does not line up, is a build error that
+names both sides. `orchestrate check` runs the same check without building anything. The
+module is embedded in the program and instantiated on first use.
+
+**What the module can reach: nothing.** Imports are denied by default, so a module that
+asks the host for anything traps instead of getting it. The module's linear memory is its
+own and persists for the life of the program, the way a native module's statics would.
+
+**Types.** `int` is `i64`, `float` is `f64`, `bool` is an `i32` that is 0 or 1, and `void`
+is no result. A `string` is a pointer and a length into the module's memory, so a module
+that carries strings must also export the allocator both sides use:
+
+```
+orch_alloc(i32) -> i32     // allocate n bytes, return the pointer
+orch_free(i32, i32)        // release a pointer and length
+```
+
+A returned string is `(pointer << 32) | length`, allocated with `orch_alloc`; the host
+copies it out and hands it back with `orch_free`. Declare a string without those exports
+and the compiler says so. A call that traps is logged and yields the return type's default.
+
+To contain a module's compute and memory as well as its reach, use a sandboxed serverlet
+(§6.8a), which adds a memory cap and a timeout.
 
 ### 6.5 Pattern A — Combined Process (Plain Functions)
 
@@ -1313,7 +1354,7 @@ spawn it on first use and shut it down when the orchestrator stops.
 - A secret serverlet runs as the **same OS user** with the **same privileges** as
   the orchestrator. It is **not** a security sandbox. Use it for code you trust and
   want decoupled or private; to *contain untrusted code*, use a sandboxed serverlet
-  (planned — see `design/sandboxed-serverlets.md`).
+  (§6.8a).
 
 **v1 limitations:**
 
@@ -1328,6 +1369,71 @@ spawn it on first use and shut it down when the orchestrator stops.
 - `print(...)` inside a secret serverlet writes to **stderr** (its stdout is the IPC
   channel).
 - Secret serverlet names must be unique across the program.
+
+---
+
+### 6.8a Sandboxed Serverlets (Contained)
+
+A **sandboxed serverlet** runs its handlers inside a WebAssembly guest, under a memory cap
+and a wall-clock timeout, with no way to reach the host. Add `sandbox(...)` after the
+serverlet name:
+
+```orchestrate
+serverlet Plugin sandbox(memory_limit: "64mb", timeout: "5s") {
+    let count = 0
+
+    on tally(n: int) -> int {
+        count = count + n
+        return count
+    }
+}
+
+orchestrator main() {
+    let p = start Plugin()
+    print(to_string(p.tally(7)))    // 7
+    print(to_string(p.tally(5)))    // 12 — state persists inside the guest
+    stop_orch()
+}
+```
+
+From the caller's side it is identical to any other serverlet. The compiler emits the
+handlers as their own crate, compiles it to `wasm32-wasip1`, embeds the result in the
+program, and runs each call through [wasmtime](https://wasmtime.dev).
+
+**What is contained, precisely.** The guarantee is wasmtime's, not ours:
+
+- **Memory** — `memory_limit` caps the guest's linear memory. A guest that allocates past
+  it fails that call.
+- **Time** — `timeout` bounds a single call. A guest that will not return is interrupted.
+- **Reach** — the guest gets no imports beyond two diagnostic ones (below). No files, no
+  network, no clock, no environment, no host functions. Anything else it imports traps
+  when called.
+
+**What is not contained:** whatever the guest computes from what you pass it. A sandbox
+bounds a guest's compute, memory, and reach; it does not make its answers trustworthy.
+
+**A call that fails is contained too.** When a guest exceeds a limit or stops itself, the
+call is logged, the caller gets the return type's default, and the program keeps running.
+The guest is then replaced, because a trap abandons it mid-call rather than unwinding it
+— which also means **a failed call resets the serverlet's state**.
+
+**Diagnostics.** The guest is given exactly two host functions, neither a capability: one
+that carries its own stderr out, so a panic or an allocation failure is reported as
+`[orchestrate] sandbox guest: ...`, and one that lets it stop itself. They exist so a
+contained failure can say what it was.
+
+**v1 limitations:**
+
+- Handler parameters and returns support `int`, `float`, `bool`, `string`, and `void`.
+  Arrays and structs are not carried yet.
+- `grant` is not supported on a sandboxed serverlet, and neither is `on_crash`; both are
+  compile errors. A grant would be a deliberate hole in the wall and has to be built as
+  one.
+- State whose type cannot be inferred needs an annotation, which is always true for a
+  serverlet declared inside an imported module.
+- Building one needs the `wasm32-wasip1` target (`rustup target add wasm32-wasip1`), and
+  the program gains a `wasmtime` dependency. A program with no sandboxed serverlet and no
+  wasm module gains neither.
 
 ---
 ---

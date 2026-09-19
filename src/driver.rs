@@ -92,23 +92,43 @@ fn foreign_lib_name(language: &str, index: usize, path: &Path) -> String {
     format!("orch_{}_{}_{}", language, index, stem)
 }
 
-/// Warn loudly for any `sandbox(...)` serverlet: parsing/validation is in place,
-/// but WASM containment is not yet implemented, so the serverlet currently runs
-/// in-process WITHOUT isolation. Surfacing this prevents a false sense of safety.
-fn warn_sandbox_serverlets(stmts: &[ast::Stmt]) {
-    for stmt in stmts {
-        if let ast::StmtNode::Serverlet { name, sandbox: Some(_), .. } = &stmt.node {
-            eprintln!(
-                "[orchestrate] warning: serverlet '{}' is declared `sandbox(...)`, but WASM containment is not yet implemented. It currently runs IN-PROCESS WITHOUT ISOLATION. Do not rely on it to contain untrusted code.",
-                name
-            );
-        }
-    }
+/// Whether any serverlet here is sandboxed, which puts the wasmtime host in the
+/// generated crate and makes the build compile a guest for each one.
+fn has_sandbox_serverlets(stmts: &[ast::Stmt]) -> bool {
+    stmts.iter().any(|stmt| matches!(&stmt.node, ast::StmtNode::Serverlet { sandbox: Some(_), .. }))
 }
 
-/// Write a sandboxed serverlet's WASM guest crate under `.orch_cache/sandbox_<name>/`
-/// and compile it to `wasm32-wasip1`. Step 2: this proves the guest builds to a
-/// `.wasm` artifact. The artifact is not yet loaded by the orchestrator (step 3).
+/// Read a `load_foreign "wasm"` module and its sidecar, and check the one against the
+/// other. Shared by `check` and the build, so a name or a signature that does not match
+/// the module's export table is reported before anything is compiled.
+fn wasm_sidecar(
+    module_path: &Path,
+    path: &str,
+) -> Result<(Vec<ffi_parser::CSignature>, Vec<u8>, String), String> {
+    let wasm_path = module_path.join(path);
+    let ffi_path = wasm_path.with_extension("orch_ffi");
+    if !ffi_path.exists() {
+        return Err(format!(
+            "load_foreign 'wasm': no sidecar file found at {:?} — create this file to declare the function signatures",
+            ffi_path
+        ));
+    }
+    let bytes = fs::read(&wasm_path)
+        .map_err(|e| format!("load_foreign 'wasm': failed to read {:?}: {}", wasm_path, e))?;
+    let label = wasm_path.file_name().and_then(|s| s.to_str()).unwrap_or("module.wasm").to_string();
+    let module = crate::wasm_module::Module::parse(&bytes)
+        .map_err(|e| format!("load_foreign 'wasm': {:?}: {}", wasm_path, e))?;
+    let content = fs::read_to_string(&ffi_path)
+        .map_err(|e| format!("Failed to read FFI file {:?}: {}", ffi_path, e))?;
+    let file_name = ffi_path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown.orch_ffi");
+    let signatures = ffi_parser::parse_ffi(&content, "wasm", file_name)?;
+    crate::wasm_ffi::check(&signatures, &module, file_name, &label)?;
+    Ok((signatures, bytes, label))
+}
+
+/// Write a sandboxed serverlet's WASM guest crate under `.orch_cache/sandbox_<name>/`,
+/// compile it to `wasm32-wasip1`, and put the `.wasm` beside the generated source, where
+/// the host embeds it with `include_bytes!`.
 fn build_sandbox_guest(cache_dir: &Path, name: &str, lib_src: &str) -> Result<(), String> {
     let crate_name = format!("sandbox_{}", name);
     let crate_dir = cache_dir.join(&crate_name);
@@ -145,7 +165,8 @@ fn build_sandbox_guest(cache_dir: &Path, name: &str, lib_src: &str) -> Result<()
     if !wasm_path.exists() {
         return Err(format!("Sandbox guest '{}' compiled but no .wasm artifact was found at {:?}", name, wasm_path));
     }
-    println!("[orchestrate] Sandbox guest '{}' compiled: {:?}", name, wasm_path);
+    fs::copy(&wasm_path, cache_dir.join("src").join(format!("sandbox_{}.wasm", name)))
+        .map_err(|e| format!("Failed to stage sandbox guest '{}': {}", name, e))?;
     Ok(())
 }
 
@@ -188,7 +209,7 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
     let mut ast = parser.parse()?;
     resolve_landline_sources(&mut ast, input_path.parent().unwrap_or(Path::new(".")))?;
 
-    warn_sandbox_serverlets(&ast);
+    let mut uses_sandbox = has_sandbox_serverlets(&ast);
 
     let mut type_checker = typechecker::TypeChecker::new();
 
@@ -220,7 +241,7 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
             };
             
             let module_stmts = compile_module(&module_path)?;
-            warn_sandbox_serverlets(&module_stmts);
+            uses_sandbox |= has_sandbox_serverlets(&module_stmts);
 
             for m_stmt in &module_stmts {
                 if let ast::StmtNode::TaskDecl { name, .. } = &m_stmt.node {
@@ -288,6 +309,8 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
     // uses handles at all; codegen passes handles by reference and defines the type once.
     let mut handle_params: std::collections::HashMap<String, Vec<bool>> = std::collections::HashMap::new();
     let mut uses_handles = false;
+    // Any wasm module or sandboxed serverlet puts the wasmtime host in the generated crate.
+    let mut uses_wasm = uses_sandbox;
 
     for (local_name, module_stmts, module_path) in &modules_data {
         type_checker.register_module_functions(local_name, module_stmts);
@@ -315,6 +338,19 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
                         let base = sidecar_path.parent().unwrap_or(module_path);
                         let declared = crate::dependencies::parse_section(&section, base, &origin)?;
                         crate::dependencies::merge(&mut extra_dependencies, declared, &origin)?;
+                    }
+                } else if language == "wasm" {
+                    // A missing or mismatched sidecar is reported by codegen below, which
+                    // reads the module itself; here the signatures are registered so calls
+                    // to the module's exports are typed.
+                    let sidecar_path = module_path.join(path).with_extension("orch_ffi");
+                    if let Ok(content) = fs::read_to_string(&sidecar_path) {
+                        let file_name = sidecar_path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown.orch_ffi").to_string();
+                        for signature in ffi_parser::parse_ffi(&content, language, &file_name)? {
+                            if signature.drop { continue; }
+                            let params = signature.params.iter().map(|(_, ty)| ty.clone()).collect();
+                            type_checker.register_foreign_function(local_name, &signature.name, params, signature.ret.clone());
+                        }
                     }
                 } else if matches!(language.as_str(), "c" | "cpp" | "zig" | "swift") {
                     // A missing sidecar is reported by codegen below; here the signatures
@@ -366,6 +402,7 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
     for (local_name, module_stmts, module_path) in modules_data {
         let mut generator = codegen::Codegen::new(all_tasks.clone());
         generator.library = library.is_some();
+        generator.serverlet_state_types = type_checker.serverlet_state.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         generator.host_functions = host_functions.clone();
         // The module's own code calls its foreign functions by bare name.
         let prefix = format!("{}::", local_name);
@@ -391,6 +428,16 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
                     let asset = format!("ffi_{}_{}", local_name, foreign_code.len());
                     crate::typescript::build(&foreign_path, &bundle_dir.join(&asset), &handlers, &module_stmts, true, backend.as_deref())?;
                     foreign_code.push_str(&crate::typescript::ffi_bindings(&asset, &handlers, library.is_some())?);
+                } else if language == "wasm" {
+                    // The module is already compiled, so there is no toolchain to run:
+                    // check the sidecar against its export table, then embed it.
+                    let (signatures, wasm_bytes, label) = wasm_sidecar(&module_path, path)?;
+                    let asset = crate::wasm_ffi::asset_name(&local_name, &foreign_path);
+                    fs::write(cache_dir.join("src").join(format!("{}.wasm", asset)), &wasm_bytes)
+                        .map_err(|e| format!("Failed to stage wasm module: {}", e))?;
+                    foreign_code.push_str(&crate::wasm_ffi::bindings(&signatures, &asset, &label));
+                    foreign_code.push('\n');
+                    uses_wasm = true;
                 } else if matches!(language.as_str(), "c" | "cpp" | "zig" | "swift") {
                     if let Some((program, version_arg, install_hint)) = foreign_toolchain(language) {
                         if Command::new(program).arg(version_arg).output().is_err() {
@@ -457,10 +504,12 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
     }
     let mut generator = codegen::Codegen::new(all_tasks);
     generator.library = library.is_some();
+    generator.serverlet_state_types = type_checker.serverlet_state.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     generator.host_functions = host_functions;
     generator.io_driver_users = io_driver_users;
     generator.foreign_handle_params = handle_params;
     generator.emit_handle_type = uses_handles;
+    generator.needs_wasm = uses_wasm;
     generator.state_types = ast.iter().filter_map(|stmt| match &stmt.node {
         ast::StmtNode::Let { name, .. } => type_checker.global_var_type(name).map(|ty| (name.clone(), ty)),
         _ => None,
@@ -488,6 +537,13 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
         }
     }
 
+    if uses_wasm {
+        crate::dependencies::merge(
+            &mut extra_dependencies,
+            vec![crate::dependencies::builtin_wasmtime()],
+            "a wasm module or sandboxed serverlet",
+        )?;
+    }
     let mut cargo_toml_content = format!(
         "[package]\nname = \"orch_generated\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ntokio = {{ version = \"1.35\", features = [\"full\"] }}\n{}",
         crate::dependencies::emit(extra_dependencies.values().map(|(dependency, _)| dependency))
@@ -780,6 +836,24 @@ pub fn run_check(input_file: &str) -> Result<(), String> {
                         let content = fs::read_to_string(module_path.join(path).with_extension("orch_ffi")).map_err(|e| e.to_string())?;
                         for h in crate::typescript::sidecar(&content)? {
                             type_checker.register_foreign_function(local_name, &h.name, h.params.into_iter().map(|p| p.ty).collect(), h.return_type);
+                        }
+                    } else if language == "wasm" {
+                        // The module itself is the authority on what it exports, so this
+                        // is the same check the build runs.
+                        let (signatures, _, _) = wasm_sidecar(&module_path, path)?;
+                        for signature in signatures {
+                            let params = signature.params.iter().map(|(_, ty)| ty.clone()).collect();
+                            type_checker.register_foreign_function(local_name, &signature.name, params, signature.ret.clone());
+                        }
+                    } else if matches!(language.as_str(), "c" | "cpp" | "zig" | "swift") {
+                        let sidecar_path = module_path.join(path).with_extension("orch_ffi");
+                        if let Ok(content) = fs::read_to_string(&sidecar_path) {
+                            let file_name = sidecar_path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown.orch_ffi").to_string();
+                            for signature in ffi_parser::parse_ffi(&content, language, &file_name)? {
+                                if signature.drop { continue; }
+                                let params = signature.params.iter().map(|(_, ty)| ty.clone()).collect();
+                                type_checker.register_foreign_function(local_name, &signature.name, params, signature.ret.clone());
+                            }
                         }
                     }
                 }

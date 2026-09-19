@@ -86,6 +86,7 @@ flowchart LR
     F --> C["C / C++"]
     F --> Z["Zig"]
     F --> S["Swift"]
+    F --> W["WebAssembly"]
     P --> TSF["TypeScript"]
     L --> PY["Python"]
     L --> TSL["TypeScript"]
@@ -99,6 +100,7 @@ flowchart LR
 | Zig | Native C ABI | A `handle` to a native object, or a serverlet | Shipped |
 | Swift | Native C ABI | A `handle` to a native object, or a serverlet | Shipped |
 | TypeScript | Persistent compiled adapter | Landline serverlet | Shipped |
+| WebAssembly | Any `.wasm` module, checked against its exports | Sandboxed serverlet | Shipped |
 | Python | — | Landline serverlet | Shipped |
 | C# | Native AOT FFI | Landline / embedded runtime | Planned |
 | Go | C archive is possible, with runtime constraints | — | Exploring |
@@ -119,7 +121,7 @@ flowchart TB
     CORE --> IN["in-process<br/>Tokio actor"]
     CORE --> SEC["secret<br/>native child process"]
     CORE --> LAND["landline<br/>foreign runtime process"]
-    CORE -. future containment .-> WASM["sandboxed<br/>WASM guest"]
+    CORE --> WASM["sandboxed<br/>WASM guest"]
 
     LAND --> PY["Python"]
     LAND --> TS["TypeScript"]
@@ -131,7 +133,7 @@ flowchart TB
 | Secret | Separate native executable | Process lifecycle, crash separation, hidden implementation | Shipped |
 | Python landline | Persistent Python process | Existing Python libraries and state | Shipped |
 | TypeScript landline | Compiled TypeScript process | Existing TypeScript code and state | Shipped |
-| Sandboxed | WASM containment | Untrusted or downloaded code | Declaration exists; isolation not shipped |
+| Sandboxed | WASM guest under wasmtime, with a memory cap and a timeout | Untrusted or downloaded code | Shipped |
 | Secret + sandboxed | Process plus WASM containment | Defense in depth | Planned |
 | Serverlet files | Independently packaged/live-editable services | Modding and hot-reload workflows | Exploring |
 | More landlines | C#, C++, and embedded runtimes | Reuse another runtime behind the same client | Planned / exploring |
@@ -312,9 +314,10 @@ application.
 ### Be honest about guarantees
 
 A separate process is not a security sandbox. “Secret” means the implementation is built
-outside the orchestrator binary, not encrypted. A parsed sandbox declaration does not
-provide containment yet. The project aims to name these boundaries precisely and warn
-when an implementation cannot deliver the stronger guarantee.
+outside the orchestrator binary, not encrypted. A sandboxed serverlet does contain its
+guest, but only as well as wasmtime does, and only the guest's compute, memory, and reach
+— not the answers it returns. The project names these boundaries precisely rather than
+letting a word imply the stronger guarantee.
 
 The full rationale is in [Design Philosophy](docs/design-philosophy.md).
 
@@ -567,7 +570,7 @@ There are several serverlet boundaries:
 | `serverlet X secret { ... }` | Separate native child process | Keep implementation out of the main binary and isolate crashes |
 | `serverlet X via python(...)` | Persistent Python process | Stateful Python service and host callbacks |
 | `serverlet X via typescript(...)` | Persistent compiled TypeScript process | Stateful TypeScript service and host callbacks |
-| `serverlet X sandbox(...)` | Currently in-process | Reserved for WASM containment; **not isolated yet** |
+| `serverlet X sandbox(...)` | WASM guest under wasmtime | Untrusted code, with a memory cap and a per-call timeout |
 
 Secret and landline serverlets perform a startup handshake that checks protocol and
 handler signatures. Landlines also support call budgets and policies for late replies.
@@ -755,7 +758,8 @@ If several features seem capable of the same job, start here:
 - Use an in-process serverlet for owned state or serialized access.
 - Use a landline when a Python or TypeScript runtime should stay alive as a service.
 - Use a secret serverlet when the implementation should be a separate native executable.
-- Do not use `sandbox(...)` for untrusted code yet; containment is not implemented.
+- Use `sandbox(...)` for untrusted code: it runs in a WASM guest that reaches nothing,
+  under a memory cap and a per-call timeout.
 - Use library mode when a Rust application, rather than the script, must own time and
   lifecycle.
 
@@ -781,7 +785,9 @@ generated crate lives wherever the host project expects path dependencies.
 
 The most important limitations are behavioral, not cosmetic:
 
-- Sandboxed serverlets do not provide isolation yet; the compiler warns about this.
+- A sandboxed serverlet contains its guest's compute, memory, and reach, as well as
+  wasmtime does. `grant` and `on_crash` are not supported on one yet, and arrays and
+  structs do not cross the boundary.
 - A separate process provides lifecycle and crash separation, not a security boundary.
 - Python and TypeScript are the supported landline runtimes today.
 - Cross-process serverlet and TypeScript values use an explicit protocol and therefore

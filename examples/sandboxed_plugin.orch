@@ -1,0 +1,45 @@
+// A sandboxed serverlet: the handlers run inside a WebAssembly guest under wasmtime,
+// capped at 16mb of memory and 300ms per call, with no way to reach the host.
+//
+// Building this needs the wasm32-wasip1 target:
+//     rustup target add wasm32-wasip1
+//
+// From the caller's side it is an ordinary serverlet — same `start`, same client, same
+// methods. What differs is the boundary the calls cross.
+
+serverlet Plugin sandbox(memory_limit: "16mb", timeout: "300ms") {
+    let total = 0
+
+    on tally(n: int) -> int {
+        total = total + n
+        return total
+    }
+
+    on shout(text: string) -> string {
+        return text + "!"
+    }
+
+    // A handler that will not return. The timeout stops it; the program does not.
+    on spin() -> int {
+        while true { total = total + 1 }
+        return total
+    }
+}
+
+orchestrator main() {
+    let p = start Plugin()
+
+    // State lives inside the guest, so the second call sees what the first one left.
+    print("tally(7)  -> " + to_string(p.tally(7)))
+    print("tally(5)  -> " + to_string(p.tally(5)))
+    print("shout     -> " + p.shout("contained"))
+
+    // Contained: the call is stopped at its timeout, reported, and answered with the
+    // return type's default. A trapped guest is then replaced, which resets its state —
+    // so the tally starts from zero again below.
+    print("spin()    -> " + to_string(p.spin()) + "  (stopped at the timeout)")
+    print("tally(2)  -> " + to_string(p.tally(2)) + "  (state reset by the failed call)")
+
+    print("the orchestrator is still running")
+    stop_orch()
+}

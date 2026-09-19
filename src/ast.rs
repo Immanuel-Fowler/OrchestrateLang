@@ -108,6 +108,42 @@ pub struct SandboxConfig {
     pub timeout: String,
 }
 
+impl SandboxConfig {
+    /// The memory cap in bytes. `1kb` is 1024 bytes, as the units are binary.
+    pub fn memory_bytes(&self) -> Option<u64> {
+        let text = self.memory_limit.trim().to_ascii_lowercase();
+        let (number, scale) = if let Some(n) = text.strip_suffix("gb") {
+            (n, 1024 * 1024 * 1024)
+        } else if let Some(n) = text.strip_suffix("mb") {
+            (n, 1024 * 1024)
+        } else if let Some(n) = text.strip_suffix("kb") {
+            (n, 1024)
+        } else if let Some(n) = text.strip_suffix('b') {
+            (n, 1)
+        } else {
+            (text.as_str(), 1)
+        };
+        let bytes = number.trim().parse::<f64>().ok()? * scale as f64;
+        (bytes.is_finite() && bytes >= 1.0 && bytes <= u64::MAX as f64).then(|| bytes.round() as u64)
+    }
+
+    /// How long one call may run, in milliseconds.
+    pub fn timeout_ms(&self) -> Option<u64> {
+        let text = self.timeout.trim().to_ascii_lowercase();
+        let (number, scale) = if let Some(n) = text.strip_suffix("ms") {
+            (n, 1.0)
+        } else if let Some(n) = text.strip_suffix('m') {
+            (n, 60_000.0)
+        } else if let Some(n) = text.strip_suffix('s') {
+            (n, 1_000.0)
+        } else {
+            return None;
+        };
+        let millis = number.trim().parse::<f64>().ok()? * scale;
+        (millis.is_finite() && millis >= 1.0).then(|| millis.round() as u64)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LandlineConfig {
     pub runtime: String,

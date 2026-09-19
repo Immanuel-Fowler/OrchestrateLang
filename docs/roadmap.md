@@ -35,7 +35,7 @@ serverlet PyScorer via "python" {
 - **C/C++**: via FFI bindings (e.g. `bindgen`-style). Higher complexity — calling conventions, memory ownership across the boundary, build complexity.
 - **Rust**: likely the easiest — could potentially just be another `Combined Process` module pattern, since it's already native.
 
-### 1b. Loaded Foreign Modules (direct function-call style, stateless) — **[SHIPPED for Rust, C, C++, Zig, Swift, TypeScript]**
+### 1b. Loaded Foreign Modules (direct function-call style, stateless) — **[SHIPPED for Rust, C, C++, Zig, Swift, TypeScript, WebAssembly]**
 
 A second, simpler module type: a `module.orch` that directly loads a Rust, C/C++, Zig,
 Swift, or TypeScript source/library, where the **only interactable code from
@@ -87,31 +87,34 @@ See `language-reference.md` §6.4 and §6.5 for full documentation.
 
 ---
 
-## 2. Sandboxed Serverlets (Wrap, Don't Build)
+## 2. Sandboxed Serverlets (Wrap, Don't Build) — **[SHIPPED in 0.9.0, except grants]**
 
 **Problem it solves:** Running untrusted or semi-trusted code (plugins, user-submitted logic, downloaded modules) safely, without OrchestrateLang needing to invent its own sandboxing/security model.
 
-**Core principle:** Wrap existing, audited sandbox technology (e.g. `wasmtime` for WASM) — do not build a custom sandbox. Security guarantees are "as good as the wrapped tech," not better, and docs should be precise about what is/isn't isolated (e.g., compute/memory sandboxing vs. any host functions you expose).
+**Core principle:** Wrap existing, audited sandbox technology — `wasmtime` — do not build a custom sandbox. The guarantee is wasmtime's, no better and no worse, and the docs say exactly what is and is not contained.
 
-**How it would work:**
-
-- Proposed syntax direction — `runtime` is omitted since all sandboxed serverlets run over WASM initially; `memory_limit` and `timeout` are passed through as params:
+**What shipped:**
 
 ```orchestrate
 serverlet UntrustedPlugin sandbox(memory_limit: "64mb", timeout: "5s") {
     on execute(input: string) -> string {
-        // body compiles to a call into the wasm guest
+        // compiled to wasm32-wasip1, run inside a wasmtime instance
     }
 }
 ```
 
-- The compiler generates the `wasmtime` boilerplate: engine/store/instance setup, memory limits, fuel/timeout enforcement, marshaling inputs/outputs across the boundary, and trap/error handling.
-- User writes one line of config; compiler generates the correct integration glue (likely the single biggest codegen feature in the language so far — bigger than typechecker or current codegen work combined).
-- If/when non-WASM runtimes (e.g. Firecracker microVMs) are added later, `runtime` can become an optional param defaulting to `"wasm"` without breaking existing sandboxed serverlets.
+- The handlers become their own crate, compiled to `wasm32-wasip1` and embedded in the program. Each call crosses into a wasmtime instance; from the caller's side nothing changes.
+- `memory_limit` caps linear memory and `timeout` bounds a single call, through epoch interruption. State lives inside the guest and persists between calls.
+- Imports are denied by default. The guest is given two diagnostic functions — one carrying its own stderr out, one letting it stop itself — and nothing else, so a contained failure can still say what it was.
+- A call that exceeds a limit is logged, answered with the return type's default, and the guest is replaced, since a trap abandons it mid-call. That means a failed call resets the serverlet's state.
+- `int`, `float`, `bool`, `string`, and `void` cross. Arrays and structs do not yet.
+- Only a program that uses the feature gains the `wasmtime` dependency.
 
-**Connects to Feature 1:** Sandboxed serverlets, polyglot serverlets (1a), and loaded foreign modules (1b) are all variations on the same underlying theme — *handler/function bodies implemented by something other than native compiled OrchestrateLang code, with the compiler generating the integration glue.* Keeping the syntax for these conceptually related (even if the keywords differ — `via`, `sandbox`, `load_foreign`) keeps the language coherent rather than feature-creeped.
+**Still open:** `grant` on a sandboxed serverlet. Each grant has to become one narrow, mediated host function in the wasmtime linker — the point where sandboxing and the consent model become the same mechanism. Until that exists, a grant on a sandboxed serverlet is a compile error rather than a hole that opens quietly. `on_crash` is likewise a compile error. Arrays and structs across the boundary, and non-WASM isolation backends, remain out of scope.
 
-**Connects to Feature 4 (OPM):** If a downloaded third-party module can optionally run as a sandboxed serverlet, that's a concrete security story for the package ecosystem: "untrusted third-party modules can be isolated at the language level."
+**Connects to Feature 1:** Sandboxed serverlets, polyglot serverlets (1a), and loaded foreign modules (1b) are all variations on the same underlying theme — *handler/function bodies implemented by something other than native compiled OrchestrateLang code, with the compiler generating the integration glue.* `load_foreign "wasm"` (1b) and this feature share one wasmtime host.
+
+**Connects to Feature 4 (OPM):** A downloaded third-party module can now run as a sandboxed serverlet, which is a concrete security story for the package ecosystem: untrusted third-party modules can be isolated at the language level.
 
 ---
 
