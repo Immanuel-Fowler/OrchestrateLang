@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Polyglot — OrchestrateLang</title>
-<meta name="description" content="How OrchestrateLang calls Rust, C, C++, Zig, Swift, TypeScript, and Python: direct foreign functions, landline services, the type rules at each boundary, and what each one costs.">
+<meta name="description" content="How OrchestrateLang calls Rust, C, C++, Zig, Swift, C#, TypeScript, Python, and any .wasm module: direct foreign functions, landline services, contained guests, the type rules at each boundary, and what each one costs.">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -184,7 +184,7 @@ tr[aria-expanded="true"] .row-btn .name .chev { transform: rotate(90deg); }
 <section class="hero">
   <div class="wrap">
     <div class="eyebrow">Polyglot support</div>
-    <h1>One program. <em>Seven</em> languages. The boundary you choose.</h1>
+    <h1>One program. <em>Eight</em> languages. The boundary you choose.</h1>
     <p class="lede">OrchestrateLang does not replace Rust, C, Python, or TypeScript. It coordinates them. A foreign function stays a direct call. Stateful or runtime-owned code becomes a service behind the same typed interface as any other serverlet. Each boundary is declared in the source, checked by the compiler, and costs what the table at the bottom says it costs.</p>
     <div class="langs" aria-label="Languages">
       <a class="lang" href="#lang-rust">Rust <span class="pill pill-shipped">Shipped</span></a>
@@ -194,9 +194,10 @@ tr[aria-expanded="true"] .row-btn .name .chev { transform: rotate(90deg); }
       <a class="lang" href="#lang-swift">Swift <span class="pill pill-shipped">Shipped</span></a>
       <a class="lang" href="#lang-typescript">TypeScript <span class="pill pill-shipped">Shipped</span></a>
       <a class="lang" href="#lang-python">Python <span class="pill pill-shipped">Shipped</span></a>
-      <a class="lang" href="#roadmap">C# <span class="pill pill-planned">Planned</span></a>
+      <a class="lang" href="#lang-csharp">C# <span class="pill pill-shipped">Shipped</span></a>
+      <a class="lang" href="#lang-wasm">WebAssembly <span class="pill pill-shipped">Shipped</span></a>
       <a class="lang" href="#roadmap">Go <span class="pill pill-exploring">Exploring</span></a>
-      <a class="lang" href="#scorecard">+ 65 more, scored below <span class="pill pill-exploring">Scorecard</span></a>
+      <a class="lang" href="#scorecard">+ 62 more, scored below <span class="pill pill-exploring">Scorecard</span></a>
     </div>
   </div>
 </section>
@@ -254,6 +255,7 @@ tr[aria-expanded="true"] .row-btn .name .chev { transform: rotate(90deg); }
       <p>Scores are 0 to 5 per column, 40 total. They describe fit with the current sidecar mechanism, not language quality. A language near the top of the table needs only four edits in the compiler: a <code>ForeignSource</code> variant, a toolchain entry, a <code>build.rs</code> emitter line, and a <code>check-foreign</code> entry.</p>
       <p>The tier is a judgement about effort and route; the total is a measure of C-ABI fit. A language can rank low on the total yet be cheap to add through the TypeScript bridge, which is why JavaScript sits in "Ready to add". "Needs a different path" usually means a landline serverlet; "Would want a new feature" names the feature.</p>
       <p>Scores were set against the <code>int</code>, <code>float</code>, <code>bool</code>, <code>void</code> sidecar. Version 0.8.0 added <code>string</code> and <code>handle</code> across the C ABI; arrays and structs would lift the whole table at once. The data lives in <code>website/assets/scorecard-data.js</code>; re-score there.</p>
+      <p>Two releases moved rows rather than scores. The WebAssembly loader in 0.9.0 admits every language that compiles to <code>.wasm</code>, which is why WebAssembly, AssemblyScript, and Grain now sit in "Supported today" with the same numbers they always had. C# shipped in 0.10.0 through .NET Native AOT, and its <b>Check</b> score fell because <code>check-foreign</code> does not cover it.</p>
     </div>
     </details>
   </div>
@@ -323,7 +325,7 @@ orchestrator main() {
       <div class="q">
         <div class="ask">3. Do you trust the code?</div>
         <div class="opt pick"><strong>Yes</strong><span>a landline: <code>via python(...)</code> or <code>via typescript(...)</code>. A persistent process, a checked interface at startup, budgets for slow calls, and host callbacks you grant one function at a time.</span></div>
-        <div class="opt warn"><strong>No</strong><span><code>sandbox(...)</code> is the reserved syntax, and today it does not isolate anything. The compiler warns. A child process is not a security boundary either. Treat untrusted code as unsupported until the WASM work on the roadmap ships.</span></div>
+        <div class="opt pick"><strong>No</strong><span><code>serverlet X sandbox(memory_limit: "64mb", timeout: "5s")</code>. The handlers compile to a WebAssembly guest and run under wasmtime: memory capped, each call bounded, and every import denied, so it reaches no files, network, clock, or host function. <code>grant</code> and <code>on_crash</code> are compile errors on one, and arrays and structs do not cross.</span></div>
       </div>
     </div>
   </div>
@@ -353,21 +355,41 @@ orchestrator main() {
     <h3 class="sub">Native C ABI: C, C++, Zig, Swift</h3>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>OrchestrateLang</th><th>C / C++</th><th>Zig</th><th>Swift</th><th>Rust wrapper</th></tr></thead>
+        <thead><tr><th>OrchestrateLang</th><th>C / C++</th><th>Zig</th><th>Swift</th><th>C#</th><th>Rust wrapper</th></tr></thead>
         <tbody>
-          <tr><td><code>int</code></td><td><code>int64_t</code></td><td><code>i64</code></td><td><code>Int64</code></td><td><code>i64</code></td></tr>
-          <tr><td><code>float</code></td><td><code>double</code></td><td><code>f64</code></td><td><code>Double</code></td><td><code>f64</code></td></tr>
-          <tr><td><code>bool</code></td><td><code>bool</code></td><td><code>bool</code></td><td><code>Bool</code></td><td><code>bool</code></td></tr>
-          <tr><td><code>void</code></td><td><code>void</code></td><td><code>void</code></td><td>no return</td><td><code>()</code></td></tr>
-          <tr><td><code>string</code></td><td><code>const char *</code> in, <code>malloc</code>'d <code>char *</code> out</td><td><code>[*:0]const u8</code> in, <code>[*:0]u8</code> out via <code>c_allocator</code></td><td><code>UnsafePointer&lt;CChar&gt;</code> in, <code>strdup</code> out</td><td><code>String</code></td></tr>
-          <tr><td><code>handle</code></td><td><code>void *</code></td><td><code>*anyopaque</code></td><td><code>UnsafeMutableRawPointer</code></td><td><code>OrchHandle</code></td></tr>
-          <tr><td>arrays, structs</td><td colspan="4"><span class="pill pill-planned">Planned</span> not yet across the C ABI; wrap them in a serverlet or pass a <code>handle</code></td></tr>
+          <tr><td><code>int</code></td><td><code>int64_t</code></td><td><code>i64</code></td><td><code>Int64</code></td><td><code>long</code></td><td><code>i64</code></td></tr>
+          <tr><td><code>float</code></td><td><code>double</code></td><td><code>f64</code></td><td><code>Double</code></td><td><code>double</code></td><td><code>f64</code></td></tr>
+          <tr><td><code>bool</code></td><td><code>bool</code></td><td><code>bool</code></td><td><code>Bool</code></td><td><code>byte</code>, 0 or 1</td><td><code>bool</code></td></tr>
+          <tr><td><code>void</code></td><td><code>void</code></td><td><code>void</code></td><td>no return</td><td><code>void</code></td><td><code>()</code></td></tr>
+          <tr><td><code>string</code></td><td><code>const char *</code> in, <code>malloc</code>'d <code>char *</code> out</td><td><code>[*:0]const u8</code> in, <code>[*:0]u8</code> out via <code>c_allocator</code></td><td><code>UnsafePointer&lt;CChar&gt;</code> in, <code>strdup</code> out</td><td>not yet</td><td><code>String</code></td></tr>
+          <tr><td><code>handle</code></td><td><code>void *</code></td><td><code>*anyopaque</code></td><td><code>UnsafeMutableRawPointer</code></td><td>not yet</td><td><code>OrchHandle</code></td></tr>
+          <tr><td>arrays, structs</td><td colspan="5"><span class="pill pill-planned">Planned</span> not yet across the C ABI; wrap them in a serverlet or pass a <code>handle</code></td></tr>
         </tbody>
       </table>
     </div>
     <div class="notes" style="margin-top:14px">
+      <div class="rule"><strong>The C# exception</strong><code>bool</code> is not blittable in an export signature, so a sidecar <code>bool</code> is a C# <code>byte</code> that is 0 or 1, the same byte a C <code>_Bool</code> returns. Strings, arrays, structs, and <code>handle</code> do not cross a C# boundary yet.</div>
       <div class="rule"><strong>The string rule</strong>A parameter arrives NUL-terminated and is valid for the call only. A return must be allocated with the C allocator: the generated wrapper copies it into a <code>String</code> and frees it. Non-UTF-8 bytes are replaced; a NUL inside an OrchestrateLang string is dropped before the call.</div>
       <div class="rule"><strong>The handle rule</strong>A sidecar that returns <code>handle</code> names its release function once: <code>drop release_counter(c: handle)</code>. The value calls it when its last owner drops, so a native object lives exactly as long as the OrchestrateLang value holding it. Handles pass by reference and are not wire types.</div>
+    </div>
+
+    <h3 class="sub">WebAssembly modules</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>OrchestrateLang</th><th>In the module</th></tr></thead>
+        <tbody>
+          <tr><td><code>int</code></td><td><code>i64</code></td></tr>
+          <tr><td><code>float</code></td><td><code>f64</code></td></tr>
+          <tr><td><code>bool</code></td><td><code>i32</code> that is 0 or 1</td></tr>
+          <tr><td><code>void</code></td><td>no result</td></tr>
+          <tr><td><code>string</code></td><td>a pointer and a length into the module's memory; a returned string is <code>(pointer &lt;&lt; 32) | length</code></td></tr>
+          <tr><td>arrays, structs</td><td><span class="pill pill-planned">Planned</span> not carried yet</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="notes" style="margin-top:14px">
+      <div class="rule"><strong>One allocator, both sides</strong>A module that carries strings must export <code>orch_alloc(i32) -&gt; i32</code> and <code>orch_free(i32, i32)</code>. The host allocates with the module's own allocator, copies the result out, and hands the memory back. Declare a <code>string</code> without those exports and the compiler says so.</div>
+      <div class="rule"><strong>Checked against the module itself</strong>The compiler reads the export table, so a name the module does not export, or a type that does not line up, is a build error naming both sides. <code>orchestrate check</code> runs the same check without building.</div>
     </div>
 
     <h3 class="sub">Foreign Rust</h3>
@@ -428,6 +450,9 @@ orchestrator main() {
           <tr><td>Swift</td><td><code>load_foreign "swift"</code></td><td><code>swiftc</code> 5.10+</td><td><code>swiftc</code></td><td><code>swiftc -emit-library -static</code>, links <code>swiftCore</code></td><td>host only</td></tr>
           <tr><td>TypeScript, functions</td><td><code>load_foreign "typescript"</code></td><td>TypeScript 7 (<code>tsc</code>), Bun, optionally scriptc</td><td>TypeScript 7 against the declared interface</td><td>scriptc, else <code>bun build --compile</code>; one persistent process per module</td><td>host only</td></tr>
           <tr><td>TypeScript, service</td><td><code>via typescript(...)</code></td><td>TypeScript 7, Bun, optionally scriptc</td><td>TypeScript 7</td><td>scriptc or Bun executable</td><td>host only</td></tr>
+          <tr><td>C#</td><td><code>load_foreign "csharp"</code></td><td>.NET SDK 8+ (<code>ORCH_DOTNET</code> to pick one)</td><td>not covered: <code>dotnet</code> has no syntax-only check for one file outside a project</td><td>Native AOT, published as a shared library per module</td><td>host only</td></tr>
+          <tr><td>WebAssembly</td><td><code>load_foreign "wasm"</code></td><td>nothing</td><td>the module's own export table, during <code>check</code></td><td>nothing: the module is embedded as it is</td><td>every platform, same bytes</td></tr>
+          <tr><td>Sandboxed serverlet</td><td><code>sandbox(...)</code></td><td>the <code>wasm32-wasip1</code> target</td><td>the ordinary type checker</td><td>handlers compile to a guest crate, run under wasmtime</td><td>host only</td></tr>
           <tr><td>Python</td><td><code>via python(...)</code></td><td>Python 3.10+ (<code>ORCH_PYTHON</code> to pick one)</td><td><code>py_compile</code>; mypy with <code>--deep</code></td><td>nothing: the interpreter runs the source</td><td>wherever that Python runs</td></tr>
         </tbody>
       </table>
@@ -445,14 +470,15 @@ orchestrator main() {
       <p>Median round-trip latency for an <code>int</code> echo from the repository benchmark on one Apple Silicon Mac, 2026-09-14, plus the in-process probe for TypeScript's planned native backend. The <a href="./#benchmarks">full chart</a> has p90, p99, and max, which matter more for per-tick work.</p>
     </div>
     <div class="costs">
-      <div class="cost"><span class="n">ns</span><span class="l">C-ABI foreign function: a direct call in the same process</span></div>
+      <div class="cost"><span class="n">1&ndash;2<small>ns</small></span><span class="l">C, C++, Zig, Swift: a direct call in the same process</span></div>
+      <div class="cost"><span class="n">~5<small>ns</small></span><span class="l">C# through Native AOT, on an Apple M2</span></div>
       <div class="cost"><span class="n">8<small>µs</small></span><span class="l">in-process serverlet, p50</span></div>
       <div class="cost"><span class="n">17<small>µs</small></span><span class="l">secret serverlet (Rust child process), p50</span></div>
       <div class="cost"><span class="n">24<small>µs</small></span><span class="l">Python landline, p50</span></div>
       <div class="cost"><span class="n">~60<small>µs</small></span><span class="l">TypeScript function over today's pipe bridge</span></div>
       <div class="cost hot"><span class="n">5.1<small>ns</small></span><span class="l">TypeScript in-process via scriptc library mode: a 2026-09-18 probe, not shipped</span></div>
     </div>
-    <p class="muted" style="margin-top:12px;max-width:70ch">Large Python arrays are the outlier: 573 µs at p50 for 1,000 ints, dominated by per-element encoding in the SDK. That is the next optimization target, and a reason to pass arrays in one call rather than one element per call.</p>
+    <p class="muted" style="margin-top:12px;max-width:70ch">A sandboxed serverlet and a <code>.wasm</code> module both cross a wasmtime boundary, which costs more than a native call and less than a process hop; the repository does not publish a figure for either yet, so none is quoted here. Reaching the same C# through WebAssembly instead of Native AOT is about 20 times dearer. Large Python arrays are the outlier: 573 µs at p50 for 1,000 ints, dominated by per-element encoding in the SDK. That is the next optimization target, and a reason to pass arrays in one call rather than one element per call.</p>
   </div>
 </section>
 
@@ -467,10 +493,11 @@ orchestrator main() {
     <div class="notes">
       <div class="rule"><strong>TypeScript in-process <span class="pill pill-planned">Planned</span></strong>scriptc 0.1.1 can emit a C-ABI static archive from a TypeScript module. A probe linked one into a C program: state persisted and a call cost 5.1 ns. Constraints found: no <code>bigint</code> in the static tier, strings as pointer plus length, arrays and structs deferred by scriptc. Would ship as <code>load_foreign "typescript" "math.ts" (backend: "native")</code>.</div>
       <div class="rule"><strong>Arrays and structs across the C ABI <span class="pill pill-planned">Planned</span></strong>Strings and handles landed in 0.8.0; arrays and structs are the remaining gap between the fastest boundary and the landline boundary.</div>
-      <div class="rule"><strong>C# <span class="pill pill-planned">Planned</span></strong>Native AOT exports with <code>[UnmanagedCallersOnly]</code> for functions; a landline or embedded runtime for services.</div>
+      <div class="rule"><strong>More landlines <span class="pill pill-planned">Planned</span></strong>C# arrived as a direct call rather than a landline. A C++ landline and other embedded runtimes are still open, for code that needs its own process rather than its own function.</div>
       <div class="rule"><strong>Go <span class="pill pill-exploring">Exploring</span></strong><code>-buildmode=c-archive</code> works, but only one Go library can be loaded per process, which is a real constraint on the module model.</div>
       <div class="rule"><strong>Cross-compiling Zig and Swift <span class="pill pill-planned">Planned</span></strong>Both build for the host only today; <code>build --lib --target</code> with another target stops with a clear error.</div>
-      <div class="rule"><strong>Sandboxed serverlets <span class="pill pill-caution">Not isolated</span></strong>The plan is wasmtime with WASI preview 1, with memory limits and fuel. First step on the roadmap: make <code>sandbox(...)</code> an error unless a flag opts into the unsandboxed run, so the syntax cannot promise what it does not deliver.</div>
+      <div class="rule"><strong>Grants and crash handlers on a sandbox <span class="pill pill-planned">Planned</span></strong>Containment shipped in 0.9.0. <code>grant</code> and <code>on_crash</code> on a sandboxed serverlet are compile errors rather than holes that open quietly, and arrays and structs do not cross the boundary yet.</div>
+      <div class="rule"><strong>Secret plus sandboxed <span class="pill pill-planned">Planned</span></strong>A separate process around a contained guest, for defence in depth.</div>
     </div>
   </div>
 </section>
@@ -493,7 +520,7 @@ orchestrator main() {
 (function () {
   "use strict";
   const REPO = window.ORCH_REPO;
-  function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 
   // A small Zig grammar; highlight.js's common bundle has none.
   if (window.hljs && !window.hljs.getLanguage("zig")) {
@@ -517,7 +544,11 @@ orchestrator main() {
     { id: "typescript", name: "TypeScript", mech: "load_foreign \"typescript\" and via typescript(...)", boundary: "Functions: a persistent compiled adapter process per module, one call at a time. Services: a landline executable", state: "A landline serverlet keeps state, host callbacks, ticks, and budgets", toolchain: "TypeScript 7, Bun, optionally scriptc; host target only", program: "examples/typescript_landline.orch", dir: "examples/modules/foreign_typescript_math", files: [["module.orch", "orchestrate"], ["math.orch_ffi", "orch_ffi"], ["math.ts", "typescript"]], extra: [["examples/modules/typescript_counter/counter.ts", "typescript", "the landline: a default-exported class"], ["examples/foreign_typescript_math.orch", "orchestrate", "the function-style program"]],
       about: "TypeScript 7 checks the source against the declared OrchestrateLang interface, not just as a lone .ts file. The compiler then tries scriptc for a native executable and falls back to bun build --compile. Function-style imports share one persistent process per module, so module state survives between calls even though the calls are stateless from OrchestrateLang's view. int crosses as bigint. The planned native backend would make functions in-process at nanosecond cost." },
     { id: "python", name: "Python", mech: "via python(...)", boundary: "A persistent Python 3.10+ process over framed stdin/stdout, with the bundled orchestratelang.landline SDK", state: "The landline is the state: a class instance lives for the process's lifetime", toolchain: "python3, or ORCH_PYTHON; mypy for check-foreign --deep", program: "examples/python_landline.orch", dir: "examples/python", files: [["counter.py", "python"]],
-      about: "Python cannot do FFI without its interpreter, so it plugs in only as a service. The SDK is standard-library-only and is copied next to the binary at build time; the interpreter stays external. Handlers are annotated synchronous methods; primitives, lists, and dataclasses matching same-file structs cross the wire. Budgets bound slow handlers, and grants let a handler call back into a Rust host in library mode." }
+      about: "Python cannot do FFI without its interpreter, so it plugs in only as a service. The SDK is standard-library-only and is copied next to the binary at build time; the interpreter stays external. Handlers are annotated synchronous methods; primitives, lists, and dataclasses matching same-file structs cross the wire. Budgets bound slow handlers, and grants let a handler call back into a Rust host in library mode." },
+    { id: "csharp", name: "C#", mech: "load_foreign \"csharp\"", boundary: "A Native AOT shared library per module, linked into the program and loaded at run time", state: "Wrap with a serverlet; handles do not cross yet", toolchain: ".NET SDK 8+ on PATH, or ORCH_DOTNET; host target only", program: "examples/foreign_csharp_math.orch", dir: "examples/modules/foreign_csharp_math", files: [["module.orch", "orchestrate"], ["Math.orch_ffi", "orch_ffi"], ["Math.cs", "csharp"]],
+      about: "A method becomes an export by carrying [UnmanagedCallersOnly(EntryPoint = \"...\")], and the name it gives must match the sidecar; everything else in the file is ordinary C#. A call costs about 5 ns on an Apple M2 against 1 to 2 ns for the same function in C, the difference being the transition a reverse P/Invoke makes entering and leaving managed code. Each module publishes a shared library rather than a static archive, because two Native AOT static archives cannot go into one program: each embeds its own runtime. The first build downloads the Native AOT compiler. A C# module brings .NET's garbage collector into the process, so keep a frame-budget hot path allocation-free." },
+    { id: "wasm", name: "WebAssembly", mech: "load_foreign \"wasm\"", boundary: "The module is embedded in the program and instantiated on first use; its imports are denied", state: "Linear memory persists for the life of the program, the way a native module's statics would", toolchain: "None. A .wasm is already compiled, whatever produced it", inline: [["module.orch", "orchestrate", "load_foreign \"wasm\" \"./math.wasm\""], ["math.orch_ffi", "orch_ffi", "// the contract, checked against the module\u2019s own export table\ndouble(n: int) -> int\nscale(x: float, by: float) -> float\nshout(text: string) -> string\n\n// a module that carries strings must also export the allocator\n// both sides use:\n//   orch_alloc(i32) -> i32\n//   orch_free(i32, i32)"]],
+      about: "There is no toolchain to install and no language to name, because a .wasm is already compiled. The compiler reads the module's own export table and checks every sidecar signature against it, so a name that is not exported, or a type that does not line up, is a build error naming both sides; orchestrate check runs the same check without building. Imports are denied by default, so a module that asks the host for anything traps instead of getting it, and a call that traps is logged and yields the return type's default. To contain a module's compute and memory as well as its reach, use a sandboxed serverlet, which adds a memory cap and a timeout." }
   ];
 
   const tabs = document.getElementById("langtabs");
@@ -539,6 +570,13 @@ orchestrator main() {
       '<a href="' + REPO + "/blob/main/" + path + '" rel="noopener">GitHub ↗</a><button class="copy" type="button" data-copy>Copy</button></div>' + body + "</div>";
   }
 
+  function staticCard(name, lang, body) {
+    return '<div class="code"><div class="code-head"><span class="dot"></span><span class="path">' + esc(name) +
+      ' <span style="opacity:.7">\u00b7 shape, not a file in the repository</span></span>' +
+      '<button class="copy" type="button" data-copy>Copy</button></div>' +
+      '<pre><code class="language-' + lang + '">' + esc(body) + "</code></pre></div>";
+  }
+
   let current = null;
   async function show(id) {
     const l = LANGS.find(function (x) { return x.id === id; }) || LANGS[0];
@@ -547,12 +585,13 @@ orchestrator main() {
     tabs.querySelectorAll("button").forEach(function (b) { b.setAttribute("aria-selected", String(b.dataset.id === l.id)); });
     panel.innerHTML =
       '<div class="about"><div><h3 id="lang-' + l.id + '">' + l.name + " through <code>" + esc(l.mech) + "</code></h3><p style=\"margin-top:8px\">" + esc(l.about) + "</p></div>" +
-      '<div class="facts"><div><span>Boundary</span><span>' + esc(l.boundary) + "</span></div><div><span>State</span><span>" + esc(l.state) + "</span></div><div><span>Toolchain</span><span>" + esc(l.toolchain) + "</span></div><div><span>Example</span><span><code>orchestrate run " + esc(l.program) + "</code></span></div></div></div>" +
-      '<div class="files" id="files"><div class="status">Loading files from ' + esc(l.dir) + "…</div></div>";
+      '<div class="facts"><div><span>Boundary</span><span>' + esc(l.boundary) + "</span></div><div><span>State</span><span>" + esc(l.state) + "</span></div><div><span>Toolchain</span><span>" + esc(l.toolchain) + "</span></div>" + (l.program ? "<div><span>Example</span><span><code>orchestrate run " + esc(l.program) + "</code></span></div>" : "") + "</div></div>" +
+      '<div class="files" id="files"><div class="status">Loading ' + (l.dir ? "files from " + esc(l.dir) : "the shape of a wasm module") + "…</div></div>";
     const cards = [];
-    for (const [f, lang] of l.files) cards.push(fileCard(l.dir + "/" + f, lang, null, false));
+    for (const [f, lang] of (l.files || [])) cards.push(fileCard(l.dir + "/" + f, lang, null, false));
     for (const [p, lang, label] of (l.extra || [])) cards.push(fileCard(p, lang, label, false));
-    cards.push(fileCard(l.program, "orchestrate", "the program", true));
+    for (const [name, lang, body] of (l.inline || [])) cards.push(Promise.resolve(staticCard(name, lang, body)));
+    if (l.program) cards.push(fileCard(l.program, "orchestrate", "the program", true));
     const html = await Promise.all(cards);
     if (current !== l) return;
     document.getElementById("files").innerHTML = html.join("");

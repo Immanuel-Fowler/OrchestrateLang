@@ -204,7 +204,7 @@
       <div class="facts">
         <span>No VM, no interpreter</span>
         <span>Generated Tokio core</span>
-        <span>FFI to Rust, C, C++, Zig, Swift, TypeScript</span>
+        <span>FFI to Rust, C, C++, Zig, Swift, C#, TypeScript, and any <code>.wasm</code></span>
         <span>Python and TypeScript services</span>
         <span>MIT licensed</span>
       </div>
@@ -326,7 +326,7 @@
       <div class="rung" style="--step:0">
         <div class="no">1</div>
         <div class="mech"><strong>Foreign function</strong><code>load_foreign "zig" "vectors.zig"</code></div>
-        <div class="when">You need a function. In-process, direct call, no copies. Rust, C, C++, Zig, Swift, and TypeScript.</div>
+        <div class="when">You need a function. In-process, direct call, no copies. Rust, C, C++, Zig, Swift, C#, TypeScript, and any compiled <code>.wasm</code> module.</div>
         <div class="cost">nanoseconds</div>
       </div>
       <div class="rung" style="--step:1">
@@ -341,11 +341,11 @@
         <div class="when">The code cannot do FFI, should crash separately, stay out of the main binary, or keep a Python or TypeScript runtime alive.</div>
         <div class="cost">≈ 17–25 µs round trip</div>
       </div>
-      <div class="rung caution" style="--step:3">
+      <div class="rung" style="--step:3">
         <div class="no">4</div>
-        <div class="mech"><strong>Sandboxed serverlet</strong><code>serverlet Plugin sandbox(...)</code></div>
-        <div class="when">The code is untrusted. The declaration parses today, but WASM containment is not shipped and the compiler warns. A separate process is not a security boundary.</div>
-        <div class="cost">not isolated yet</div>
+        <div class="mech"><strong>Sandboxed serverlet</strong><code>serverlet Plugin sandbox(memory_limit, timeout)</code></div>
+        <div class="when">The code is untrusted. Handlers run in a WebAssembly guest under wasmtime: the memory limit caps its linear memory, the timeout bounds one call, and imports are denied, so it reaches no files, network, clock, or host function. A call that breaks a limit is logged, answered with the return type's default, and resets that guest.</div>
+        <div class="cost">contained by wasmtime</div>
       </div>
     </div>
   </div>
@@ -386,17 +386,17 @@
         <text class="fam-text" x="262" y="281" text-anchor="middle">Python</text>
         <rect x="306" y="262" width="64" height="30" rx="5" class="fam-box"/>
         <text class="fam-text" x="338" y="281" text-anchor="middle">TypeScript</text>
-        <path class="fam-edge" d="M60 217 V262" stroke-dasharray="3 4"/>
-        <rect x="8" y="262" width="104" height="30" rx="5" fill="var(--brass-wash)" stroke="var(--brass)" stroke-width="1.5" stroke-dasharray="3 3"/>
+        <path class="fam-edge" d="M60 217 V262"/>
+        <rect x="8" y="262" width="104" height="30" rx="5" fill="var(--teal-wash)" stroke="var(--teal)" stroke-width="1.5"/>
         <text class="fam-text" x="60" y="276" text-anchor="middle">sandboxed</text>
-        <text class="fam-sub" x="60" y="288" text-anchor="middle">WASM, not shipped</text>
+        <text class="fam-sub" x="60" y="288" text-anchor="middle">WASM guest, wasmtime</text>
       </svg>
       <div class="kinds">
         <div class="kind"><code>serverlet X { ... }</code><span class="pill pill-shipped">Shipped</span><p>Trusted state with the lowest overhead: a Tokio task and a channel inside the program.</p></div>
         <div class="kind"><code>serverlet X secret { ... }</code><span class="pill pill-shipped">Shipped</span><p>Compiled as a separate native executable. Process lifecycle, crash separation, and an implementation kept out of the main binary. Not encryption, not a security boundary.</p></div>
         <div class="kind"><code>serverlet X via python(source: "...")</code><span class="pill pill-shipped">Shipped</span><p>A persistent Python 3.10+ process behind the same interface. Startup checks the declared handlers; budgets bound how long a caller waits.</p></div>
         <div class="kind"><code>serverlet X via typescript(source: "...")</code><span class="pill pill-shipped">Shipped</span><p>TypeScript 7 checks the source; scriptc or Bun compiles it to an executable that keeps state between calls.</p></div>
-        <div class="kind"><code>serverlet X sandbox(...)</code><span class="pill pill-caution">Not isolated</span><p>Reserved for wasmtime containment. Runs in-process today and the compiler says so.</p></div>
+        <div class="kind"><code>serverlet X sandbox(memory_limit: "64mb", timeout: "5s")</code><span class="pill pill-shipped">Shipped</span><p>Handlers compile to a <code>wasm32-wasip1</code> guest and run under wasmtime, capped in memory and per call, with imports denied. State lives in the guest between calls; a failed call is contained, and replacing the trapped guest resets that state. <code>grant</code> and <code>on_crash</code> are compile errors on one, and arrays and structs do not cross yet.</p></div>
       </div>
     </div>
   </div>
@@ -421,7 +421,8 @@
           <tr><td>Swift</td><td>Native C ABI</td><td>A <code>handle</code>, or a serverlet</td><td><span class="pill pill-shipped">Shipped</span></td></tr>
           <tr><td>TypeScript</td><td>Persistent compiled adapter</td><td>Landline serverlet</td><td><span class="pill pill-shipped">Shipped</span></td></tr>
           <tr><td>Python</td><td>—</td><td>Landline serverlet</td><td><span class="pill pill-shipped">Shipped</span></td></tr>
-          <tr><td>C#</td><td>Native AOT FFI</td><td>Landline / embedded runtime</td><td><span class="pill pill-planned">Planned</span></td></tr>
+          <tr><td>C#</td><td>Native AOT shared library, about 5 ns a call</td><td>Wrap with a serverlet</td><td><span class="pill pill-shipped">Shipped</span></td></tr>
+          <tr><td>WebAssembly</td><td>Any <code>.wasm</code> module, checked against its own export table</td><td>Sandboxed serverlet</td><td><span class="pill pill-shipped">Shipped</span></td></tr>
           <tr><td>Go</td><td>C archive, one library per process</td><td>—</td><td><span class="pill pill-exploring">Exploring</span></td></tr>
         </tbody>
       </table>
@@ -505,9 +506,9 @@ cargo orch run examples/hello.orch</code></pre>
       <p>OrchestrateLang is young. Names, docs, and diagnostics are not allowed to promise more than the implementation delivers, so the important limitations are listed here, not buried.</p>
     </div>
     <div class="bounds">
-      <div class="bound"><strong>Sandbox declarations do not isolate</strong>The syntax parses; WASM containment is roadmap work. The compiler warns.</div>
+      <div class="bound"><strong>A sandbox bounds reach, not truth</strong>It contains a guest's compute, memory, and reach as well as wasmtime does, and nothing about what the guest computes from what you hand it. <code>grant</code> and <code>on_crash</code> are not supported on one, and arrays and structs do not cross.</div>
       <div class="bound"><strong>A process is not a security boundary</strong>Secret and landline serverlets give lifecycle and crash separation. "Secret" means built outside the main binary, not encrypted.</div>
-      <div class="bound"><strong>Two landline runtimes</strong>Python and TypeScript today. C# and embedded runtimes are planned.</div>
+      <div class="bound"><strong>Two landline runtimes</strong>Python and TypeScript are the runtimes that stay alive as a service. C# arrives as a direct call instead, and more embedded runtimes are planned.</div>
       <div class="bound"><strong>Cross-process calls cost more</strong>Secret serverlets and TypeScript adapters use an explicit protocol; direct calls stay in-process.</div>
       <div class="bound"><strong>Deterministic mode is scoped</strong>It covers host-driven lifecycle and event hooks, not spawned workers or serverlets.</div>
       <div class="bound"><strong>Some diagnostics come from Rust</strong>Set <code>ORCH_SHOW_GENERATED=1</code> to see the generated source and full Cargo output.</div>
@@ -529,7 +530,7 @@ cargo orch run examples/hello.orch</code></pre>
       <a href="docs.html#design-philosophy"><small>docs/design-philosophy.md</small><strong>Design philosophy</strong><span>The eleven principles new features are checked against.</span></a>
       <a href="docs.html#roadmap"><small>docs/roadmap.md</small><strong>Roadmap</strong><span>Planned work, separated from shipped behavior, plus the pipedream ideas.</span></a>
       <a href="examples.html"><small>examples/*.orch</small><strong>Examples</strong><span>Every example program in the repository, with the Rust the compiler generates for it.</span></a>
-      <a href="polyglot.html"><small>website/polyglot.html</small><strong>Polyglot support</strong><span>Rust, C, C++, Zig, Swift, TypeScript, and Python: mechanisms, type rules, toolchains, and costs, with real module files.</span></a>
+      <a href="polyglot.html"><small>website/polyglot.html</small><strong>Polyglot support</strong><span>Rust, C, C++, Zig, Swift, C#, TypeScript, Python, and WebAssembly: mechanisms, type rules, toolchains, and costs, with real module files.</span></a>
       <a href="compare.html"><small>website/compare.html</small><strong>When to use what</strong><span>OrchestrateLang beside hand-written Tokio, Erlang/OTP, Akka, and Temporal, without scores.</span></a>
       <a href="docs.html#changelog"><small>CHANGELOG.md</small><strong>Changelog</strong><span>Release history and known limitations, version by version.</span></a>
     </div>

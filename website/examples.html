@@ -117,6 +117,7 @@
       { id: "persistent_serverlet", title: "Persistent state", blurb: "Serverlet state survives across loop iterations." },
       { id: "resilient_serverlet", title: "Resilient serverlet", blurb: "A handler that panics is isolated by on_crash." },
       { id: "secret_serverlet", title: "Secret serverlet", blurb: "The service compiles to its own native executable." },
+      { id: "sandboxed_plugin", title: "Sandboxed plugin", blurb: "Handlers run in a WebAssembly guest under wasmtime, capped at 16mb and 300ms per call, reaching nothing. A handler that never returns is stopped and the program carries on.", needs: ["wasm32-wasip1 target"] },
       { id: "python_landline", title: "Python landline", blurb: "A stateful Python 3.10+ service behind the same interface.", needs: ["Python 3.10+"] },
       { id: "typescript_landline", title: "TypeScript landline", blurb: "A TypeScript 7 service compiled to an executable.", needs: ["TypeScript 7", "Bun"] }
     ]},
@@ -128,6 +129,7 @@
       { id: "foreign_cpp_stats", title: "C++ functions", blurb: "Statistics helpers over the C ABI.", module: "foreign_cpp_stats", needs: ["C++ compiler"] },
       { id: "foreign_zig_math", title: "Zig functions", blurb: "export fn's built with zig build-obj.", module: "foreign_zig_math", needs: ["Zig 0.16+"] },
       { id: "foreign_swift_math", title: "Swift functions", blurb: "@_cdecl functions compiled with swiftc.", module: "foreign_swift_math", needs: ["Swift 5.10+"] },
+      { id: "foreign_csharp_math", title: "C# functions", blurb: "[UnmanagedCallersOnly] methods published as a Native AOT shared library. About 5 ns a call.", module: "foreign_csharp_math", needs: [".NET SDK 8+"] },
       { id: "foreign_typescript_math", title: "TypeScript functions", blurb: "A persistent compiled adapter for stateless TypeScript calls.", module: "foreign_typescript_math", needs: ["TypeScript 7", "Bun"] },
       { id: "foreign_mixed_all", title: "Everything at once", blurb: "C, Rust, and OrchestrateLang in one module.", module: "foreign_mixed_all", needs: ["C compiler"] }
     ]},

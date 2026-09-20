@@ -211,7 +211,7 @@
           </tr>
           <tr>
             <td>Isolation</td>
-            <td class="ours">Tokio task in-process; a separate native process for secret and landline serverlets<small>A process is not a security boundary; WASM sandboxing is planned, not shipped</small></td>
+            <td class="ours">Tokio task in-process; a separate native process for secret and landline serverlets; a wasmtime guest for sandboxed ones<small>A sandboxed serverlet is capped in memory and per call and reaches nothing. A separate process is lifecycle and crash separation, not a security boundary.</small></td>
             <td>Task or thread; process isolation is yours to build</td>
             <td>Process on the VM; no memory sharing between processes</td>
             <td>Actor on the JVM; same heap</td>
@@ -219,7 +219,7 @@
           </tr>
           <tr>
             <td>Other languages</td>
-            <td class="ours">Direct FFI to Rust, C, C++, Zig, Swift, TypeScript; Python and TypeScript as landline services, typed and checked at startup<small>Chosen per module; see the polyglot page</small></td>
+            <td class="ours">Direct FFI to Rust, C, C++, Zig, Swift, C#, TypeScript, and any <code>.wasm</code>; Python and TypeScript as landline services, typed and checked at startup<small>Chosen per module; see the polyglot page</small></td>
             <td>Rust FFI to C by hand; anything else is your bridge</td>
             <td>Elixir and Erlang natively; NIFs and ports for C and others</td>
             <td>JVM languages; gRPC or HTTP for the rest</td>
@@ -287,8 +287,9 @@
           <li>The program must be a native binary, or a crate a Rust host embeds and ticks.</li>
           <li>Existing C, C++, Zig, Swift, Rust, TypeScript, or Python code should plug in at the cheapest boundary that works.</li>
           <li>One process is the scope. Distribution and durability are not requirements.</li>
+          <li>Some of that code is untrusted, and a plugin should run capped in memory and time with no reach into the host.</li>
         </ul>
-        <div class="not"><strong>Not yet for:</strong> untrusted code (sandboxing is not shipped), multi-machine systems, or anything that needs supervision trees more elaborate than per-worker restart policies.</div>
+        <div class="not"><strong>Not yet for:</strong> multi-machine systems, work that must survive a restart, or anything needing supervision trees more elaborate than per-worker restart policies.</div>
       </div>
       <div class="pick">
         <div class="when">Tokio by hand when</div>
