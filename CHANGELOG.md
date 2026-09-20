@@ -9,6 +9,10 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-19
+
+C# runs in-process, about five nanoseconds a call.
+
 ### Added
 - **`load_foreign "csharp"`.** A C# file becomes a native shared library through .NET's
   Native AOT compiler and links into the program like any other foreign module. A call
@@ -541,7 +545,8 @@ First tagged release.
   `option` / `result`, `try` / `catch`, supervision, `check`, the language server, or the
   standard library. See `examples/` for working code.
 
-[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.7.0...v0.8.0
