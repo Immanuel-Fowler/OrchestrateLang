@@ -880,8 +880,8 @@ All functions and tasks in the loaded files become part of the module namespace 
 
 ### 6.4 Calling Foreign Functions (`load_foreign`)
 
-OrchestrateLang loads Rust, C, C++, Zig, Swift, TypeScript, and WebAssembly functions into
-a module's namespace. Native C-ABI calls are in-process and stateless. TypeScript uses a
+OrchestrateLang loads Rust, C, C++, Zig, Swift, C#, TypeScript, and WebAssembly functions
+into a module's namespace. Native C-ABI calls are in-process and stateless. TypeScript uses a
 generated, synchronous executable bridge and is also stateless; use a landline serverlet
 for persistent state. C, C++, Zig, and Swift functions take and return `int`, `float`,
 `bool`, `string`, `handle`, and `void`. TypeScript supports `int`, `float`, `bool`,
@@ -1123,6 +1123,66 @@ through `swiftc -print-target-info`.
 | `float` | `f64` |
 | `string` | `String` / `&str` |
 | `bool` | `bool` |
+
+#### Foreign C# (`load_foreign "csharp"`)
+
+A C# file becomes a native shared library through .NET's Native AOT compiler, linked into
+the program like any other foreign module. A call costs about 5 ns on an Apple M2, against
+1–2 ns for the same function in C: the difference is the transition a reverse P/Invoke
+makes on the way in and out.
+
+```orchestrate
+// math/module.orch
+load_foreign "csharp" "./Math.cs"
+```
+
+```csharp
+// math/Math.cs — each export names its own C entry point
+using System.Runtime.InteropServices;
+
+public static class Math
+{
+    [UnmanagedCallersOnly(EntryPoint = "double_it")]
+    public static long DoubleIt(long n) => n * 2;
+
+    [UnmanagedCallersOnly(EntryPoint = "is_even")]
+    public static byte IsEven(long n) => (byte)(n % 2 == 0 ? 1 : 0);
+}
+```
+
+```
+// math/Math.orch_ffi — the same sidecar contract as every other language
+double_it(n: int) -> int
+is_even(n: int) -> bool
+```
+
+The `[UnmanagedCallersOnly(EntryPoint = "...")]` attribute is what makes a method an
+export, and the name it gives must match the sidecar. Methods without it are not exported,
+so a file may hold as much ordinary C# as it likes.
+
+**Types.** `int` is `long`, `float` is `double`, and `void` is `void`. **`bool` is the one
+exception:** it is not blittable in an export signature, so a handler returning `bool` in
+the sidecar returns `byte` in C#, 0 or 1. Strings, arrays, structs, and `handle` do not
+cross yet.
+
+**Shared, not static.** Each module publishes its own shared library. .NET can also publish
+a static archive, which would link a little faster, but two Native AOT static archives
+cannot go into one program — each embeds its own runtime — and that would cap a program at
+one C# module. Shared libraries have no such limit, and a test covers two in one program.
+
+> **Notes for C# FFI:**
+> - The .NET SDK 8 or newer must be on `PATH`, or `ORCH_DOTNET` must point at it. The
+>   first build downloads the Native AOT compiler, which takes a while and a few hundred
+>   megabytes; later builds reuse it.
+> - Native AOT builds for the host only; `build --lib --target` with another target fails
+>   with a clear message.
+> - The library is loaded at run time. A built program finds it through an embedded rpath,
+>   so a program that is moved to another machine has to take its C# libraries with it.
+> - `check-foreign` does not cover C#: `dotnet` has no syntax-only check for a single file
+>   outside a project. The build's own `dotnet publish` reports C# errors in full.
+> - A C# module brings .NET's garbage collector into the process. For a host with a frame
+>   budget, keep the hot path allocation-free, or use a boundary that keeps the collector
+>   elsewhere — a WebAssembly module (§ above) or a serverlet.
 
 #### Foreign WebAssembly (`load_foreign "wasm"`)
 

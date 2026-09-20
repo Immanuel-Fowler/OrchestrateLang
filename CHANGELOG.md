@@ -9,6 +9,38 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+### Added
+- **`load_foreign "csharp"`.** A C# file becomes a native shared library through .NET's
+  Native AOT compiler and links into the program like any other foreign module. A call
+  costs **about 5 ns** on an Apple M2, against 1–2 ns for the same function in C; the
+  difference is the transition a reverse P/Invoke makes entering and leaving managed code.
+  That is 20× cheaper than reaching the same C# through a WebAssembly module.
+
+  ```orchestrate
+  load_foreign "csharp" "./Math.cs"
+  ```
+
+  A method is exported by carrying `[UnmanagedCallersOnly(EntryPoint = "...")]`, and the
+  name it gives must match the sidecar; everything else in the file stays ordinary C#.
+  `int` is `long`, `float` is `double`, `void` is `void`, and **`bool` is the exception** —
+  it is not blittable in an export signature, so the sidecar's `bool` is a C# `byte` that
+  is 0 or 1. Strings, arrays, structs, and `handle` do not cross yet.
+
+  Each module publishes its own **shared** library rather than a static archive. .NET can
+  publish static, and it would link a little faster, but two Native AOT static archives
+  cannot go into one program — each embeds its own runtime — which would cap a program at
+  one C# module and fail as duplicate symbols from the linker rather than as a diagnostic.
+  A test covers two C# modules in one program.
+
+  The .NET SDK 8 or newer must be on `PATH`, or `ORCH_DOTNET` must point at it. The first
+  build downloads the Native AOT compiler. `check-foreign` does not cover C#, because
+  `dotnet` has no syntax-only check for one file outside a project.
+
+  A C# module brings .NET's garbage collector into the process. For a host with a frame
+  budget, keep the hot path allocation-free, or use a boundary that keeps the collector
+  elsewhere. Behaviour under an allocating handler is not measured yet; the plan in
+  `docs/plans/csharp-native-backend.md` says so.
+
 ## [0.9.0] - 2026-09-19
 
 Untrusted code runs contained, and any `.wasm` module is callable.

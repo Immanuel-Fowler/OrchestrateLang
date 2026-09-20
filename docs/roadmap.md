@@ -35,7 +35,7 @@ serverlet PyScorer via "python" {
 - **C/C++**: via FFI bindings (e.g. `bindgen`-style). Higher complexity — calling conventions, memory ownership across the boundary, build complexity.
 - **Rust**: likely the easiest — could potentially just be another `Combined Process` module pattern, since it's already native.
 
-### 1b. Loaded Foreign Modules (direct function-call style, stateless) — **[SHIPPED for Rust, C, C++, Zig, Swift, TypeScript, WebAssembly]**
+### 1b. Loaded Foreign Modules (direct function-call style, stateless) — **[SHIPPED for Rust, C, C++, Zig, Swift, C#, TypeScript, WebAssembly]**
 
 A second, simpler module type: a `module.orch` that directly loads a Rust, C/C++, Zig,
 Swift, or TypeScript source/library, where the **only interactable code from
@@ -79,12 +79,6 @@ load_foreign "typescript" "./math.ts"   // requires math.orch_ffi sidecar
   `load_foreign "typescript" "math.ts" (backend: "native")`; the plan is
   [plans/typescript-native-backend.md](plans/typescript-native-backend.md).
 - Arrays and structs across the C ABI. `string` and `handle` shipped in 0.8.0.
-- **C#** via .NET Native AOT exports (`[UnmanagedCallersOnly]`), as a **shared** library
-  rather than a static one: two NativeAOT static archives cannot be linked into one
-  module, which would cap a program at one C# module. A C# module compiled to wasm is
-  already callable through `load_foreign "wasm"` with no compiler work, so the native
-  route has something to beat; the plan, and the measurements that decide it, are
-  [plans/csharp-native-backend.md](plans/csharp-native-backend.md).
 - Cross-compiling Zig and Swift sources for `build --lib --target`.
 - **Go** works through `-buildmode=c-archive`, but only one Go library can be loaded per process.
 

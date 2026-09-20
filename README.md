@@ -86,6 +86,7 @@ flowchart LR
     F --> C["C / C++"]
     F --> Z["Zig"]
     F --> S["Swift"]
+    F --> CS["C#"]
     F --> W["WebAssembly"]
     P --> TSF["TypeScript"]
     L --> PY["Python"]
@@ -102,7 +103,7 @@ flowchart LR
 | TypeScript | Persistent compiled adapter | Landline serverlet | Shipped |
 | WebAssembly | Any `.wasm` module, checked against its exports | Sandboxed serverlet | Shipped |
 | Python | — | Landline serverlet | Shipped |
-| C# | Native AOT FFI | Landline / embedded runtime | Planned |
+| C# | Native AOT shared library, about 5 ns a call | Wrap with a serverlet | Shipped |
 | Go | C archive is possible, with runtime constraints | — | Exploring |
 | Additional embedded runtimes | Depends on a safe native boundary | Landline-style adapter | Exploring |
 

@@ -35,6 +35,11 @@ jobs:
         with:
           bun-version: "1.4.2"
 
+      # `load_foreign "csharp"` publishes a NativeAOT shared library per module.
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
       # TypeScript landlines and FFI need `tsc` (TypeScript 7) on PATH; the native
       # scriptc backend is macOS-first, so Linux exercises the Bun backend only.
       - name: Install TypeScript 7

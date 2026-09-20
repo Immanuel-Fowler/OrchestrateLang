@@ -74,6 +74,7 @@ pub enum ForeignSource {
     Cpp(PathBuf),
     Zig(PathBuf),
     Swift(PathBuf),
+    CSharp(PathBuf),
 }
 
 /// The external compiler `load_foreign` needs for a language, if any beyond the C/C++ toolchain.
@@ -81,7 +82,17 @@ fn foreign_toolchain(language: &str) -> Option<(&'static str, &'static str, &'st
     match language {
         "zig" => Some(("zig", "version", "install Zig 0.16 or newer (https://ziglang.org/download/)")),
         "swift" => Some(("swiftc", "--version", "install Swift 5.10 or newer (https://www.swift.org/install/)")),
+        "csharp" => Some(("dotnet", "--version", "install the .NET SDK 8 or newer (https://dotnet.microsoft.com/download)")),
         _ => None,
+    }
+}
+
+/// The program a language's toolchain is invoked as. `ORCH_DOTNET` moves the .NET SDK,
+/// which is commonly installed outside PATH.
+fn foreign_program(language: &str, default: &str) -> String {
+    match language {
+        "csharp" => std::env::var("ORCH_DOTNET").unwrap_or_else(|_| default.to_string()),
+        _ => default.to_string(),
     }
 }
 
@@ -169,6 +180,128 @@ fn build_sandbox_guest(cache_dir: &Path, name: &str, lib_src: &str) -> Result<()
         .map_err(|e| format!("Failed to stage sandbox guest '{}': {}", name, e))?;
     Ok(())
 }
+
+/// The `build.rs` helper that turns one C# file into a native shared library.
+///
+/// Shared, not static: two NativeAOT **static** archives cannot be linked into one module
+/// because each embeds its own runtime, which would cap a program at one C# module and
+/// fail as duplicate symbols from the linker rather than as a diagnostic the compiler
+/// could write. A shared library per module has no such limit.
+const CSHARP_BUILD_HELPER: &str = r#"
+/// Publishes a C# file as a NativeAOT shared library and links it.
+fn orch_build_csharp(lib: &str, source: &str, out_dir: &str) {
+    let target = std::env::var("TARGET").unwrap();
+    let host = std::env::var("HOST").unwrap();
+    if target != host {
+        panic!("load_foreign 'csharp' cannot cross-compile yet (host {}, target {})", host, target);
+    }
+    // The runtime identifier NativeAOT publishes for, from the target triple.
+    let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let rid = format!(
+        "{}-{}",
+        match os.as_str() { "macos" => "osx", "windows" => "win", other => other },
+        match arch.as_str() { "aarch64" => "arm64", "x86_64" => "x64", other => other },
+    );
+    let project_dir = format!("{}/{}", out_dir, lib);
+    std::fs::create_dir_all(&project_dir).expect("load_foreign 'csharp': cannot create the project directory");
+
+    // A throwaway project around the user's file. EnableDefaultCompileItems is off so
+    // only that file is compiled, whatever else sits beside it.
+    let project = format!(
+        concat!(
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n",
+            "  <PropertyGroup>\n",
+            "    <TargetFramework>{framework}</TargetFramework>\n",
+            "    <AssemblyName>{lib}</AssemblyName>\n",
+            "    <RootNamespace>{lib}</RootNamespace>\n",
+            "    <Nullable>disable</Nullable>\n",
+            "    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>\n",
+            "    <PublishAot>true</PublishAot>\n",
+            "    <NativeLib>Shared</NativeLib>\n",
+            "    <InvariantGlobalization>true</InvariantGlobalization>\n",
+            "    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>\n",
+            "  </PropertyGroup>\n",
+            "  <ItemGroup>\n    <Compile Include=\"{source}\" />\n  </ItemGroup>\n",
+            "</Project>\n",
+        ),
+        framework = orch_csharp_framework(),
+        lib = lib,
+        source = source,
+    );
+    let project_file = format!("{}/{}.csproj", project_dir, lib);
+    let previous = std::fs::read_to_string(&project_file).unwrap_or_default();
+    if previous != project {
+        std::fs::write(&project_file, &project).expect("load_foreign 'csharp': cannot write the project file");
+    }
+
+    let published = format!("{}/publish", project_dir);
+    let output = std::process::Command::new(orch_dotnet())
+        .args(["publish", &project_file, "-c", "Release", "-r", &rid, "-o", &published, "--nologo", "-v", "quiet"])
+        .output()
+        .unwrap_or_else(|e| panic!("load_foreign 'csharp': failed to run `dotnet`: {}", e));
+    if !output.status.success() {
+        panic!(
+            "load_foreign 'csharp': `dotnet publish` failed for {}\n{}{}",
+            source,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    let extension = match os.as_str() { "macos" => "dylib", "windows" => "dll", _ => "so" };
+    let library = format!("{}/{}.{}", published, lib, extension);
+    if !std::path::Path::new(&library).exists() {
+        panic!("load_foreign 'csharp': published {} but no {} was produced", source, library);
+    }
+
+    // NativeAOT names the library after the assembly, with no `lib` prefix, and a Unix
+    // linker given `-l<name>` looks for `lib<name>`. Copy it under the name the linker
+    // expects rather than renaming the assembly, which would rename the symbols' owner.
+    let linkable = if os == "windows" {
+        published.clone()
+    } else {
+        let staged = format!("{}/lib{}.{}", out_dir, lib, extension);
+        std::fs::copy(&library, &staged)
+            .unwrap_or_else(|e| panic!("load_foreign 'csharp': cannot stage {}: {}", library, e));
+        // The recorded install name is the path it was built at; point it at the rpath
+        // instead so the copy is what gets loaded.
+        if os == "macos" {
+            let _ = std::process::Command::new("install_name_tool")
+                .args(["-id", &format!("@rpath/lib{}.{}", lib, extension), &staged])
+                .status();
+        }
+        out_dir.to_string()
+    };
+
+    println!("cargo:rerun-if-changed={}", source);
+    println!("cargo:rustc-link-search=native={}", linkable);
+    println!("cargo:rustc-link-lib=dylib={}", lib);
+    // The library is loaded at run time, so the program has to be able to find it.
+    if os != "windows" {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", linkable);
+    }
+}
+
+fn orch_dotnet() -> String {
+    std::env::var("ORCH_DOTNET").unwrap_or_else(|_| "dotnet".to_string())
+}
+
+/// The newest `net<major>.0` the installed SDK can target.
+fn orch_csharp_framework() -> String {
+    let output = std::process::Command::new(orch_dotnet()).arg("--list-sdks").output();
+    let major = output
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .and_then(|text| {
+            text.lines()
+                .filter_map(|line| line.split('.').next()?.trim().parse::<u32>().ok())
+                .max()
+        })
+        .unwrap_or(8);
+    format!("net{}.0", major.max(8))
+}
+"#;
 
 const DEFAULT_LIBRARY_RUST_VERSION: &str = "1.89";
 
@@ -352,7 +485,7 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
                             type_checker.register_foreign_function(local_name, &signature.name, params, signature.ret.clone());
                         }
                     }
-                } else if matches!(language.as_str(), "c" | "cpp" | "zig" | "swift") {
+                } else if matches!(language.as_str(), "c" | "cpp" | "zig" | "swift" | "csharp") {
                     // A missing sidecar is reported by codegen below; here the signatures
                     // are registered so calls are typed and handles are known.
                     let sidecar_path = module_path.join(path).with_extension("orch_ffi");
@@ -438,9 +571,12 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
                     foreign_code.push_str(&crate::wasm_ffi::bindings(&signatures, &asset, &label));
                     foreign_code.push('\n');
                     uses_wasm = true;
-                } else if matches!(language.as_str(), "c" | "cpp" | "zig" | "swift") {
+                } else if matches!(language.as_str(), "c" | "cpp" | "zig" | "swift" | "csharp") {
                     if let Some((program, version_arg, install_hint)) = foreign_toolchain(language) {
-                        if Command::new(program).arg(version_arg).output().is_err() {
+                        // The same override the generated build.rs honours, so a toolchain
+                        // installed outside PATH is found by both.
+                        let program = foreign_program(language, program);
+                        if Command::new(&program).arg(version_arg).output().is_err() {
                             return Err(format!("load_foreign '{}': `{}` was not found on PATH — {}", language, program, install_hint));
                         }
                     }
@@ -457,6 +593,7 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
                         "c" => ForeignSource::C(abs_path),
                         "cpp" => ForeignSource::Cpp(abs_path),
                         "zig" => ForeignSource::Zig(abs_path),
+                        "csharp" => ForeignSource::CSharp(abs_path),
                         _ => ForeignSource::Swift(abs_path),
                     });
                     
@@ -559,6 +696,7 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
         let mut cpp_files = Vec::new();
         let mut zig_files = Vec::new();
         let mut swift_files = Vec::new();
+        let mut csharp_files = Vec::new();
 
         for (index, source) in all_foreign_sources.into_iter().enumerate() {
             match source {
@@ -566,13 +704,14 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
                 ForeignSource::Cpp(p) => { cpp_files.push(p); has_cpp = true; },
                 ForeignSource::Zig(p) => zig_files.push((foreign_lib_name("zig", index, &p), p)),
                 ForeignSource::Swift(p) => swift_files.push((foreign_lib_name("swift", index, &p), p)),
+                ForeignSource::CSharp(p) => csharp_files.push((foreign_lib_name("csharp", index, &p), p)),
             }
         }
         if has_c || has_cpp {
             cargo_toml_content.push_str("\n[build-dependencies]\ncc = \"1.0\"\n");
         }
 
-        if !zig_files.is_empty() || !swift_files.is_empty() {
+        if !zig_files.is_empty() || !swift_files.is_empty() || !csharp_files.is_empty() {
             // Zig and Swift compile to one static library each in OUT_DIR, using the
             // language's own compiler for the host target.
             build_rs.push_str("    let out_dir = std::env::var(\"OUT_DIR\").unwrap();\n");
@@ -623,6 +762,16 @@ fn orch_archive_object(language: &str, archive: &str, object: &str) {
                 p.to_string_lossy()
             ));
         }
+        for (lib, p) in &csharp_files {
+            build_rs.push_str(&format!(
+                "    orch_build_csharp(\"{lib}\", {:?}, &out_dir);\n",
+                p.to_string_lossy()
+            ));
+        }
+        if !csharp_files.is_empty() {
+            helpers.push_str(CSHARP_BUILD_HELPER);
+        }
+
         if !swift_files.is_empty() {
             build_rs.push_str("    orch_link_swift_runtime();\n\n");
             helpers.push_str(r#"
@@ -845,7 +994,7 @@ pub fn run_check(input_file: &str) -> Result<(), String> {
                             let params = signature.params.iter().map(|(_, ty)| ty.clone()).collect();
                             type_checker.register_foreign_function(local_name, &signature.name, params, signature.ret.clone());
                         }
-                    } else if matches!(language.as_str(), "c" | "cpp" | "zig" | "swift") {
+                    } else if matches!(language.as_str(), "c" | "cpp" | "zig" | "swift" | "csharp") {
                         let sidecar_path = module_path.join(path).with_extension("orch_ffi");
                         if let Ok(content) = fs::read_to_string(&sidecar_path) {
                             let file_name = sidecar_path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown.orch_ffi").to_string();

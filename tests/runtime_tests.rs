@@ -821,3 +821,71 @@ orchestrator main() {
         "the error should name both sides: {}", report);
     let _ = fs::remove_dir_all(&tmp);
 }
+
+/// The .NET SDK, as the compiler and the generated build.rs both resolve it.
+fn dotnet() -> String {
+    std::env::var("ORCH_DOTNET").unwrap_or_else(|_| "dotnet".to_string())
+}
+
+#[test]
+fn runtime_ffi_csharp() {
+    if !has_tool(&dotnet(), "--version") { return; }
+    // `bool` is not blittable in an export signature, so C# returns a byte that is 0 or 1
+    // — the same byte a C `_Bool` returns, which is what the generated wrapper reads.
+    write_foreign_module("ffi_csharp", "csmath", "csharp", "Math.cs",
+        "using System.Runtime.InteropServices;\n\
+         public static class Math\n{\n\
+         \x20   [UnmanagedCallersOnly(EntryPoint = \"add\")]\n\
+         \x20   public static long Add(long a, long b) => a + b;\n\
+         \x20   [UnmanagedCallersOnly(EntryPoint = \"half\")]\n\
+         \x20   public static double Half(double x) => x / 2.0;\n\
+         \x20   [UnmanagedCallersOnly(EntryPoint = \"is_even\")]\n\
+         \x20   public static byte IsEven(long n) => (byte)(n % 2 == 0 ? 1 : 0);\n\
+         }\n",
+        "add(a: int, b: int) -> int\nhalf(x: float) -> float\nis_even(n: int) -> bool\n");
+    let out = run_orch("ffi_csharp", r#"
+use module csmath: "./csmath"
+let worker = automatic {
+    print(to_string(csmath.add(2, 3)))
+    print(to_string(csmath.half(5.0)))
+    print(to_string(csmath.is_even(10)))
+    stop_orch()
+}
+orchestrator main(procs: process[worker]) { }
+"#);
+    assert_eq!(out.trim(), "5\n2.5\ntrue");
+}
+
+/// Two C# modules in one program. A NativeAOT *static* archive embeds its own runtime and
+/// two cannot be linked into one module, which is why the backend publishes shared
+/// libraries; this is the test that would fail if that ever changed.
+#[test]
+fn runtime_ffi_csharp_two_modules_in_one_program() {
+    if !has_tool(&dotnet(), "--version") { return; }
+    let name = "ffi_csharp_two";
+    write_foreign_module(name, "first", "csharp", "First.cs",
+        "using System.Runtime.InteropServices;\n\
+         public static class First\n{\n\
+         \x20   [UnmanagedCallersOnly(EntryPoint = \"first_twice\")]\n\
+         \x20   public static long Twice(long n) => n * 2;\n\
+         }\n",
+        "first_twice(n: int) -> int\n");
+    write_foreign_module(name, "second", "csharp", "Second.cs",
+        "using System.Runtime.InteropServices;\n\
+         public static class Second\n{\n\
+         \x20   [UnmanagedCallersOnly(EntryPoint = \"second_thrice\")]\n\
+         \x20   public static long Thrice(long n) => n * 3;\n\
+         }\n",
+        "second_thrice(n: int) -> int\n");
+    let out = run_orch(name, r#"
+use module first: "./first"
+use module second: "./second"
+let worker = automatic {
+    print(to_string(first.first_twice(5)))
+    print(to_string(second.second_thrice(5)))
+    stop_orch()
+}
+orchestrator main(procs: process[worker]) { }
+"#);
+    assert_eq!(out.trim(), "10\n15");
+}

@@ -1,0 +1,15 @@
+// Requires the .NET SDK 8+ on PATH (https://dotnet.microsoft.com/download), or ORCH_DOTNET
+// pointing at it. The first build downloads .NET's Native AOT compiler, which takes a
+// while; later builds reuse it. Each call costs about 5 ns.
+use module math: "./modules/foreign_csharp_math"
+
+let worker = automatic {
+    print("Clamp 42 to 0..10: " + to_string(math.clamp(42, 0, 10)))
+    print("Lerp 10 -> 20 at 0.25: " + to_string(math.lerp(10.0, 20.0, 0.25)))
+    print("64 is a power of two: " + to_string(math.is_power_of_two(64)))
+    print("63 is a power of two: " + to_string(math.is_power_of_two(63)))
+
+    stop_orch()
+}
+
+orchestrator main(procs: process[worker]) { }
