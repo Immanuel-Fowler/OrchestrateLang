@@ -117,6 +117,25 @@ serverlet UntrustedPlugin sandbox(memory_limit: "64mb", timeout: "5s") {
 
 ---
 
+## 2b. Shared state (`shared let`) — **[PROPOSED]**
+
+**Problem it solves:** a top-level `let` is owned by the instance and only hooks can reach
+it, because a spawned worker can run while a tick holds it. The existing answer for state
+several concurrent things touch is a serverlet, at about 7.5 µs a call. There is nothing
+between "free but hooks only" and "safe but microseconds".
+
+**How it would work:** `shared let hits = 0` puts the binding behind one mutex on the
+context instead of in the program struct, reachable from any task and any `fn`, at an
+estimated ~15–20 ns. A plain `let` does not change and a program without the marker
+generates the same code it does today.
+
+This is the language's own idiom — one construct, several backends, chosen by a word in the
+declaration, the way `secret`, `sandbox`, and `via` already work. The design, the guarantee
+(a statement touching shared state is atomic with respect to all shared state), and the open
+questions are in [design/shared-state.md](design/shared-state.md).
+
+---
+
 ## 3. PROM — Personal Registry for Orchestrator Modules — **[SHIPPED]**
 
 **Problem it solves:** `use module alias: "./path/to/dir"` is relative-path-based, making it awkward to share modules across projects or reference "a module that lives somewhere on this machine."
