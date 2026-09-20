@@ -43,4 +43,8 @@ fn test_error_cases() {
     assert_compilation_fails("undefined_variable.orch", "undefined variable");
     assert_compilation_fails("index_not_int.orch", "Type Error");
     assert_compilation_fails("index_not_int.orch", "array index must be int");
+    // The message has to name the function and say what to do, not leak `await` from
+    // generated Rust the user never wrote.
+    assert_compilation_fails("sync_fn_awaits.orch", "fn 'bump' calls 'counter.add'");
+    assert_compilation_fails("sync_fn_awaits.orch", "declare it as a `task` instead");
 }

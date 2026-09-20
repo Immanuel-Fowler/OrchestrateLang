@@ -60,6 +60,7 @@ impl Codegen {
                 } else {
                     format!(" -> {}", self.compile_type(return_type))
                 };
+                let outer = std::mem::replace(&mut self.sync_fn, Some(name.clone()));
                 let body_str = if let ExprNode::Block(_) = &body.node {
                     let force_semi = *return_type == Type::Void;
                     let inner = self.compile_block_inner(body, force_semi);
@@ -67,6 +68,7 @@ impl Codegen {
                 } else {
                     self.compile_expr(body)
                 };
+                self.sync_fn = outer;
                 let vis = if self.is_main { "" } else { "pub " };
                 format!("{}fn {}{}({}){} {}", vis, name, generics, params_str, ret_str, body_str)
             }
@@ -350,6 +352,7 @@ impl Codegen {
                 )
             }
             StmtNode::Parallel(stmts) => {
+                self.require_async("uses a parallel block, which waits for its branches");
                 let mut binds = Vec::new();
                 let mut futures = Vec::new();
 

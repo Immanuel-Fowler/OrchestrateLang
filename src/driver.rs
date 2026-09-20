@@ -543,6 +543,9 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
             .filter_map(|(key, flags)| key.strip_prefix(&prefix).map(|name| (name.to_string(), flags.clone())))
             .collect();
         let mut module_rust_code = generator.generate(&module_stmts, false);
+        if let Some(error) = generator.errors.first() {
+            return Err(format!("{}: {}", module_path.display(), error));
+        }
         all_secret_programs.append(&mut generator.secret_programs);
         all_sandbox_programs.append(&mut generator.sandbox_programs);
         
@@ -653,6 +656,9 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
     }).collect();
     if library.is_some() { generator.scan_events(&module_event_stmts); }
     let main_rust = generator.generate(&ast, true);
+    if let Some(error) = generator.errors.first() {
+        return Err(format!("{}: {}", input_file, error));
+    }
     all_secret_programs.append(&mut generator.secret_programs);
     all_sandbox_programs.append(&mut generator.sandbox_programs);
 

@@ -229,6 +229,23 @@ orchestrator main(p: process) {
 }
 ```
 
+**`fn` is synchronous; `task` is not.** A `fn` compiles to a plain Rust function and a
+`task` to an `async` one, which decides what each may do. Anything that waits — calling a
+serverlet or a landline, calling a `task`, `sleep`, or a `parallel` block — belongs in a
+`task`. A `fn` may call other functions, foreign functions in any supported language, and
+`host` functions in library mode, and it returns without yielding.
+
+```orchestrate
+fn scale(n: int) -> int { return n * 2 }          // fine: no waiting
+
+task fetch(id: int) -> int {                       // waits, so it is a task
+    return store.lookup(id)
+}
+```
+
+Using a `fn` where a `task` is needed is a compile error that names the function and the
+call, rather than an error about generated code.
+
 ### 2.6 The Pipeline Operator (`|>`)
 
 The pipeline operator passes the left-hand result as the first argument to the right-hand function. This lets you chain transformations left-to-right without nesting:

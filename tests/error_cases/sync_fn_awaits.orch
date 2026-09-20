@@ -1,0 +1,19 @@
+// A `fn` compiles to a synchronous function, so it cannot call a serverlet. Before this
+// was caught, the user saw rustc complaining about `await` in generated code.
+serverlet Counter {
+    let n = 0
+    on add(k: int) -> int {
+        n = n + k
+        return n
+    }
+}
+
+fn bump(k: int) -> int {
+    let counter = start Counter()
+    return counter.add(k)
+}
+
+orchestrator main() {
+    print(to_string(bump(1)))
+    stop_orch()
+}

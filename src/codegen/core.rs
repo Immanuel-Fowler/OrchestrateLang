@@ -304,6 +304,12 @@ pub struct Codegen {
     /// event handlers, and worker bodies. A host call or trigger there uses the binding
     /// instead of looking the instance up. Off inside closures, which may outlive the tick.
     pub(super) context_bound: bool,
+    /// The `fn` being compiled, if any. A `fn` becomes a synchronous Rust function, so
+    /// anything inside it that would have to wait is an error rather than generated code
+    /// that will not compile.
+    pub(super) sync_fn: Option<String>,
+    /// Errors gathered while generating, reported by the driver before Cargo runs.
+    pub errors: Vec<String>,
     /// The program loads a wasm module or sandboxes a serverlet, so the entry file
     /// carries the wasmtime host: the engine, the guest wrapper, and the limits.
     pub needs_wasm: bool,
@@ -337,6 +343,8 @@ impl Codegen {
             state_types: std::collections::BTreeMap::new(),
             state_rewrite: None,
             context_bound: false,
+            sync_fn: None,
+            errors: Vec::new(),
             needs_wasm: false,
             serverlet_state_types: std::collections::BTreeMap::new(),
             emit_handle_type: false,
@@ -619,6 +627,23 @@ impl Codegen {
             || matches!(name, "print" | "to_string" | "to_int" | "to_float" | "parse_int" | "parse_float"
                             | "length" | "append" | "remove" | "sleep" | "stop_orch" | "clock_micros"
                             | "range" | "map" | "filter" | "reduce" | "find" | "any" | "all")
+    }
+
+    /// Refuse something that has to wait inside a `fn`.
+    ///
+    /// `fn` compiles to a synchronous Rust function and `task` to an async one, so a
+    /// serverlet call, a landline call, `sleep`, or a `parallel` block inside a `fn` would
+    /// emit an `.await` where none is allowed. Without this the user sees rustc complaining
+    /// about generated code they did not write.
+    pub(super) fn require_async(&mut self, what: &str) {
+        if let Some(function) = self.sync_fn.clone() {
+            let message = format!(
+                "fn '{function}' {what}. A `fn` compiles to a synchronous function, so it cannot wait; declare it as a `task` instead, and call it from another task or from a hook."
+            );
+            if !self.errors.contains(&message) {
+                self.errors.push(message);
+            }
+        }
     }
 
     pub(super) fn push_scope(&mut self) {

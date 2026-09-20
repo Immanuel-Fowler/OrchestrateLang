@@ -9,6 +9,14 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+### Fixed
+- A `fn` that calls a serverlet, a landline, a `task`, `sleep`, or a `parallel` block now
+  fails with an OrchestrateLang error naming the function and the call, and saying to
+  declare it as a `task`. It used to reach Cargo and surface as rustc's
+  "`await` is only allowed inside `async` functions", pointing at generated code the user
+  never wrote. `fn` compiles to a synchronous Rust function and `task` to an async one,
+  which is the rule the message now states; `docs/language-reference.md` §2.5 states it too.
+
 ## [0.10.0] - 2026-09-19
 
 C# runs in-process, about five nanoseconds a call.

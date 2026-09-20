@@ -104,8 +104,10 @@ impl Codegen {
                 } else if callee == "parse_float" && args.len() == 1 {
                     format!("({}).parse::<f64>().map_err(|e| e.to_string())", self.compile_expr(&args[0]))
                 } else if callee == "sleep" {
+                    self.require_async("calls sleep, which suspends until the timer fires");
                     format!("tokio::time::sleep(std::time::Duration::from_millis({} as u64)).await", args_str)
                 } else if self.tasks.contains(callee) {
+                    self.require_async(&format!("calls the task '{}', which it would have to wait for", callee));
                     format!("{}({}).await", callee, args_str)
                 } else if self.foreign_handle_params.contains_key(callee) {
                     let args = self.compile_args_for(callee, args);
@@ -121,8 +123,10 @@ impl Codegen {
                         if name == "print" {
                             format!("print_val({})", val_str)
                         } else if name == "sleep" {
+                            self.require_async("calls sleep, which suspends until the timer fires");
                             format!("tokio::time::sleep(std::time::Duration::from_millis({} as u64)).await", val_str)
                         } else if self.tasks.contains(name) {
+                            self.require_async(&format!("calls the task '{}', which it would have to wait for", name));
                             format!("{}({}).await", name, val_str)
                         } else {
                             format!("{}({})", self.call_name(name), val_str)
@@ -143,8 +147,10 @@ impl Codegen {
                         } else if callee == "remove" && all_args.len() == 2 {
                             format!("{}.remove({} as usize)", all_args[0], all_args[1])
                         } else if callee == "sleep" {
+                            self.require_async("calls sleep, which suspends until the timer fires");
                             format!("tokio::time::sleep(std::time::Duration::from_millis({} as u64)).await", all_args_str)
                         } else if self.tasks.contains(callee) {
+                            self.require_async(&format!("calls the task '{}', which it would have to wait for", callee));
                             format!("{}({}).await", callee, all_args_str)
                         } else {
                             format!("{}({})", self.call_name(callee), all_args_str)
@@ -183,6 +189,7 @@ impl Codegen {
                 if self.modules.contains(module_local_name) {
                     let full_name = format!("{}::{}", module_local_name, function);
                     if self.tasks.contains(&full_name) {
+                        self.require_async(&format!("calls the task '{}', which it would have to wait for", full_name));
                         format!("{}::{}({}).await", module_local_name, function, args_str)
                     } else if self.foreign_handle_params.contains_key(&full_name) {
                         let args = self.compile_args_for(&full_name, args);
@@ -191,6 +198,7 @@ impl Codegen {
                         format!("{}::{}({})", module_local_name, function, args_str)
                     }
                 } else {
+                    self.require_async(&format!("calls '{}.{}', which waits for the serverlet to reply", module_local_name, function));
                     format!("{}.{}({}).await", self.read_name(module_local_name), function, args_str)
                 }
             }
