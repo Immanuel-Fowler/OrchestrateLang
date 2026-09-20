@@ -6,7 +6,11 @@ name: website
 # branch at page load, so a docs change on `main` is live without a redeploy.
 # The copies placed beside the site here are only a fallback for when the raw
 # host cannot be reached, and they are taken from `main` rather than from this
-# branch so the fallback does not drift. The daily run refreshes that snapshot.
+# branch so the fallback does not drift.
+#
+# There is no scheduled refresh: GitHub only fires `schedule` from the default
+# branch, and this workflow lives here, so a cron here would never run. Run the
+# workflow by hand to refresh the snapshot against a newer `main`.
 #
 # To deploy: push to the `website` branch (or run this workflow by hand). The
 # first run enables Pages for the repository; if that step is refused, enable
@@ -15,8 +19,6 @@ name: website
 on:
   push:
     branches: [website]
-  schedule:
-    - cron: "17 6 * * *"   # refresh the fallback snapshot of main
   workflow_dispatch:
 
 permissions:
