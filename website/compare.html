@@ -211,7 +211,7 @@
           </tr>
           <tr>
             <td>Isolation</td>
-            <td class="ours">Tokio task in-process; a separate native process for secret and landline serverlets<small>A process is not a security boundary; WASM sandboxing is planned, not shipped</small></td>
+            <td class="ours">Tokio task in-process; a separate native process for secret and landline serverlets; a WASM guest under wasmtime for sandboxed ones<small>A process is not a security boundary — the sandbox is, as far as wasmtime is</small></td>
             <td>Task or thread; process isolation is yours to build</td>
             <td>Process on the VM; no memory sharing between processes</td>
             <td>Actor on the JVM; same heap</td>
@@ -285,10 +285,10 @@
         <ul>
           <li>You want workers, reactions, services, and the lifecycle owner to be visible in the source rather than assembled from library calls.</li>
           <li>The program must be a native binary, or a crate a Rust host embeds and ticks.</li>
-          <li>Existing C, C++, Zig, Swift, Rust, TypeScript, or Python code should plug in at the cheapest boundary that works.</li>
+          <li>Existing C, C++, Zig, Swift, Rust, TypeScript, Python, or WebAssembly code should plug in at the cheapest boundary that works.</li>
           <li>One process is the scope. Distribution and durability are not requirements.</li>
         </ul>
-        <div class="not"><strong>Not yet for:</strong> untrusted code (sandboxing is not shipped), multi-machine systems, or anything that needs supervision trees more elaborate than per-worker restart policies.</div>
+        <div class="not"><strong>Not yet for:</strong> multi-machine systems, or anything that needs supervision trees more elaborate than per-worker restart policies. Untrusted code has a home now — a sandboxed serverlet — though it cannot be granted host access yet.</div>
       </div>
       <div class="pick">
         <div class="when">Tokio by hand when</div>

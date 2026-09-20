@@ -254,6 +254,7 @@ tr[aria-expanded="true"] .row-btn .name .chev { transform: rotate(90deg); }
       <p>Scores are 0 to 5 per column, 40 total. They describe fit with the current sidecar mechanism, not language quality. A language near the top of the table needs only four edits in the compiler: a <code>ForeignSource</code> variant, a toolchain entry, a <code>build.rs</code> emitter line, and a <code>check-foreign</code> entry.</p>
       <p>The tier is a judgement about effort and route; the total is a measure of C-ABI fit. A language can rank low on the total yet be cheap to add through the TypeScript bridge, which is why JavaScript sits in "Ready to add". "Needs a different path" usually means a landline serverlet; "Would want a new feature" names the feature.</p>
       <p>Scores were set against the <code>int</code>, <code>float</code>, <code>bool</code>, <code>void</code> sidecar. Version 0.8.0 added <code>string</code> and <code>handle</code> across the C ABI; arrays and structs would lift the whole table at once. The data lives in <code>website/assets/scorecard-data.js</code>; re-score there.</p>
+      <p><strong>WebAssembly is not in this table</strong>, and not because it scored badly. The table asks how well a language fits the C-ABI sidecar slot; a <code>.wasm</code> module fits a different slot entirely — it is already compiled, so there is no toolchain to install, no static archive to build, and no cross-compilation question. It ships in 0.9.0 as <code>load_foreign "wasm"</code>, and it is also the route by which a language with no C ABI can arrive: anything that targets WebAssembly can be called, at about 0.1 µs, without the compiler learning that language at all.</p>
     </div>
     </details>
   </div>
@@ -265,7 +266,7 @@ tr[aria-expanded="true"] .row-btn .name .chev { transform: rotate(90deg); }
     <div class="section-head">
       <div class="eyebrow">Two mechanisms, not seven</div>
       <h2>Foreign functions for calls. Serverlets for state.</h2>
-      <p>Every language plugs in through one of two shapes, so there is one set of rules to learn. <code>load_foreign</code> puts functions in a module's namespace and keeps them stateless. A serverlet <code>via python(...)</code> or <code>via typescript(...)</code>, called a landline, keeps a foreign process alive with its own state and answers typed calls. Serverlets can call foreign functions; foreign functions never own state.</p>
+      <p>Every language plugs in through one of two shapes, so there is one set of rules to learn. <code>load_foreign</code> puts functions in a module's namespace and keeps them stateless. A serverlet <code>via python(...)</code> or <code>via typescript(...)</code>, called a landline, keeps a foreign process alive with its own state and answers typed calls. Serverlets can call foreign functions; foreign functions never own state. A compiled <code>.wasm</code> module plugs into the same <code>load_foreign</code> shape, and a sandboxed serverlet into the same serverlet shape.</p>
     </div>
     <div class="grid2">
       <div class="code">
@@ -323,7 +324,7 @@ orchestrator main() {
       <div class="q">
         <div class="ask">3. Do you trust the code?</div>
         <div class="opt pick"><strong>Yes</strong><span>a landline: <code>via python(...)</code> or <code>via typescript(...)</code>. A persistent process, a checked interface at startup, budgets for slow calls, and host callbacks you grant one function at a time.</span></div>
-        <div class="opt warn"><strong>No</strong><span><code>sandbox(...)</code> is the reserved syntax, and today it does not isolate anything. The compiler warns. A child process is not a security boundary either. Treat untrusted code as unsupported until the WASM work on the roadmap ships.</span></div>
+        <div class="opt pick"><strong>No</strong><span><code>sandbox(memory_limit: "64mb", timeout: "5s")</code>. The handlers run in a WASM guest under wasmtime: memory capped, a call interrupted at its timeout, and no import it was not given. A child process is still not a security boundary — this is. <code>grant</code> on one is a compile error, because a grant would be a deliberate hole.</span></div>
       </div>
     </div>
   </div>
@@ -388,6 +389,21 @@ orchestrator main() {
         </tbody>
       </table>
     </div>
+    <h3 class="sub">WebAssembly: <code>load_foreign "wasm"</code> and <code>sandbox(...)</code></h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>OrchestrateLang</th><th>Crosses as</th></tr></thead>
+        <tbody>
+          <tr><td><code>int</code></td><td><code>i64</code></td></tr>
+          <tr><td><code>float</code></td><td><code>f64</code></td></tr>
+          <tr><td><code>bool</code></td><td><code>i32</code>, 0 or 1</td></tr>
+          <tr><td><code>string</code></td><td>a pointer and a length into the module's memory</td></tr>
+          <tr><td><code>void</code></td><td>no result</td></tr>
+          <tr><td><code>T[]</code>, <code>struct</code>, <code>handle</code></td><td>do not cross yet</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="muted" style="margin-top:12px;max-width:74ch">Because a string is a pointer and a length, a module that carries one must export the allocator both sides use — <code>orch_alloc(i32) -&gt; i32</code> and <code>orch_free(i32, i32)</code> — and the compiler says so if it does not. For <code>load_foreign "wasm"</code> the contract is checked against the module's own export table at build time, so a name it does not export, or a signature that does not line up, is an error naming both sides rather than a trap later. A sandboxed serverlet's guest is generated, so its allocator is generated with it.</p>
   </div>
 </section>
 
@@ -429,6 +445,8 @@ orchestrator main() {
           <tr><td>TypeScript, functions</td><td><code>load_foreign "typescript"</code></td><td>TypeScript 7 (<code>tsc</code>), Bun, optionally scriptc</td><td>TypeScript 7 against the declared interface</td><td>scriptc, else <code>bun build --compile</code>; one persistent process per module</td><td>host only</td></tr>
           <tr><td>TypeScript, service</td><td><code>via typescript(...)</code></td><td>TypeScript 7, Bun, optionally scriptc</td><td>TypeScript 7</td><td>scriptc or Bun executable</td><td>host only</td></tr>
           <tr><td>Python</td><td><code>via python(...)</code></td><td>Python 3.10+ (<code>ORCH_PYTHON</code> to pick one)</td><td><code>py_compile</code>; mypy with <code>--deep</code></td><td>nothing: the interpreter runs the source</td><td>wherever that Python runs</td></tr>
+          <tr><td>WebAssembly, functions</td><td><code>load_foreign "wasm"</code></td><td>nothing: the module is already compiled</td><td>the compiler, against the module's export table</td><td>nothing: the module is embedded as it is</td><td>any target</td></tr>
+          <tr><td>WebAssembly, sandbox</td><td><code>sandbox(...)</code></td><td>the <code>wasm32-wasip1</code> target</td><td>the compiler</td><td>Cargo, into a guest crate embedded in the program</td><td>any target</td></tr>
         </tbody>
       </table>
     </div>
@@ -442,11 +460,13 @@ orchestrator main() {
     <div class="section-head">
       <div class="eyebrow">What each boundary costs</div>
       <h2>Measured, not promised.</h2>
-      <p>Median round-trip latency for an <code>int</code> echo from the repository benchmark on one Apple Silicon Mac, 2026-09-14, plus the in-process probe for TypeScript's planned native backend. The <a href="./#benchmarks">full chart</a> has p90, p99, and max, which matter more for per-tick work.</p>
+      <p>Median round-trip latency for an <code>int</code> echo from the repository benchmark on one Apple Silicon Mac, 2026-09-14, plus the in-process probe for TypeScript's planned native backend and a 2026-09-19 measurement of the WebAssembly boundaries (20,000 calls each, same machine). The <a href="./#benchmarks">full chart</a> has p90, p99, and max, which matter more for per-tick work.</p>
     </div>
     <div class="costs">
       <div class="cost"><span class="n">ns</span><span class="l">C-ABI foreign function: a direct call in the same process</span></div>
+      <div class="cost"><span class="n">0.1<small>µs</small></span><span class="l">WebAssembly function under wasmtime, in the same process</span></div>
       <div class="cost"><span class="n">8<small>µs</small></span><span class="l">in-process serverlet, p50</span></div>
+      <div class="cost"><span class="n">8<small>µs</small></span><span class="l">sandboxed serverlet: the channel dominates, so containment is close to free</span></div>
       <div class="cost"><span class="n">17<small>µs</small></span><span class="l">secret serverlet (Rust child process), p50</span></div>
       <div class="cost"><span class="n">24<small>µs</small></span><span class="l">Python landline, p50</span></div>
       <div class="cost"><span class="n">~60<small>µs</small></span><span class="l">TypeScript function over today's pipe bridge</span></div>
@@ -470,7 +490,7 @@ orchestrator main() {
       <div class="rule"><strong>C# <span class="pill pill-planned">Planned</span></strong>Native AOT exports with <code>[UnmanagedCallersOnly]</code> for functions; a landline or embedded runtime for services.</div>
       <div class="rule"><strong>Go <span class="pill pill-exploring">Exploring</span></strong><code>-buildmode=c-archive</code> works, but only one Go library can be loaded per process, which is a real constraint on the module model.</div>
       <div class="rule"><strong>Cross-compiling Zig and Swift <span class="pill pill-planned">Planned</span></strong>Both build for the host only today; <code>build --lib --target</code> with another target stops with a clear error.</div>
-      <div class="rule"><strong>Sandboxed serverlets <span class="pill pill-caution">Not isolated</span></strong>The plan is wasmtime with WASI preview 1, with memory limits and fuel. First step on the roadmap: make <code>sandbox(...)</code> an error unless a flag opts into the unsandboxed run, so the syntax cannot promise what it does not deliver.</div>
+      <div class="rule"><strong>Grants into a sandbox <span class="pill pill-planned">Planned</span></strong>Sandboxed serverlets ship in 0.9.0 under wasmtime, but a <code>grant</code> on one is a compile error rather than a hole that opens quietly. Each grant has to become one narrow, mediated host function in the wasmtime linker — the point where sandboxing and the consent model become the same mechanism. Arrays and structs across the guest boundary are planned with it.</div>
     </div>
   </div>
 </section>

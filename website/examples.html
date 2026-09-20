@@ -118,7 +118,8 @@
       { id: "resilient_serverlet", title: "Resilient serverlet", blurb: "A handler that panics is isolated by on_crash." },
       { id: "secret_serverlet", title: "Secret serverlet", blurb: "The service compiles to its own native executable." },
       { id: "python_landline", title: "Python landline", blurb: "A stateful Python 3.10+ service behind the same interface.", needs: ["Python 3.10+"] },
-      { id: "typescript_landline", title: "TypeScript landline", blurb: "A TypeScript 7 service compiled to an executable.", needs: ["TypeScript 7", "Bun"] }
+      { id: "typescript_landline", title: "TypeScript landline", blurb: "A TypeScript 7 service compiled to an executable.", needs: ["TypeScript 7", "Bun"] },
+      { id: "sandboxed_plugin", title: "Sandboxed serverlet", blurb: "Handlers run in a WASM guest under a memory cap and a timeout; a runaway call is stopped and the program carries on.", needs: ["wasm32-wasip1 target"] }
     ]},
     { group: "Foreign functions", items: [
       { id: "foreign_rust_math", title: "Rust functions", blurb: "pub fn's from a .rs file injected into the module.", module: "foreign_rust_math" },
