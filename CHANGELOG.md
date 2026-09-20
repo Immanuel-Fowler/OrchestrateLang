@@ -9,6 +9,10 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-09-20
+
+A `fn` that cannot wait says so in OrchestrateLang.
+
 ### Fixed
 - A `fn` that calls a serverlet, a landline, a `task`, `sleep`, or a `parallel` block now
   fails with an OrchestrateLang error naming the function and the call, and saying to
@@ -553,7 +557,8 @@ First tagged release.
   `option` / `result`, `try` / `catch`, supervision, `check`, the language server, or the
   standard library. See `examples/` for working code.
 
-[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.8.0...v0.8.1
