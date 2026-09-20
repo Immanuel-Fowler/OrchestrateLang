@@ -184,7 +184,7 @@ tr[aria-expanded="true"] .row-btn .name .chev { transform: rotate(90deg); }
 <section class="hero">
   <div class="wrap">
     <div class="eyebrow">Polyglot support</div>
-    <h1>One program. <em>Eight</em> languages. The boundary you choose.</h1>
+    <h1>One program. <em>Nine</em> languages. The boundary you choose.</h1>
     <p class="lede">OrchestrateLang does not replace Rust, C, Python, or TypeScript. It coordinates them. A foreign function stays a direct call. Stateful or runtime-owned code becomes a service behind the same typed interface as any other serverlet. Each boundary is declared in the source, checked by the compiler, and costs what the table at the bottom says it costs.</p>
     <div class="langs" aria-label="Languages">
       <a class="lang" href="#lang-rust">Rust <span class="pill pill-shipped">Shipped</span></a>
@@ -255,7 +255,7 @@ tr[aria-expanded="true"] .row-btn .name .chev { transform: rotate(90deg); }
       <p>Scores are 0 to 5 per column, 40 total. They describe fit with the current sidecar mechanism, not language quality. A language near the top of the table needs only four edits in the compiler: a <code>ForeignSource</code> variant, a toolchain entry, a <code>build.rs</code> emitter line, and a <code>check-foreign</code> entry.</p>
       <p>The tier is a judgement about effort and route; the total is a measure of C-ABI fit. A language can rank low on the total yet be cheap to add through the TypeScript bridge, which is why JavaScript sits in "Ready to add". "Needs a different path" usually means a landline serverlet; "Would want a new feature" names the feature.</p>
       <p>Scores were set against the <code>int</code>, <code>float</code>, <code>bool</code>, <code>void</code> sidecar. Version 0.8.0 added <code>string</code> and <code>handle</code> across the C ABI; arrays and structs would lift the whole table at once. The data lives in <code>website/assets/scorecard-data.js</code>; re-score there.</p>
-      <p>Two releases moved rows rather than scores. The WebAssembly loader in 0.9.0 admits every language that compiles to <code>.wasm</code>, which is why WebAssembly, AssemblyScript, and Grain now sit in "Supported today" with the same numbers they always had. C# shipped in 0.10.0 through .NET Native AOT, and its <b>Check</b> score fell because <code>check-foreign</code> does not cover it.</p>
+      <p>Two releases moved rows rather than scores. C# shipped in 0.10.0 through .NET Native AOT, and its <b>Check</b> score fell because <code>check-foreign</code> does not cover it. The WebAssembly loader in 0.9.0 matters more to this table than one row: it admits every language that compiles to <code>.wasm</code> without the compiler learning that language at all, which is why WebAssembly, AssemblyScript, and Grain now sit in "Supported today" with the same numbers they always had. A high total still means a cheap direct call; a <code>.wasm</code> route costs about 0.1 &micro;s instead.</p>
     </div>
     </details>
   </div>
@@ -267,7 +267,7 @@ tr[aria-expanded="true"] .row-btn .name .chev { transform: rotate(90deg); }
     <div class="section-head">
       <div class="eyebrow">Two mechanisms, not seven</div>
       <h2>Foreign functions for calls. Serverlets for state.</h2>
-      <p>Every language plugs in through one of two shapes, so there is one set of rules to learn. <code>load_foreign</code> puts functions in a module's namespace and keeps them stateless. A serverlet <code>via python(...)</code> or <code>via typescript(...)</code>, called a landline, keeps a foreign process alive with its own state and answers typed calls. Serverlets can call foreign functions; foreign functions never own state.</p>
+      <p>Every language plugs in through one of two shapes, so there is one set of rules to learn. <code>load_foreign</code> puts functions in a module's namespace and keeps them stateless. A serverlet <code>via python(...)</code> or <code>via typescript(...)</code>, called a landline, keeps a foreign process alive with its own state and answers typed calls. Serverlets can call foreign functions; foreign functions never own state. A compiled <code>.wasm</code> module plugs into the same <code>load_foreign</code> shape, and a sandboxed serverlet into the same serverlet shape.</p>
     </div>
     <div class="grid2">
       <div class="code">
@@ -325,7 +325,7 @@ orchestrator main() {
       <div class="q">
         <div class="ask">3. Do you trust the code?</div>
         <div class="opt pick"><strong>Yes</strong><span>a landline: <code>via python(...)</code> or <code>via typescript(...)</code>. A persistent process, a checked interface at startup, budgets for slow calls, and host callbacks you grant one function at a time.</span></div>
-        <div class="opt pick"><strong>No</strong><span><code>serverlet X sandbox(memory_limit: "64mb", timeout: "5s")</code>. The handlers compile to a WebAssembly guest and run under wasmtime: memory capped, each call bounded, and every import denied, so it reaches no files, network, clock, or host function. <code>grant</code> and <code>on_crash</code> are compile errors on one, and arrays and structs do not cross.</span></div>
+        <div class="opt pick"><strong>No</strong><span><code>sandbox(memory_limit: "64mb", timeout: "5s")</code>. The handlers run in a WASM guest under wasmtime: memory capped, a call interrupted at its timeout, and no import it was not given. A child process is still not a security boundary &mdash; this is. <code>grant</code> and <code>on_crash</code> on one are compile errors, because either would be a deliberate hole. Arrays and structs do not cross the boundary yet.</span></div>
       </div>
     </div>
   </div>
@@ -383,12 +383,12 @@ orchestrator main() {
           <tr><td><code>bool</code></td><td><code>i32</code> that is 0 or 1</td></tr>
           <tr><td><code>void</code></td><td>no result</td></tr>
           <tr><td><code>string</code></td><td>a pointer and a length into the module's memory; a returned string is <code>(pointer &lt;&lt; 32) | length</code></td></tr>
-          <tr><td>arrays, structs</td><td><span class="pill pill-planned">Planned</span> not carried yet</td></tr>
+          <tr><td><code>T[]</code>, <code>struct</code>, <code>handle</code></td><td><span class="pill pill-planned">Planned</span> not carried yet</td></tr>
         </tbody>
       </table>
     </div>
     <div class="notes" style="margin-top:14px">
-      <div class="rule"><strong>One allocator, both sides</strong>A module that carries strings must export <code>orch_alloc(i32) -&gt; i32</code> and <code>orch_free(i32, i32)</code>. The host allocates with the module's own allocator, copies the result out, and hands the memory back. Declare a <code>string</code> without those exports and the compiler says so.</div>
+      <div class="rule"><strong>One allocator, both sides</strong>A module that carries strings must export <code>orch_alloc(i32) -&gt; i32</code> and <code>orch_free(i32, i32)</code>. The host allocates with the module's own allocator, copies the result out, and hands the memory back. Declare a <code>string</code> without those exports and the compiler says so. A sandboxed serverlet's guest is generated, so its allocator is generated with it.</div>
       <div class="rule"><strong>Checked against the module itself</strong>The compiler reads the export table, so a name the module does not export, or a type that does not line up, is a build error naming both sides. <code>orchestrate check</code> runs the same check without building.</div>
     </div>
 
@@ -467,18 +467,20 @@ orchestrator main() {
     <div class="section-head">
       <div class="eyebrow">What each boundary costs</div>
       <h2>Measured, not promised.</h2>
-      <p>Median round-trip latency for an <code>int</code> echo from the repository benchmark on one Apple Silicon Mac, 2026-09-14, plus the in-process probe for TypeScript's planned native backend. The <a href="./#benchmarks">full chart</a> has p90, p99, and max, which matter more for per-tick work.</p>
+      <p>Median round-trip latency for an <code>int</code> echo from the repository benchmark on one Apple Silicon Mac, 2026-09-14, plus the in-process probe for TypeScript's planned native backend and a 2026-09-19 measurement of the WebAssembly boundaries (20,000 calls each, same machine). The <a href="./#benchmarks">full chart</a> has p90, p99, and max, which matter more for per-tick work.</p>
     </div>
     <div class="costs">
       <div class="cost"><span class="n">1&ndash;2<small>ns</small></span><span class="l">C, C++, Zig, Swift: a direct call in the same process</span></div>
       <div class="cost"><span class="n">~5<small>ns</small></span><span class="l">C# through Native AOT, on an Apple M2</span></div>
+      <div class="cost"><span class="n">0.1<small>&micro;s</small></span><span class="l">WebAssembly function under wasmtime, in the same process</span></div>
       <div class="cost"><span class="n">8<small>µs</small></span><span class="l">in-process serverlet, p50</span></div>
+      <div class="cost"><span class="n">8<small>µs</small></span><span class="l">sandboxed serverlet: the channel dominates, so containment is close to free</span></div>
       <div class="cost"><span class="n">17<small>µs</small></span><span class="l">secret serverlet (Rust child process), p50</span></div>
       <div class="cost"><span class="n">24<small>µs</small></span><span class="l">Python landline, p50</span></div>
       <div class="cost"><span class="n">~60<small>µs</small></span><span class="l">TypeScript function over today's pipe bridge</span></div>
       <div class="cost hot"><span class="n">5.1<small>ns</small></span><span class="l">TypeScript in-process via scriptc library mode: a 2026-09-18 probe, not shipped</span></div>
     </div>
-    <p class="muted" style="margin-top:12px;max-width:70ch">A sandboxed serverlet and a <code>.wasm</code> module both cross a wasmtime boundary, which costs more than a native call and less than a process hop; the repository does not publish a figure for either yet, so none is quoted here. Reaching the same C# through WebAssembly instead of Native AOT is about 20 times dearer. Large Python arrays are the outlier: 573 µs at p50 for 1,000 ints, dominated by per-element encoding in the SDK. That is the next optimization target, and a reason to pass arrays in one call rather than one element per call.</p>
+    <p class="muted" style="margin-top:12px;max-width:70ch">Both wasmtime figures were measured on 2026-09-19 over 20,000 calls on the same machine. A <code>.wasm</code> call costs more than a native one and far less than a process hop; a sandboxed serverlet costs what an ordinary one does, because the channel round trip dominates and containment adds little to it. Reaching the same C# through WebAssembly instead of Native AOT is about 20 times dearer. Large Python arrays are the outlier: 573 µs at p50 for 1,000 ints, dominated by per-element encoding in the SDK. That is the next optimization target, and a reason to pass arrays in one call rather than one element per call.</p>
   </div>
 </section>
 
@@ -496,7 +498,7 @@ orchestrator main() {
       <div class="rule"><strong>More landlines <span class="pill pill-planned">Planned</span></strong>C# arrived as a direct call rather than a landline. A C++ landline and other embedded runtimes are still open, for code that needs its own process rather than its own function.</div>
       <div class="rule"><strong>Go <span class="pill pill-exploring">Exploring</span></strong><code>-buildmode=c-archive</code> works, but only one Go library can be loaded per process, which is a real constraint on the module model.</div>
       <div class="rule"><strong>Cross-compiling Zig and Swift <span class="pill pill-planned">Planned</span></strong>Both build for the host only today; <code>build --lib --target</code> with another target stops with a clear error.</div>
-      <div class="rule"><strong>Grants and crash handlers on a sandbox <span class="pill pill-planned">Planned</span></strong>Containment shipped in 0.9.0. <code>grant</code> and <code>on_crash</code> on a sandboxed serverlet are compile errors rather than holes that open quietly, and arrays and structs do not cross the boundary yet.</div>
+      <div class="rule"><strong>Grants into a sandbox <span class="pill pill-planned">Planned</span></strong>Sandboxed serverlets ship in 0.9.0 under wasmtime, but <code>grant</code> and <code>on_crash</code> on one are compile errors rather than holes that open quietly. Each grant has to become one narrow, mediated host function in the wasmtime linker — the point where sandboxing and the consent model become the same mechanism. Arrays and structs across the guest boundary are planned with it.</div>
       <div class="rule"><strong>Secret plus sandboxed <span class="pill pill-planned">Planned</span></strong>A separate process around a contained guest, for defence in depth.</div>
     </div>
   </div>

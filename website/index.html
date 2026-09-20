@@ -204,7 +204,7 @@
       <div class="facts">
         <span>No VM, no interpreter</span>
         <span>Generated Tokio core</span>
-        <span>FFI to Rust, C, C++, Zig, Swift, C#, TypeScript, and any <code>.wasm</code></span>
+        <span>FFI to Rust, C, C++, Zig, Swift, C#, TypeScript, WebAssembly</span>
         <span>Python and TypeScript services</span>
         <span>MIT licensed</span>
       </div>
@@ -331,21 +331,27 @@
       </div>
       <div class="rung" style="--step:1">
         <div class="no">2</div>
+        <div class="mech"><strong>WebAssembly module</strong><code>load_foreign "wasm" "math.wasm"</code></div>
+        <div class="when">A module someone already compiled, whatever produced it. In-process under wasmtime, checked against its own export table at build time, and able to reach nothing.</div>
+        <div class="cost">≈ 0.1 µs</div>
+      </div>
+      <div class="rung" style="--step:2">
+        <div class="no">3</div>
         <div class="mech"><strong>In-process serverlet</strong><code>serverlet Counter { ... }</code></div>
         <div class="when">You need state or a long-lived service. A Tokio task and a channel; the service owns its mutable state.</div>
         <div class="cost">≈ 8 µs round trip</div>
       </div>
-      <div class="rung" style="--step:2">
-        <div class="no">3</div>
+      <div class="rung" style="--step:3">
+        <div class="no">4</div>
         <div class="mech"><strong>Secret or landline serverlet</strong><code>serverlet Scorer via python(...)</code></div>
         <div class="when">The code cannot do FFI, should crash separately, stay out of the main binary, or keep a Python or TypeScript runtime alive.</div>
         <div class="cost">≈ 17–25 µs round trip</div>
       </div>
-      <div class="rung" style="--step:3">
-        <div class="no">4</div>
-        <div class="mech"><strong>Sandboxed serverlet</strong><code>serverlet Plugin sandbox(memory_limit, timeout)</code></div>
-        <div class="when">The code is untrusted. Handlers run in a WebAssembly guest under wasmtime: the memory limit caps its linear memory, the timeout bounds one call, and imports are denied, so it reaches no files, network, clock, or host function. A call that breaks a limit is logged, answered with the return type's default, and resets that guest.</div>
-        <div class="cost">contained by wasmtime</div>
+      <div class="rung" style="--step:4">
+        <div class="no">5</div>
+        <div class="mech"><strong>Sandboxed serverlet</strong><code>serverlet Plugin sandbox(...)</code></div>
+        <div class="when">The code is untrusted. Handlers run in a WASM guest under wasmtime, capped for memory and interrupted at a timeout, reaching nothing. The channel round trip dominates, so containment costs little over an ordinary serverlet.</div>
+        <div class="cost">≈ 8 µs round trip</div>
       </div>
     </div>
   </div>
@@ -389,14 +395,14 @@
         <path class="fam-edge" d="M60 217 V262"/>
         <rect x="8" y="262" width="104" height="30" rx="5" fill="var(--teal-wash)" stroke="var(--teal)" stroke-width="1.5"/>
         <text class="fam-text" x="60" y="276" text-anchor="middle">sandboxed</text>
-        <text class="fam-sub" x="60" y="288" text-anchor="middle">WASM guest, wasmtime</text>
+        <text class="fam-sub" x="60" y="288" text-anchor="middle">WASM guest</text>
       </svg>
       <div class="kinds">
         <div class="kind"><code>serverlet X { ... }</code><span class="pill pill-shipped">Shipped</span><p>Trusted state with the lowest overhead: a Tokio task and a channel inside the program.</p></div>
         <div class="kind"><code>serverlet X secret { ... }</code><span class="pill pill-shipped">Shipped</span><p>Compiled as a separate native executable. Process lifecycle, crash separation, and an implementation kept out of the main binary. Not encryption, not a security boundary.</p></div>
         <div class="kind"><code>serverlet X via python(source: "...")</code><span class="pill pill-shipped">Shipped</span><p>A persistent Python 3.10+ process behind the same interface. Startup checks the declared handlers; budgets bound how long a caller waits.</p></div>
         <div class="kind"><code>serverlet X via typescript(source: "...")</code><span class="pill pill-shipped">Shipped</span><p>TypeScript 7 checks the source; scriptc or Bun compiles it to an executable that keeps state between calls.</p></div>
-        <div class="kind"><code>serverlet X sandbox(memory_limit: "64mb", timeout: "5s")</code><span class="pill pill-shipped">Shipped</span><p>Handlers compile to a <code>wasm32-wasip1</code> guest and run under wasmtime, capped in memory and per call, with imports denied. State lives in the guest between calls; a failed call is contained, and replacing the trapped guest resets that state. <code>grant</code> and <code>on_crash</code> are compile errors on one, and arrays and structs do not cross yet.</p></div>
+        <div class="kind"><code>serverlet X sandbox(memory_limit, timeout)</code><span class="pill pill-shipped">Shipped</span><p>Handlers run in a WASM guest under wasmtime, with a memory cap, a per-call timeout, and no import it was not given. A call that breaks a limit is reported and the guest is replaced, which resets its state.</p></div>
       </div>
     </div>
   </div>
@@ -421,8 +427,8 @@
           <tr><td>Swift</td><td>Native C ABI</td><td>A <code>handle</code>, or a serverlet</td><td><span class="pill pill-shipped">Shipped</span></td></tr>
           <tr><td>TypeScript</td><td>Persistent compiled adapter</td><td>Landline serverlet</td><td><span class="pill pill-shipped">Shipped</span></td></tr>
           <tr><td>Python</td><td>—</td><td>Landline serverlet</td><td><span class="pill pill-shipped">Shipped</span></td></tr>
+          <tr><td>WebAssembly</td><td>Any <code>.wasm</code>, checked against its export table</td><td>Sandboxed serverlet</td><td><span class="pill pill-shipped">Shipped</span></td></tr>
           <tr><td>C#</td><td>Native AOT shared library, about 5 ns a call</td><td>Wrap with a serverlet</td><td><span class="pill pill-shipped">Shipped</span></td></tr>
-          <tr><td>WebAssembly</td><td>Any <code>.wasm</code> module, checked against its own export table</td><td>Sandboxed serverlet</td><td><span class="pill pill-shipped">Shipped</span></td></tr>
           <tr><td>Go</td><td>C archive, one library per process</td><td>—</td><td><span class="pill pill-exploring">Exploring</span></td></tr>
         </tbody>
       </table>
@@ -506,7 +512,7 @@ cargo orch run examples/hello.orch</code></pre>
       <p>OrchestrateLang is young. Names, docs, and diagnostics are not allowed to promise more than the implementation delivers, so the important limitations are listed here, not buried.</p>
     </div>
     <div class="bounds">
-      <div class="bound"><strong>A sandbox bounds reach, not truth</strong>It contains a guest's compute, memory, and reach as well as wasmtime does, and nothing about what the guest computes from what you hand it. <code>grant</code> and <code>on_crash</code> are not supported on one, and arrays and structs do not cross.</div>
+      <div class="bound"><strong>A sandbox contains compute, not meaning</strong>A sandboxed serverlet bounds its guest's memory, its time, and what it can reach, as well as wasmtime does. It does not make the answers the guest returns trustworthy. <code>grant</code> and <code>on_crash</code> on one are compile errors, and arrays and structs do not cross the boundary yet.</div>
       <div class="bound"><strong>A process is not a security boundary</strong>Secret and landline serverlets give lifecycle and crash separation. "Secret" means built outside the main binary, not encrypted.</div>
       <div class="bound"><strong>Two landline runtimes</strong>Python and TypeScript are the runtimes that stay alive as a service. C# arrives as a direct call instead, and more embedded runtimes are planned.</div>
       <div class="bound"><strong>Cross-process calls cost more</strong>Secret serverlets and TypeScript adapters use an explicit protocol; direct calls stay in-process.</div>
