@@ -78,8 +78,13 @@ load_foreign "typescript" "./math.ts"   // requires math.orch_ffi sidecar
   by scriptc, and `wasm32-wasi` rejects library mode. This would ship as
   `load_foreign "typescript" "math.ts" (backend: "native")`; the plan is
   [plans/typescript-native-backend.md](plans/typescript-native-backend.md).
-- `string`, arrays, and structs across the C ABI (C, C++, Zig, and Swift sidecars accept only `int`, `float`, and `bool` today), and an opaque handle type for native objects.
-- **C#** via .NET Native AOT exports (`[UnmanagedCallersOnly]`).
+- Arrays and structs across the C ABI. `string` and `handle` shipped in 0.8.0.
+- **C#** via .NET Native AOT exports (`[UnmanagedCallersOnly]`), as a **shared** library
+  rather than a static one: two NativeAOT static archives cannot be linked into one
+  module, which would cap a program at one C# module. A C# module compiled to wasm is
+  already callable through `load_foreign "wasm"` with no compiler work, so the native
+  route has something to beat; the plan, and the measurements that decide it, are
+  [plans/csharp-native-backend.md](plans/csharp-native-backend.md).
 - Cross-compiling Zig and Swift sources for `build --lib --target`.
 - **Go** works through `-buildmode=c-archive`, but only one Go library can be loaded per process.
 
