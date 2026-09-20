@@ -10,51 +10,46 @@ pub fn runtime_preamble(print_to_stderr: bool, include_process_ref: bool) -> Str
     };
     format!(r#"trait OrchAdd<RHS = Self> {{
     type Output;
-    fn orch_add(self, rhs: RHS) -> Self::Output;
+    fn orch_add(&self, rhs: &RHS) -> Self::Output;
 }}
 
 impl OrchAdd for i64 {{
     type Output = i64;
-    fn orch_add(self, rhs: i64) -> i64 {{ self + rhs }}
+    fn orch_add(&self, rhs: &i64) -> i64 {{ *self + *rhs }}
 }}
 
 impl OrchAdd for f64 {{
     type Output = f64;
-    fn orch_add(self, rhs: f64) -> f64 {{ self + rhs }}
+    fn orch_add(&self, rhs: &f64) -> f64 {{ *self + *rhs }}
 }}
 
-impl OrchAdd<&str> for String {{
-    type Output = String;
-    fn orch_add(mut self, rhs: &str) -> String {{
-        self.push_str(rhs);
-        self
-    }}
+// Addition borrows both sides. Taking them by value would move them, so `a + b` used a
+// string up and `s + s` did not compile at all.
+fn orch_concat(lhs: &str, rhs: &str) -> String {{
+    let mut out = String::with_capacity(lhs.len() + rhs.len());
+    out.push_str(lhs);
+    out.push_str(rhs);
+    out
 }}
 
 impl OrchAdd<String> for String {{
     type Output = String;
-    fn orch_add(mut self, rhs: String) -> String {{
-        self.push_str(&rhs);
-        self
-    }}
+    fn orch_add(&self, rhs: &String) -> String {{ orch_concat(self, rhs) }}
+}}
+
+impl OrchAdd<&str> for String {{
+    type Output = String;
+    fn orch_add(&self, rhs: &&str) -> String {{ orch_concat(self, rhs) }}
 }}
 
 impl OrchAdd<&str> for &str {{
     type Output = String;
-    fn orch_add(self, rhs: &str) -> String {{
-        let mut s = self.to_string();
-        s.push_str(rhs);
-        s
-    }}
+    fn orch_add(&self, rhs: &&str) -> String {{ orch_concat(self, rhs) }}
 }}
 
 impl OrchAdd<String> for &str {{
     type Output = String;
-    fn orch_add(self, rhs: String) -> String {{
-        let mut s = self.to_string();
-        s.push_str(&rhs);
-        s
-    }}
+    fn orch_add(&self, rhs: &String) -> String {{ orch_concat(self, rhs) }}
 }}
 
 fn print_val<T: std::fmt::Display>(val: T) {{
@@ -308,6 +303,9 @@ pub struct Codegen {
     /// anything inside it that would have to wait is an error rather than generated code
     /// that will not compile.
     pub(super) sync_fn: Option<String>,
+    /// How many awaits have been emitted so far; compared before and after an expression
+    /// to ask whether that expression waits.
+    pub(super) awaits: usize,
     /// Errors gathered while generating, reported by the driver before Cargo runs.
     pub errors: Vec<String>,
     /// The program loads a wasm module or sandboxes a serverlet, so the entry file
@@ -344,6 +342,7 @@ impl Codegen {
             state_rewrite: None,
             context_bound: false,
             sync_fn: None,
+            awaits: 0,
             errors: Vec::new(),
             needs_wasm: false,
             serverlet_state_types: std::collections::BTreeMap::new(),
@@ -636,6 +635,9 @@ impl Codegen {
     /// emit an `.await` where none is allowed. Without this the user sees rustc complaining
     /// about generated code they did not write.
     pub(super) fn require_async(&mut self, what: &str) {
+        // Counted as well as checked: a `try` block has to know whether its body waits,
+        // because a block that waits cannot be a synchronous closure.
+        self.awaits += 1;
         if let Some(function) = self.sync_fn.clone() {
             let message = format!(
                 "fn '{function}' {what}. A `fn` compiles to a synchronous function, so it cannot wait; declare it as a `task` instead, and call it from another task or from a hook."
@@ -695,6 +697,149 @@ impl Codegen {
         }
     }
 
+    /// Receivers of method-call syntax, and every name the expression binds along the way.
+    /// Deliberately separate from `get_free_vars_expr`, which feeds closure capture and
+    /// must not start treating module names as variables.
+    fn call_receivers(expr: &Expr, receivers: &mut HashSet<String>, declared: &mut HashSet<String>) {
+        match &expr.node {
+            ExprNode::ModuleCall { module_local_name, args, .. } => {
+                receivers.insert(module_local_name.clone());
+                for a in args { Self::call_receivers(a, receivers, declared); }
+            }
+            ExprNode::Block(stmts) => {
+                for stmt in stmts {
+                    match &stmt.node {
+                        StmtNode::Let { name, value, .. } => {
+                            Self::call_receivers(value, receivers, declared);
+                            declared.insert(name.clone());
+                        }
+                        StmtNode::Expr(value) | StmtNode::Return(Some(value)) => Self::call_receivers(value, receivers, declared),
+                        StmtNode::While { cond, body } => {
+                            Self::call_receivers(cond, receivers, declared);
+                            Self::call_receivers(body, receivers, declared);
+                        }
+                        StmtNode::ForIn { var, index_var, iter, body } => {
+                            Self::call_receivers(iter, receivers, declared);
+                            declared.insert(var.clone());
+                            if let Some(index) = index_var { declared.insert(index.clone()); }
+                            Self::call_receivers(body, receivers, declared);
+                        }
+                        StmtNode::Trigger { args, .. } => {
+                            for a in args { Self::call_receivers(a, receivers, declared); }
+                        }
+                        StmtNode::Parallel(inner) => {
+                            for s in inner {
+                                if let StmtNode::Let { name, value, .. } = &s.node {
+                                    Self::call_receivers(value, receivers, declared);
+                                    declared.insert(name.clone());
+                                } else if let StmtNode::Expr(value) = &s.node {
+                                    Self::call_receivers(value, receivers, declared);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            ExprNode::Binary { lhs, rhs, .. } => {
+                Self::call_receivers(lhs, receivers, declared);
+                Self::call_receivers(rhs, receivers, declared);
+            }
+            ExprNode::Unary { operand, .. } => Self::call_receivers(operand, receivers, declared),
+            ExprNode::Call { args, .. } => { for a in args { Self::call_receivers(a, receivers, declared); } }
+            ExprNode::Pipeline { value, function } => {
+                Self::call_receivers(value, receivers, declared);
+                Self::call_receivers(function, receivers, declared);
+            }
+            ExprNode::If { cond, then_branch, else_branch } => {
+                Self::call_receivers(cond, receivers, declared);
+                Self::call_receivers(then_branch, receivers, declared);
+                if let Some(branch) = else_branch { Self::call_receivers(branch, receivers, declared); }
+            }
+            ExprNode::TryCatch { body, handler, err_name, .. } => {
+                Self::call_receivers(body, receivers, declared);
+                declared.insert(err_name.clone());
+                Self::call_receivers(handler, receivers, declared);
+            }
+            ExprNode::Match { value, arms } => {
+                Self::call_receivers(value, receivers, declared);
+                for arm in arms {
+                    let mut names = Vec::new();
+                    Self::pattern_bindings(&arm.pattern, &mut names);
+                    for name in names { declared.insert(name); }
+                    Self::call_receivers(&arm.body, receivers, declared);
+                }
+            }
+            ExprNode::Closure { params, body, .. } => {
+                for p in params { declared.insert(p.name.clone()); }
+                Self::call_receivers(body, receivers, declared);
+            }
+            ExprNode::ArrayLiteral(items) => { for i in items { Self::call_receivers(i, receivers, declared); } }
+            ExprNode::StructLiteral { fields, .. } => { for (_, v) in fields { Self::call_receivers(v, receivers, declared); } }
+            ExprNode::Index { object, index } => {
+                Self::call_receivers(object, receivers, declared);
+                Self::call_receivers(index, receivers, declared);
+            }
+            ExprNode::FieldAccess { object, .. } | ExprNode::SomeLiteral(object) | ExprNode::OkLiteral(object)
+            | ExprNode::ErrLiteral(object) | ExprNode::Propagate(object) => Self::call_receivers(object, receivers, declared),
+            ExprNode::StringInterp { parts } => {
+                for part in parts {
+                    if let StringPart::Expr(e) = part { Self::call_receivers(e, receivers, declared); }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Top-level `let`s belong to the instance and only hooks reach them: a `fn`, `task`,
+    /// or `process` is generated beside them, not inside them, so naming one produces
+    /// rustc's "cannot find value" against code the user never wrote.
+    ///
+    /// The restriction is deliberate — a spawned task can run while a tick holds that
+    /// state — so this reports it rather than working around it.
+    fn reject_state_in_free_functions(&mut self, stmts: &[Stmt]) {
+        let state: HashSet<String> = stmts
+            .iter()
+            .filter_map(|stmt| match &stmt.node {
+                StmtNode::Let { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        if state.is_empty() {
+            return;
+        }
+        for stmt in stmts {
+            let (kind, name, params, body) = match &stmt.node {
+                StmtNode::FnDecl { name, params, body, .. } => ("fn", name, params, body),
+                StmtNode::TaskDecl { name, params, body, .. } => ("task", name, params, body),
+                StmtNode::ProcessDecl { name, params, body, .. } => ("process", name, params, body),
+                _ => continue,
+            };
+            let mut bound: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+            let mut free = HashSet::new();
+            self.get_free_vars_expr(body, &mut bound, &mut free);
+            // `c.add(1)` is a ModuleCall, and that walker ignores the receiver because a
+            // receiver is usually a module name. A serverlet client is a binding, so the
+            // receivers are collected here, minus anything the body binds itself.
+            let mut receivers = HashSet::new();
+            let mut declared = bound.clone();
+            Self::call_receivers(body, &mut receivers, &mut declared);
+            for receiver in receivers {
+                if !declared.contains(&receiver) && !self.modules.contains(&receiver) {
+                    free.insert(receiver);
+                }
+            }
+            // In name order, so the message does not change between runs.
+            let mut reached: Vec<&String> = free.iter().filter(|name| state.contains(*name)).collect();
+            reached.sort();
+            if let Some(reached) = reached.first() {
+                self.errors.push(format!(
+                    "{kind} '{name}' uses '{reached}', which is top-level state. State belongs to the instance and only hooks (on_tick, on_start, on_stop, and event handlers) can reach it — pass it in as a parameter instead."
+                ));
+            }
+        }
+    }
+
     pub fn generate(&mut self, stmts: &[Stmt], is_main: bool) -> String {
         self.is_main = is_main;
         self.scan_tasks(stmts);
@@ -708,6 +853,7 @@ impl Codegen {
         }
 
         if self.library { self.has_secret = true; }
+        self.reject_state_in_free_functions(stmts);
         let mut code = String::new();
 
         code.push_str("// Generated by Orchestrate Compiler\n");

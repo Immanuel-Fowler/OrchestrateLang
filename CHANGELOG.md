@@ -9,6 +9,32 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+### Fixed
+- **String concatenation no longer consumes its operands.** `a + b` moved both sides, so a
+  string could be used exactly once and `s + s` did not compile at all
+  (`error[E0382]: use of moved value`). Addition now borrows: `let c = a + b` leaves both
+  `a` and `b` usable, and `a + a` works. `int` and `float` addition is unchanged in
+  behaviour and in cost.
+- **A match on a unit enum variant that binds a value is a type error**, naming the variant
+  and how to write it, instead of rustc's "expected tuple struct or tuple variant, found
+  unit variant". The mirror case is caught too: a variant that carries a value and is
+  matched without binding it. So is a variant that does not exist, which now lists the ones
+  that do.
+- **A `try` block whose body waits compiles.** `try { fetch(1) } catch e { 0 }`, where
+  `fetch` is a task, reached rustc as "`await` is only allowed inside `async` functions"
+  because the block generated a synchronous closure. A block that waits now generates an
+  async block instead, so `?` still works and the handler may wait too. A block that does
+  not wait generates exactly what it did before.
+- **A `fn`, `task`, or `process` that names top-level state says so.** Top-level `let`s
+  belong to the instance and only hooks reach them — a spawned task can run while a tick
+  holds that state, so the restriction is deliberate. It used to surface as rustc's
+  "cannot find value in this scope"; it is now a diagnostic naming the function, the
+  binding, and the way out.
+
+### Changed
+- `docs/roadmap.md` no longer describes sandboxed serverlets as unshipped (0.9.0) or C# as
+  upcoming (0.10.0).
+
 ## [0.10.1] - 2026-09-20
 
 A `fn` that cannot wait says so in OrchestrateLang.

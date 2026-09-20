@@ -47,4 +47,8 @@ fn test_error_cases() {
     // generated Rust the user never wrote.
     assert_compilation_fails("sync_fn_awaits.orch", "fn 'bump' calls 'counter.add'");
     assert_compilation_fails("sync_fn_awaits.orch", "declare it as a `task` instead");
+    assert_compilation_fails("enum_unit_variant_binds.orch", "carries no value");
+    assert_compilation_fails("enum_unit_variant_binds.orch", "Signal::Stop");
+    assert_compilation_fails("task_uses_top_level_state.orch", "which is top-level state");
+    assert_compilation_fails("task_uses_top_level_state.orch", "pass it in as a parameter");
 }

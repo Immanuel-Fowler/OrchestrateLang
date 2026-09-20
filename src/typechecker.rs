@@ -1050,6 +1050,23 @@ impl TypeChecker {
                     match &arm.pattern {
                         MatchPattern::EnumVariant { enum_name, variant_name, binding } => {
                             covered_variants.insert(variant_name.clone());
+                            // The variant has to exist, and its shape has to match the
+                            // pattern, before anything reaches rustc.
+                            if let Some(variants) = self.enum_defs.get(enum_name) {
+                                match variants.iter().find(|v| v.name == *variant_name) {
+                                    None => return Err(format!(
+                                        "enum '{}' has no variant '{}'. It has: {}.",
+                                        enum_name,
+                                        variant_name,
+                                        variants.iter().map(|v| v.name.clone()).collect::<Vec<_>>().join(", ")
+                                    )),
+                                    Some(v) if v.payload.is_some() && binding.is_none() => return Err(format!(
+                                        "enum variant '{}::{}' carries a value, so the pattern must bind it, as '{}::{}(value)'.",
+                                        enum_name, variant_name, enum_name, variant_name
+                                    )),
+                                    Some(_) => {}
+                                }
+                            }
                             if let Some(binding_name) = binding {
                                 let payload_ty = match (enum_name.as_str(), variant_name.as_str()) {
                                     ("option", "Some") => {
@@ -1066,9 +1083,19 @@ impl TypeChecker {
                                     }
                                     _ => {
                                         if let Some(variants) = self.enum_defs.get(enum_name).cloned() {
-                                            if let Some(v) = variants.iter().find(|v| v.name == *variant_name) {
-                                                v.payload.clone()
-                                            } else { None }
+                                            match variants.iter().find(|v| v.name == *variant_name) {
+                                                Some(v) if v.payload.is_some() => v.payload.clone(),
+                                                // Binding a variant that carries nothing used to reach
+                                                // rustc as "expected tuple variant, found unit variant".
+                                                Some(_) => return Err(format!(
+                                                    "enum variant '{}::{}' carries no value, so the pattern cannot bind '{}'. Match it as '{}::{}' instead.",
+                                                    enum_name, variant_name, binding_name, enum_name, variant_name
+                                                )),
+                                                None => return Err(format!(
+                                                    "enum '{}' has no variant '{}'",
+                                                    enum_name, variant_name
+                                                )),
+                                            }
                                         } else { None }
                                     }
                                 };

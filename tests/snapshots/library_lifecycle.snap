@@ -11,51 +11,46 @@ macro_rules! println { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::In
 macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::Error, format!($($args)*)) }; }
 trait OrchAdd<RHS = Self> {
     type Output;
-    fn orch_add(self, rhs: RHS) -> Self::Output;
+    fn orch_add(&self, rhs: &RHS) -> Self::Output;
 }
 
 impl OrchAdd for i64 {
     type Output = i64;
-    fn orch_add(self, rhs: i64) -> i64 { self + rhs }
+    fn orch_add(&self, rhs: &i64) -> i64 { *self + *rhs }
 }
 
 impl OrchAdd for f64 {
     type Output = f64;
-    fn orch_add(self, rhs: f64) -> f64 { self + rhs }
+    fn orch_add(&self, rhs: &f64) -> f64 { *self + *rhs }
 }
 
-impl OrchAdd<&str> for String {
-    type Output = String;
-    fn orch_add(mut self, rhs: &str) -> String {
-        self.push_str(rhs);
-        self
-    }
+// Addition borrows both sides. Taking them by value would move them, so `a + b` used a
+// string up and `s + s` did not compile at all.
+fn orch_concat(lhs: &str, rhs: &str) -> String {
+    let mut out = String::with_capacity(lhs.len() + rhs.len());
+    out.push_str(lhs);
+    out.push_str(rhs);
+    out
 }
 
 impl OrchAdd<String> for String {
     type Output = String;
-    fn orch_add(mut self, rhs: String) -> String {
-        self.push_str(&rhs);
-        self
-    }
+    fn orch_add(&self, rhs: &String) -> String { orch_concat(self, rhs) }
+}
+
+impl OrchAdd<&str> for String {
+    type Output = String;
+    fn orch_add(&self, rhs: &&str) -> String { orch_concat(self, rhs) }
 }
 
 impl OrchAdd<&str> for &str {
     type Output = String;
-    fn orch_add(self, rhs: &str) -> String {
-        let mut s = self.to_string();
-        s.push_str(rhs);
-        s
-    }
+    fn orch_add(&self, rhs: &&str) -> String { orch_concat(self, rhs) }
 }
 
 impl OrchAdd<String> for &str {
     type Output = String;
-    fn orch_add(self, rhs: String) -> String {
-        let mut s = self.to_string();
-        s.push_str(&rhs);
-        s
-    }
+    fn orch_add(&self, rhs: &String) -> String { orch_concat(self, rhs) }
 }
 
 fn print_val<T: std::fmt::Display>(val: T) {

@@ -25,7 +25,8 @@ impl Codegen {
                 let lhs_str = self.compile_expr(lhs);
                 let rhs_str = self.compile_expr(rhs);
                 if *op == BinaryOp::Add {
-                    format!("OrchAdd::orch_add({}, {})", lhs_str, rhs_str)
+                    // Both sides are borrowed: `a + b` must leave `a` and `b` usable.
+                    format!("OrchAdd::orch_add(&({}), &({}))", lhs_str, rhs_str)
                 } else if *op == BinaryOp::Assign {
                     // Assigning into an element needs a place expression, not a clone.
                     let place = match &lhs.node {
@@ -400,12 +401,22 @@ impl Codegen {
                 format!("({})? ", self.compile_expr(inner))
             }
             ExprNode::TryCatch { body, err_name, err_type, handler } => {
+                let before = self.awaits;
                 let body_str = self.compile_expr(body);
                 self.push_scope();
                 self.define_local(err_name);
                 let handler_str = self.compile_expr(handler);
                 self.pop_scope();
                 let error_ty = err_type.as_ref().map(|t| self.compile_type(t)).unwrap_or_else(|| "String".to_string());
+                if self.awaits > before {
+                    // Something in here waits, so the block cannot be a synchronous
+                    // closure. An async block awaited in place keeps `?` working and lets
+                    // the handler wait too.
+                    return format!(
+                        r#"match async {{ Ok::<_, {error_ty}>({{ {} }}) }}.await {{ Ok(__ok) => __ok, Err({}) => {{ {} }} }}"#,
+                        body_str, err_name, handler_str
+                    );
+                }
                 format!(
                     r#"(|| -> Result<_, {error_ty}> {{ Ok({{ {} }}) }})().unwrap_or_else(|{}: {error_ty}| {{ {} }})"#,
                     body_str, err_name, handler_str
@@ -487,7 +498,7 @@ impl Codegen {
     }
 
     /// The names a match pattern binds, which shadow program fields in its arm.
-    fn pattern_bindings(pattern: &MatchPattern, names: &mut Vec<String>) {
+    pub(super) fn pattern_bindings(pattern: &MatchPattern, names: &mut Vec<String>) {
         match pattern {
             MatchPattern::EnumVariant { binding: Some(name), .. } | MatchPattern::Binding(name) => names.push(name.clone()),
             MatchPattern::Guard { inner, .. } => Self::pattern_bindings(inner, names),

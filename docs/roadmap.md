@@ -188,10 +188,16 @@ is [plans/language-gaps.md](plans/language-gaps.md).
   because Rust sidecars were monomorphic. Sidecar signatures take type parameters,
   `reverse<T>(items: T[]) -> T[]`, so the structural list functions accept any element
   type and the numeric ones gained `float` variants.
-- **Sandboxed serverlets still run without isolation.** Steps 3–7 of
-  [design/sandboxed-serverlets.md](design/sandboxed-serverlets.md) remain. Plan: first make
-  `sandbox(...)` an error unless a flag opts into the unsandboxed run, so the syntax cannot
-  promise containment it does not deliver; then the wasmtime steps in the design doc.
+- **Sandboxed serverlets contain their code — shipped in 0.9.0.** The guest runs under
+  wasmtime with a memory cap, a per-call timeout, and no import it was not granted. Step 7
+  of [design/sandboxed-serverlets.md](design/sandboxed-serverlets.md), turning a `grant`
+  into a mediated host function, is the one part still open; until it exists a `grant` on a
+  sandboxed serverlet is a compile error rather than a hole that opens quietly.
+- **Core defects found in the 2026-09-19 review — fixed in 0.11.0.** Four bugs that all
+  leaked generated Rust to the user: string concatenation moved its operands, a match on a
+  unit enum variant that bound a value reached rustc, a `try` block whose body waited would
+  not compile, and a `fn`, `task`, or `process` naming top-level state reported a missing
+  Rust binding. Each is now either correct or an OrchestrateLang diagnostic.
 
 ---
 
@@ -218,11 +224,12 @@ Given the combined scope of these four features, recommend picking **one end-to-
 4. **Landline serverlets** — [build plan](design/landline-serverlets.md): Python and
    TypeScript landlines are implemented, including TypeScript 7 checking, scriptc/Bun
    executable selection, protocol v1, grants, library packaging, budgets, and late-result
-   policies. TypeScript FFI, Zig FFI, and Swift FFI are also implemented. Next are richer
-   C-ABI types, C# via Native AOT, and a web-compatible library subset. This supersedes the
-   subprocess+JSON sketch.
+   policies. TypeScript FFI, Zig FFI, Swift FFI, C# via Native AOT (0.10.0), and
+   WebAssembly modules (0.9.0) are also implemented. Still open: arrays and structs across
+   the C ABI, and a web-compatible library subset. This supersedes the subprocess+JSON
+   sketch.
 5. **OPM (git-based, no hosted index)** — builds on PROM's name→location mapping.
-6. **Sandboxed serverlets (wasmtime)** — largest single feature; benefits from #4's pattern and gives OPM a security story.
+6. ~~**Sandboxed serverlets (wasmtime)** — largest single feature; benefits from #4's pattern and gives OPM a security story.~~ **[SHIPPED in 0.9.0, except grants]**
 
 A smaller set of fully-working, well-documented features is a stronger result (and more likely to see real use) than a sprawling set of partially-built ones.
 

@@ -889,3 +889,42 @@ orchestrator main(procs: process[worker]) { }
 "#);
     assert_eq!(out.trim(), "10\n15");
 }
+
+/// Concatenation borrows: `a + b` used to move both sides, so a string could be used once
+/// and `s + s` did not compile at all.
+#[test]
+fn runtime_string_concat_leaves_operands_usable() {
+    let out = run_orch("concat_borrows", r#"
+orchestrator main() {
+    let a = "x"
+    let b = "y"
+    let joined = a + b
+    print(a + a)
+    print(a)
+    print(b)
+    print(joined)
+    print(to_string(1 + 2))
+    print(to_string(1.5 + 2.5))
+    stop_orch()
+}
+"#);
+    assert_eq!(out.trim(), "xx\nx\ny\nxy\n3\n4");
+}
+
+/// A `try` block whose body waits compiles as an async block rather than a synchronous
+/// closure. It used to reach rustc as "`await` is only allowed inside `async` functions".
+#[test]
+fn runtime_try_block_can_call_a_task() {
+    let out = run_orch("try_awaits", r#"
+task fetch(n: int) -> int { return n * 2 }
+
+orchestrator main() {
+    let waited = try { fetch(21) } catch e { 0 }
+    let plain = try { 7 } catch e { 0 }
+    print(to_string(waited))
+    print(to_string(plain))
+    stop_orch()
+}
+"#);
+    assert_eq!(out.trim(), "42\n7");
+}
