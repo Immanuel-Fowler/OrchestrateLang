@@ -22,6 +22,13 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   refuses are ones its matching build already refused.
 
 ### Fixed
+- **A struct or enum named with a Rust keyword compiles.** 0.15.0 escaped every other
+  kind of name but left type names out, so `struct ref { ... }` or `enum loop { ... }`
+  still reached rustc. The type is now a raw identifier wherever generated Rust names
+  it — its declaration, literals, variant paths, the wire and sandbox codecs, library
+  host signatures, and C and TypeScript FFI wrappers — while the sandbox codec functions
+  built from its name keep the plain spelling, which is always valid. Patch-level:
+  programs that failed now compile; nothing else changes.
 - **`check` walks the modules a program imports, and refuses a foreign language the
   build does not support.** Each imported module's own declarations are typechecked in
   the module's own scope, with its foreign functions callable by their bare names, so a

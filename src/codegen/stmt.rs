@@ -671,7 +671,7 @@ impl Codegen {
                     .map(|(fname, fty)| format!("    pub {}: {},", rust_ident(fname), self.compile_type(fty)))
                     .collect::<Vec<_>>()
                     .join("\n");
-                format!("#[derive(Clone, Debug, Default)]\n#[repr(C)]\npub struct {} {{\n{}\n}}", name, fields_str)
+                format!("#[derive(Clone, Debug, Default)]\n#[repr(C)]\npub struct {} {{\n{}\n}}", rust_ident(name), fields_str)
             }
             StmtNode::EnumDef { name, variants } => {
                 let variants_str = variants.iter().map(|v| {
@@ -680,7 +680,7 @@ impl Codegen {
                         None => format!("    {},", rust_ident(&v.name)),
                     }
                 }).collect::<Vec<_>>().join("\n");
-                format!("#[derive(Clone, Debug)]\npub enum {} {{\n{}\n}}", name, variants_str)
+                format!("#[derive(Clone, Debug)]\npub enum {} {{\n{}\n}}", rust_ident(name), variants_str)
             }
         }
     }
@@ -786,7 +786,7 @@ impl Codegen {
                     .map(|(fname, fty)| format!("    pub {}: {},", rust_ident(fname), self.compile_type(fty)))
                     .collect::<Vec<_>>()
                     .join("\n");
-                format!("#[derive(Clone, Debug, Default)]\n#[repr(C)]\npub struct {} {{\n{}\n}}\n", sname, fields_str)
+                format!("#[derive(Clone, Debug, Default)]\n#[repr(C)]\npub struct {} {{\n{}\n}}\n", rust_ident(sname), fields_str)
             })
             .collect::<String>() + &wire_struct_impls(&self.struct_defs);
 
@@ -887,8 +887,8 @@ impl Codegen {
                     }
                     Type::Named(sname) => {
                         setup.push_str(&format!(
-                            "                    let ({0}_pointer, {0}_length) = match __guest.write_struct(std::mem::size_of::<{1}>(), |__out| __orch_sandbox_write_{1}(&{2}, __out)) {{ Ok(__written) => __written, Err(__error) => {bail} }};\n",
-                            p.name, sname, rust_ident(&p.name)
+                            "                    let ({0}_pointer, {0}_length) = match __guest.write_struct(std::mem::size_of::<{3}>(), |__out| __orch_sandbox_write_{1}(&{2}, __out)) {{ Ok(__written) => __written, Err(__error) => {bail} }};\n",
+                            p.name, sname, rust_ident(&p.name), rust_ident(sname)
                         ));
                         cleanup.push_str(&format!("                    __guest.free({0}_pointer, {0}_length);\n", p.name));
                         arguments.push(format!("{}_pointer", p.name));
@@ -931,8 +931,8 @@ impl Codegen {
                     self.compile_type(inner)
                 ),
                 Type::Named(sname) => format!(
-                    "                    let __value = match __guest.read_struct(__value, std::mem::size_of::<{0}>(), __orch_sandbox_read_{0}) {{ Ok(__struct) => __struct, Err(__error) => {bail} }};\n",
-                    sname
+                    "                    let __value = match __guest.read_struct(__value, std::mem::size_of::<{1}>(), __orch_sandbox_read_{0}) {{ Ok(__struct) => __struct, Err(__error) => {bail} }};\n",
+                    sname, rust_ident(sname)
                 ),
                 _ => String::new(),
             };
@@ -1198,8 +1198,8 @@ impl Codegen {
                     Type::Named(sname) => {
                         params.push(format!("{}_pointer: i32", p.name));
                         unpack.push_str(&format!(
-                            "    let {} = __orch_sandbox_read_{2}(__orch_bytes({1}_pointer, std::mem::size_of::<{2}>() as i32));\n",
-                            rust_ident(&p.name), p.name, sname
+                            "    let {} = __orch_sandbox_read_{2}(__orch_bytes({1}_pointer, std::mem::size_of::<{3}>() as i32));\n",
+                            rust_ident(&p.name), p.name, sname, rust_ident(sname)
                         ));
                     }
                     Type::Bool => {
@@ -1216,7 +1216,7 @@ impl Codegen {
                 Type::Named(sname) => (
                     " -> i64".to_string(),
                     "{ let __value = ".to_string(),
-                    format!("; __orch_pack_struct(std::mem::size_of::<{0}>(), |__out| __orch_sandbox_write_{0}(&__value, __out)) }}", sname),
+                    format!("; __orch_pack_struct(std::mem::size_of::<{1}>(), |__out| __orch_sandbox_write_{0}(&__value, __out)) }}", sname, rust_ident(sname)),
                 ),
                 Type::Bool => (" -> i32".to_string(), "(".to_string(), ") as i32".to_string()),
                 other => (format!(" -> {}", self.compile_type(other)), String::new(), String::new()),
@@ -1245,7 +1245,7 @@ impl Codegen {
                     .map(|(fname, fty)| format!("    pub {}: {},", rust_ident(fname), self.compile_type(fty)))
                     .collect::<Vec<_>>()
                     .join("\n");
-                format!("#[derive(Clone, Debug, Default)]\n#[repr(C)]\npub struct {} {{\n{}\n}}\n", sname, fields_str)
+                format!("#[derive(Clone, Debug, Default)]\n#[repr(C)]\npub struct {} {{\n{}\n}}\n", rust_ident(sname), fields_str)
             })
             .collect::<String>() + &sandbox_struct_codecs(&self.struct_defs);
 
@@ -1419,7 +1419,7 @@ pub(crate) fn wire_struct_impls(structs: &StructDefs) -> String {
             let dec = fields.iter().map(|(f, _)| format!("{}: OrchWire::wire_decode(buf, pos)?", rust_ident(f))).collect::<Vec<_>>().join(", ");
             format!(
                 "impl OrchWire for {name} {{\n    fn wire_encode(&self, out: &mut Vec<u8>) {{ {enc} }}\n    fn wire_decode(buf: &[u8], pos: &mut usize) -> Option<Self> {{ Some({name} {{ {dec} }}) }}\n}}\n",
-                name = name, enc = enc, dec = dec
+                name = rust_ident(name), enc = enc, dec = dec
             )
         })
         .collect()
@@ -1482,21 +1482,24 @@ pub(crate) fn sandbox_struct_codecs(structs: &StructDefs) -> String {
     structs.iter()
         .filter(|(name, _)| sandbox_struct_supported(name, structs, 0))
         .map(|(name, fields)| {
-            let writes = fields.iter().map(|(f, ty)| { let f = rust_ident(f); match ty {
-                Type::Int | Type::Float => format!("    out[std::mem::offset_of!({name}, {f})..][..8].copy_from_slice(&value.{f}.to_le_bytes());"),
-                Type::Bool => format!("    out[std::mem::offset_of!({name}, {f})] = value.{f} as u8;"),
-                Type::Named(inner) => format!("    __orch_sandbox_write_{inner}(&value.{f}, &mut out[std::mem::offset_of!({name}, {f})..][..std::mem::size_of::<{inner}>()]);"),
+            // The type in type position is a Rust identifier and may need escaping; the
+            // codec functions' names are built from the plain name, which is always valid.
+            let ty = rust_ident(name);
+            let writes = fields.iter().map(|(f, field_ty)| { let f = rust_ident(f); match field_ty {
+                Type::Int | Type::Float => format!("    out[std::mem::offset_of!({ty}, {f})..][..8].copy_from_slice(&value.{f}.to_le_bytes());"),
+                Type::Bool => format!("    out[std::mem::offset_of!({ty}, {f})] = value.{f} as u8;"),
+                Type::Named(inner) => format!("    __orch_sandbox_write_{inner}(&value.{f}, &mut out[std::mem::offset_of!({ty}, {f})..][..std::mem::size_of::<{}>()]);", rust_ident(inner)),
                 _ => String::new(),
             } }).collect::<Vec<_>>().join("\n");
-            let reads = fields.iter().map(|(f, ty)| { let f = rust_ident(f); match ty {
-                Type::Int => format!("        {f}: i64::from_le_bytes(bytes[std::mem::offset_of!({name}, {f})..][..8].try_into().unwrap()),"),
-                Type::Float => format!("        {f}: f64::from_le_bytes(bytes[std::mem::offset_of!({name}, {f})..][..8].try_into().unwrap()),"),
-                Type::Bool => format!("        {f}: bytes[std::mem::offset_of!({name}, {f})] != 0,"),
-                Type::Named(inner) => format!("        {f}: __orch_sandbox_read_{inner}(&bytes[std::mem::offset_of!({name}, {f})..][..std::mem::size_of::<{inner}>()]),"),
+            let reads = fields.iter().map(|(f, field_ty)| { let f = rust_ident(f); match field_ty {
+                Type::Int => format!("        {f}: i64::from_le_bytes(bytes[std::mem::offset_of!({ty}, {f})..][..8].try_into().unwrap()),"),
+                Type::Float => format!("        {f}: f64::from_le_bytes(bytes[std::mem::offset_of!({ty}, {f})..][..8].try_into().unwrap()),"),
+                Type::Bool => format!("        {f}: bytes[std::mem::offset_of!({ty}, {f})] != 0,"),
+                Type::Named(inner) => format!("        {f}: __orch_sandbox_read_{inner}(&bytes[std::mem::offset_of!({ty}, {f})..][..std::mem::size_of::<{}>()]),", rust_ident(inner)),
                 _ => String::new(),
             } }).collect::<Vec<_>>().join("\n");
             format!(
-                "#[allow(non_snake_case)]\nfn __orch_sandbox_write_{name}(value: &{name}, out: &mut [u8]) {{\n{writes}\n}}\n#[allow(non_snake_case)]\nfn __orch_sandbox_read_{name}(bytes: &[u8]) -> {name} {{\n    {name} {{\n{reads}\n    }}\n}}\n"
+                "#[allow(non_snake_case)]\nfn __orch_sandbox_write_{name}(value: &{ty}, out: &mut [u8]) {{\n{writes}\n}}\n#[allow(non_snake_case)]\nfn __orch_sandbox_read_{name}(bytes: &[u8]) -> {ty} {{\n    {ty} {{\n{reads}\n    }}\n}}\n"
             )
         })
         .collect()

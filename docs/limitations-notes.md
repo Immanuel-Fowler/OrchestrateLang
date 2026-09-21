@@ -109,8 +109,10 @@ version of the claim.
   there — a sandbox export uses `#[export_name]`, a landline handler and a wire field are
   the plain name, a C symbol keeps `#[link_name]`. `self`, `Self`, `super`, and `crate`
   cannot be raw identifiers, so the lexer refuses them as names. Struct and enum *type*
-  names are not escaped: the convention is PascalCase, and the only capitalised Rust
-  keyword is `Self`, which is refused. Regression tests:
+  names were left out at first, on the reasoning that types are PascalCase; 0.15.1
+  escapes them too, in every type position, while the sandbox codec functions built
+  from a type's name keep the plain spelling (`runtime_keyword_type_names_*`).
+  Regression tests:
   `runtime_keyword_names_in_process`, `runtime_keyword_names_on_a_secret_serverlet`,
   `runtime_keyword_names_in_a_sandbox`, `runtime_keyword_names_on_a_c_sidecar_and_module`,
   `python_landline_keyword_names`, `typescript_landline_keyword_names`,

@@ -15,7 +15,7 @@ struct StateField {
 impl Codegen {
     pub(super) fn host_type(&self, ty: &Type) -> String {
         match ty {
-            Type::Named(name) => format!("crate::{}", name),
+            Type::Named(name) => format!("crate::{}", rust_ident(name)),
             Type::Array(inner, _) => format!("Vec<{}>", self.host_type(inner)),
             _ => self.compile_type(ty),
         }

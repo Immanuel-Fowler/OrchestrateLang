@@ -1410,3 +1410,49 @@ orchestrator main() {
 "#);
     assert_eq!(out.trim(), "40");
 }
+
+/// A struct or an enum may be named with a Rust keyword as well: the type is a raw
+/// identifier wherever the generated Rust names it, and the sandbox codec functions
+/// built from its name keep the plain spelling, which is always a valid identifier.
+fn keyword_type_names_program(header: &str) -> String {
+    format!(r#"
+struct ref {{ type: int, move: int }}
+enum loop {{ Stop, Go(int) }}
+{header}
+    on sum(p: ref) -> int {{ return p.type + p.move }}
+    on flip(p: ref) -> ref {{ return ref {{ type: p.move, move: p.type }} }}
+}}
+orchestrator main() {{
+    let e = start Echo()
+    let p = ref {{ type: 1, move: 2 }}
+    print(to_string(e.sum(p)))
+    let q = e.flip(p)
+    print(to_string(q.type))
+    let l = loop::Go(3)
+    match l {{ loop::Stop => print("stop")  loop::Go(n) => print(to_string(n)) }}
+    stop_orch()
+}}
+"#)
+}
+const KEYWORD_TYPE_NAMES: &str = "3\n2\n3";
+
+#[test]
+fn runtime_keyword_type_names_in_process() {
+    let out = run_orch("keyword_type_names", &keyword_type_names_program("serverlet Echo {"));
+    assert_eq!(out.trim(), KEYWORD_TYPE_NAMES);
+}
+
+#[test]
+fn runtime_keyword_type_names_on_a_secret_serverlet() {
+    let out = run_orch("keyword_type_names_secret", &keyword_type_names_program("serverlet Echo secret {"));
+    assert_eq!(out.trim(), KEYWORD_TYPE_NAMES);
+}
+
+#[test]
+fn runtime_keyword_type_names_in_a_sandbox() {
+    let out = run_orch(
+        "keyword_type_names_sandbox",
+        &keyword_type_names_program(r#"serverlet Echo sandbox(memory_limit: "16mb", timeout: "5s") {"#),
+    );
+    assert_eq!(out.trim(), KEYWORD_TYPE_NAMES);
+}

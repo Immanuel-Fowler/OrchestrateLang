@@ -408,7 +408,7 @@ impl Codegen {
                     .map(|(fname, val)| format!("    {}: {},", rust_ident(fname), self.compile_expr(val)))
                     .collect::<Vec<_>>()
                     .join("\n");
-                format!("{} {{\n{}\n}}", name, fields_str)
+                format!("{} {{\n{}\n}}", rust_ident(name), fields_str)
             }
             ExprNode::FieldAccess { object, field } => {
                 format!("{}.{}", self.compile_expr(object), rust_ident(field))
@@ -453,8 +453,8 @@ impl Codegen {
             // Enum expressions
             ExprNode::EnumVariantLiteral { enum_name, variant_name, payload } => {
                 match payload {
-                    Some(p) => format!("{}::{}({})", enum_name, rust_ident(variant_name), self.compile_expr(p)),
-                    None => format!("{}::{}", enum_name, rust_ident(variant_name)),
+                    Some(p) => format!("{}::{}({})", rust_ident(enum_name), rust_ident(variant_name), self.compile_expr(p)),
+                    None => format!("{}::{}", rust_ident(enum_name), rust_ident(variant_name)),
                 }
             }
             ExprNode::Match { value, arms } => {
@@ -549,8 +549,8 @@ impl Codegen {
                     }
                 } else {
                     match binding {
-                        Some(b) => format!("{}::{}({})", enum_name, rust_ident(variant_name), rust_ident(b)),
-                        None => format!("{}::{}", enum_name, rust_ident(variant_name)),
+                        Some(b) => format!("{}::{}({})", rust_ident(enum_name), rust_ident(variant_name), rust_ident(b)),
+                        None => format!("{}::{}", rust_ident(enum_name), rust_ident(variant_name)),
                     }
                 };
                 if let Some(g) = guard_str { format!("{} if {}", base, g) } else { base }

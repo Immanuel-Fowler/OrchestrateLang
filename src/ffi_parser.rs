@@ -303,7 +303,7 @@ fn ffi_type(ty: &Type, returning: bool) -> String {
         Type::Handle => "*mut std::ffi::c_void".into(),
         // A struct is declared in the program's entry file, so a module's bindings reach
         // it through the crate root, the way handles do.
-        Type::Named(name) => format!("crate::{name}"),
+        Type::Named(name) => format!("crate::{}", rust_ident(name)),
         other => other.display_name(),
     }
 }
