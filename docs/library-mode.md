@@ -231,10 +231,11 @@ runtimes.
 - Spawned workers (`automatic` blocks), serverlets and landlines, and `sleep` outside
   event handlers are not supported: the library panics with a message naming
   deterministic mode. On the coordinator's task that panic reaches the host as an error
-  — `ready` returns "library startup task failed" for a worker, serverlet, or landline
-  started at the top level, and `tick` returns "tick task failed" for a `sleep` in a
-  tick — and the message itself goes to the process's panic hook. Under `tick_sync`,
-  whose body runs on the calling thread, the panic reaches the caller directly.
+  that carries its message: `ready` returns "library startup task failed: " and the
+  message for a worker, serverlet, or landline started at the top level, and `tick`
+  returns "tick task failed: " and the message for a `sleep` in a tick. Under
+  `tick_sync`, whose body runs on the calling thread, the panic reaches the caller
+  directly.
 - Host implementations must be deterministic themselves.
 
 The guarantee is tested at length: `engine_deterministic_trace_is_byte_identical_over_ten_thousand_ticks`

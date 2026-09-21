@@ -10,6 +10,13 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 ## [Unreleased]
 
 ### Fixed
+- **A deterministic-mode refusal tells the host why.** A worker, serverlet, or landline
+  started in deterministic mode, or a `sleep` in a tick, stops the library with a panic
+  naming deterministic mode, but the host saw only "library startup task failed" or
+  "tick task failed"; the reason reached the process's panic hook and nothing else.
+  `ready`, `tick`, and `fixed_tick` now append the panic's message to that error, and
+  any other stop is reported the same way. Patch-level: the errors keep their prefixes
+  and only gain the reason.
 - **A library instance with nothing to unpack leaves no temp folder.** Every
   `scripts::start` created `orch_library_<pid>_<n>` in the temp directory, even when
   the program embeds no landline or secret executables, and removed it only on a clean

@@ -359,6 +359,8 @@ pub struct Scripts {
     commands: tokio::sync::mpsc::UnboundedSender<OrchCommand>,
     ready: Option<tokio::sync::oneshot::Receiver<()>>,
     supervisor: Option<tokio::task::JoinHandle<Result<(), String>>>,
+    /// Why the coordinator stopped, recorded by the supervisor as it stops.
+    failure: tokio::sync::watch::Receiver<Option<String>>,
     context: std::sync::Arc<OrchContext>,
 }
 impl Scripts {
@@ -376,9 +378,21 @@ impl Scripts {
     /// Wait until top-level state and on_start have initialized.
     pub async fn ready(&mut self) -> Result<(), String> {
         if let Some(ready) = self.ready.take() {
-            ready.await.map_err(|_| "library startup task failed".to_string())?;
+            if ready.await.is_err() {
+                return Err(format!("library startup task failed: {}", self.failure_reason().await));
+            }
         }
         Ok(())
+    }
+    /// Why the coordinator stopped. Called only after a reply channel closed, which
+    /// happens only once the coordinator has stopped and the supervisor is recording why.
+    async fn failure_reason(&self) -> String {
+        let mut failure = self.failure.clone();
+        let reason = match failure.wait_for(Option::is_some).await {
+            Ok(reason) => reason.clone(),
+            Err(_) => None,
+        };
+        reason.unwrap_or_else(|| "the library stopped".to_string())
     }
     /// Run every on_tick hook once, in declaration order. Bound slow landline calls made
     /// inside hooks with a landline `budget`.
@@ -387,14 +401,20 @@ impl Scripts {
         if self.stop_requested() { return Err("orchestration requested stop".into()); }
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.commands.send(OrchCommand::Tick(dt@TICK_ARG@, tx)).map_err(|_| "library is stopped")?;
-        rx.await.map_err(|_| "tick task failed".into())
+        match rx.await {
+            Ok(output) => Ok(output),
+            Err(_) => Err(format!("tick task failed: {}", self.failure_reason().await)),
+        }
     }
     pub async fn fixed_tick(&mut self, step: f64) -> Result<(), String> {
         self.ready().await?;
         if self.stop_requested() { return Err("orchestration requested stop".into()); }
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.commands.send(OrchCommand::FixedTick(step, tx)).map_err(|_| "library is stopped")?;
-        rx.await.map_err(|_| "fixed tick task failed".into())
+        match rx.await {
+            Ok(()) => Ok(()),
+            Err(_) => Err(format!("fixed tick task failed: {}", self.failure_reason().await)),
+        }
     }
     pub fn fixed_tick_blocking(&mut self, runtime: &tokio::runtime::Runtime, step: f64) -> Result<(), String> {
         runtime.block_on(self.fixed_tick(step))
@@ -492,11 +512,30 @@ pub fn start_with_options(runtime: &tokio::runtime::Handle, host: impl Host, opt
     let (ready_tx, ready) = tokio::sync::oneshot::channel();
     let coordinator = runtime.spawn(__orch_task(context.clone(), __orch_entry(rx, ready_tx)));
     let cleanup_context = context.clone();
+    let (failure_tx, failure) = tokio::sync::watch::channel(None);
     let supervisor = runtime.spawn(async move {
-        let result = coordinator.await.map_err(|e| e.to_string());
+        let result = coordinator.await.map_err(__orch_join_failure);
+        // Recorded before cleanup, so a `ready` or `tick` whose reply never came can say
+        // why: a deterministic-mode exclusion, for one, is a panic with its own message.
+        failure_tx.send_replace(Some(match &result {
+            Ok(()) => "the library stopped".to_string(),
+            Err(reason) => reason.clone(),
+        }));
         cleanup_context.cleanup().await;
         result
     });
-    Ok(Scripts { commands, ready: Some(ready), supervisor: Some(supervisor), context })
+    Ok(Scripts { commands, ready: Some(ready), supervisor: Some(supervisor), failure, context })
+}
+
+/// A task's failure in the host's terms: a panic's own message rather than tokio's
+/// "task N panicked" wrapper.
+fn __orch_join_failure(error: tokio::task::JoinError) -> String {
+    if !error.is_panic() {
+        return error.to_string();
+    }
+    let payload = error.into_panic();
+    payload.downcast_ref::<&str>().map(|message| message.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a library task panicked".to_string())
 }
 include!("assets.rs");

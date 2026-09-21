@@ -804,7 +804,8 @@ fn main() {
 /// The documented exclusions from deterministic mode fail the way the documentation says:
 /// a spawned worker, a serverlet, a landline, and a `sleep` outside an event handler each
 /// stop the library with the deterministic-mode message. On the coordinator's task the
-/// panic surfaces to the host as an error from `ready` or `tick`; under `tick_sync` the
+/// panic surfaces to the host as an error from `ready` or `tick` that carries the
+/// message; under `tick_sync` the
 /// body runs on the host's own thread, so the panic reaches that thread.
 #[test]
 fn engine_deterministic_mode_refuses_what_it_excludes() {
@@ -833,11 +834,14 @@ fn main() {{
     let mut scripts = scripts::start_with_options(runtime.handle(), Host, options.clone()).unwrap();
     let ready = scripts.ready_blocking(&runtime);
     let tick = scripts.tick_blocking(&runtime, 0.016);
+    // The error carries the panic's own message, so the host learns why, not only that.
     if failure == "startup" {{
-        assert_eq!(ready.unwrap_err(), "library startup task failed");
+        let error = ready.unwrap_err();
+        assert!(error.starts_with("library startup task failed: ") && error.contains("deterministic"), "{{error}}");
     }} else {{
         ready.unwrap();
-        assert_eq!(tick.unwrap_err(), "tick task failed");
+        let error = tick.unwrap_err();
+        assert!(error.starts_with("tick task failed: ") && error.contains("deterministic"), "{{error}}");
     }}
     drop(scripts);
     // The synchronous path for a tick-time failure: the body runs on this thread.

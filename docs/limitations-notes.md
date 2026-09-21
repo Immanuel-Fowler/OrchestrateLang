@@ -176,13 +176,14 @@ version of the claim.
 
 ## Deterministic mode
 
-- **An exclusion surfaces to the host without its reason.** A worker, serverlet, or
+- **An exclusion surfaced to the host without its reason.** A worker, serverlet, or
   landline started in deterministic mode, or a `sleep` in a tick, panics inside the
-  library with a message naming deterministic mode; the host sees `ready` fail with
-  "library startup task failed" or `tick` fail with "tick task failed", and the message
-  only reaches the process's panic hook. Under `tick_sync` the panic reaches the calling
-  thread. Documented precisely now; carrying the reason into the error would need the
-  coordinator to catch the unwind, which this work did not do.
+  library with a message naming deterministic mode; the host saw only "library startup
+  task failed" or "tick task failed", and the message reached nothing but the process's
+  panic hook. Fixed for 0.15.1: the supervisor records the coordinator's panic message
+  before cleanup, and `ready`, `tick`, and `fixed_tick` append it to their error. Under
+  `tick_sync` the panic still reaches the calling thread. Regression test:
+  `engine_deterministic_mode_refuses_what_it_excludes`.
 - **The exclusions are checked at run time, not by `check`.** A program that starts a
   serverlet is a fine program in normal mode; only the host's `StartOptions` makes it an
   error. `check` cannot know which mode the host will choose.
