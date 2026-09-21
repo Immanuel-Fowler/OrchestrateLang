@@ -70,10 +70,10 @@ Follow `CONTRIBUTING.md` for names, commits and releases. Add tests next to the 
 
 ### ✅ 5. Tick input and output batching
 - **Why:** `Host` can't read the `World` (it's not `Send`), and host calls return immediately. Queries like "where is the player" need data passed in each tick, and commands like spawn or play sound need to come back out in a batch the engine applies on its own thread.
-- **Where:** `src/codegen/library_runtime.rs.txt:101` (`tick(dt)` takes only `dt` and returns `()`), and the design sketch `scripts.tick(dt, input)` at `docs/design/landline-serverlets.md:248`.
-- **Status:** **Planned**, build step 8 (`docs/design/landline-serverlets.md:350`). Also `docs/roadmap.md:140`, `docs/library-mode.md:124`, `CHANGELOG.md:43`. The `TICK` frame kind is reserved at `docs/design/landline-serverlets.md:292` and `:310`.
+- **Where:** `src/codegen/library_runtime.rs.txt:101` (`tick(dt)` takes only `dt` and returns `()`), and the design sketch `scripts.tick(dt, input)` at `docs/features/landline-serverlets.md:248`.
+- **Status:** **Planned**, build step 8 (`docs/features/landline-serverlets.md:350`). Also `docs/roadmap.md:140`, `docs/library-mode.md:124`, `CHANGELOG.md:43`. The `TICK` frame kind is reserved at `docs/features/landline-serverlets.md:292` and `:310`.
 - **Done when:** the `on_tick` declaration can take a typed input struct and produce a typed output, the generated `tick` signature carries both, and a Python landline receives one batched `TICK` frame per tick.
-- **✅ Verified:** `engine_typed_tick_and_fixed_step` declares `on_tick(dt: float, input: Input) -> Output`; `tick_blocking(&runtime, dt, input)` returns the `Output`. The Python handler named `tick` receives one TICK frame (kind 9) per call with the tick number and `dt`, and the batch travels inside the input struct's arrays. Documented in `docs/library-mode.md`, "Typed ticks", and the protocol section of `docs/design/landline-serverlets.md`.
+- **✅ Verified:** `engine_typed_tick_and_fixed_step` declares `on_tick(dt: float, input: Input) -> Output`; `tick_blocking(&runtime, dt, input)` returns the `Output`. The Python handler named `tick` receives one TICK frame (kind 9) per call with the tick number and `dt`, and the batch travels inside the input struct's arrays. Documented in `docs/library-mode.md`, "Typed ticks", and the protocol section of `docs/features/landline-serverlets.md`.
 
 ---
 
@@ -94,8 +94,8 @@ Follow `CONTRIBUTING.md` for names, commits and releases. Add tests next to the 
 
 ### ✅ 7. Per-call budgets and late results
 - **Why:** a frame at 60 Hz has about 16.6 ms. A slow Python landline inside `tick` must not stall the frame.
-- **Where:** design at `docs/design/landline-serverlets.md:202-207` (`budget:`, `late:`), with the limitation noted at `docs/library-mode.md:57`.
-- **Status:** **Planned**, build step 8 (`docs/design/landline-serverlets.md:350`).
+- **Where:** design at `docs/features/landline-serverlets.md:202-207` (`budget:`, `late:`), with the limitation noted at `docs/library-mode.md:57`.
+- **Status:** **Planned**, build step 8 (`docs/features/landline-serverlets.md:350`).
 - **Done when:** a landline that sleeps past its budget doesn't delay `tick`. Its result is applied on the next tick or dropped, as declared.
 - **✅ Verified:** build step 8 added `budget` and `late: "drop" | "latest"` landline options (`python_budgets_and_late_results` covers both policies and skipped calls). `engine_host_logs_and_fast_shutdown` calls a Python handler that sleeps 10 seconds under a 20 ms budget, and `tick_blocking` returns in under 100 ms.
 
@@ -142,13 +142,13 @@ Follow `CONTRIBUTING.md` for names, commits and releases. Add tests next to the 
 
 ### ✅ 13. Decide how Python ships to players
 - **Why:** packaged games copy the player, pack and `game.toml`. Players won't necessarily have Python installed.
-- **Status:** **Open question**, `docs/design/landline-serverlets.md:400-401` ("before the first adopter ships").
+- **Status:** **Open question**, `docs/features/landline-serverlets.md:400-401` ("before the first adopter ships").
 - **Done when:** the decision is written into that section, and `docs/library-mode.md` "Packaging" says what a host must ship.
 - **✅ Decided:** recorded under "Current implementation notes" below, per the user's instruction. `docs/library-mode.md` "Packaging" documents the mechanism: Python and third-party packages stay external, and `StartOptions::python` selects the interpreter.
 
 ### ✅ 14. Benchmark harness
 - **Why:** it tells the engine which landlines fit in a frame budget.
-- **Status:** **Planned**, build step 9, `docs/design/landline-serverlets.md:351`.
+- **Status:** **Planned**, build step 9, `docs/features/landline-serverlets.md:351`.
 
 ---
 
@@ -166,7 +166,7 @@ Follow `CONTRIBUTING.md` for names, commits and releases. Add tests next to the 
 - **Python shipping decision (task 13):** the engine/player must ship a compatible Python runtime and dependencies, and set `StartOptions::python` to its executable path relative to the installed player. Development can use `ORCH_PYTHON`/`python3`. OrchestrateLang embeds the source/SDK, not the Python interpreter. No automatic runtime download and no embedded interpreter in this milestone. This decision is recorded here instead of editing the other docs, per the user's instruction.
 - **Cross-target children:** `build --lib --target <triple>` passes the target to Cargo for both child binaries and library checking. The matching target/linker must be installed. Tests exercise an explicit native triple; foreign targets still need their platform toolchains.
 - **Benchmark verified:** the existing harness ran 2,000 samples for each of 9 transport/payload combinations with p50/p90/p99/max output. Results are machine/load dependent; no timing claims are inferred from this one run.
-- **Docs and plan:** `docs/library-mode.md`, `CHANGELOG.md`, `docs/language-reference.md`, and the VS Code grammar describe the new API. The Not-in-docs tasks are listed under "Host integration for the first adopter" in `docs/design/landline-serverlets.md` §8.
+- **Docs and plan:** `docs/library-mode.md`, `CHANGELOG.md`, `docs/language-reference.md`, and the VS Code grammar describe the new API. The Not-in-docs tasks are listed under "Host integration for the first adopter" in `docs/features/landline-serverlets.md` §8.
 - **Verification (2026-09-18, v0.7.0):** the full suite passes (65 unit, 10 snapshot, 1 error-case, 12 foreign-check, 5 landline, 21 library, 21 runtime, 4 TypeScript tests), every self-exiting example runs, and CI is green on Linux and macOS.
 
 ## Later: tied to future engine phases
@@ -178,12 +178,12 @@ Follow `CONTRIBUTING.md` for names, commits and releases. Add tests next to the 
   - Child processes (`src/codegen/stmt.rs:597`).
   - Temp-directory asset extraction in `start` (`src/codegen/library_runtime.rs.txt`, `std::env::temp_dir` and `std::fs`).
 - **Do:** add a feature or flag for a library without landlines or secret serverlets, using only the tokio features that build for wasm32 (or no tokio at all in deterministic mode).
-- **Status:** **Planned**, listed under "Host integration for the first adopter" in `docs/design/landline-serverlets.md` §8.
+- **Status:** **Planned**, listed under "Host integration for the first adopter" in `docs/features/landline-serverlets.md` §8.
 
 ### 16. Hot reload
 - **Why:** the engine hot-reloads native modules during development (`engine: docs/ARCHITECTURE.md:114-119`), but a statically linked library can't reload.
 - **Status:**
-  - Landline child restart is **Planned**, build step 15 (`docs/design/landline-serverlets.md` §8).
+  - Landline child restart is **Planned**, build step 15 (`docs/features/landline-serverlets.md` §8).
   - Reloading `.orch` code itself is only a pipedream (`docs/roadmap.md`, Pipedream Ideas).
 
 ### 17. More languages (FFI first)
@@ -199,11 +199,11 @@ Follow `CONTRIBUTING.md` for names, commits and releases. Add tests next to the 
 - **Tool setup uses Bun:** `bun add --dev typescript scriptc @types/bun`. The compiler searches source ancestors for `node_modules/.bin` before PATH; `ORCH_TSC`, `ORCH_SCRIPTC`, and `ORCH_BUN` override paths. Project `tsconfig.json` and installed Node/Bun types are used when present. No package installation happens automatically during a build.
 - **Current boundary:** TypeScript FFI is a synchronous process bridge, not an in-process C-ABI library. One protocol process per imported module is reused across calls, preserving module state and avoiding repeated startup and handshake costs. Use a landline for independently started instances, host callbacks, ticks, or calls that need budgets. Landlines remain outside deterministic mode.
 - **✅ Verification:** four new TypeScript integration tests cover native selection, Bun fallback, signature errors, large integers, strings/arrays, async replies, Bun APIs, typed ticks, host grants/logging, instance isolation, budgets/late results, and startup after source removal. The regression suite passed, with the four sandbox-blocked Zig/Swift checks passing on toolchain-access reruns.
-- **Why:** the engine wants C# and TypeScript for gameplay and tools, and C++ plugins (`docs/design/landline-serverlets.md` §1).
-- **Status:** Zig, Swift, and TypeScript are **done** (build step 12, v0.4.0). The rest is **Planned**, FFI first (`docs/design/landline-serverlets.md` §8):
+- **Why:** the engine wants C# and TypeScript for gameplay and tools, and C++ plugins (`docs/features/landline-serverlets.md` §1).
+- **Status:** Zig, Swift, and TypeScript are **done** (build step 12, v0.4.0). The rest is **Planned**, FFI first (`docs/features/landline-serverlets.md` §8):
   - Richer C-ABI types and opaque handles: step 10. C# via .NET Native AOT: step 11. Stateful FFI serverlets only if handles fall short: step 13.
   - Embedded Python via pyo3: step 14.
-  - Process granularity is an open question (`docs/design/landline-serverlets.md` §10).
+  - Process granularity is an open question (`docs/features/landline-serverlets.md` §10).
 
 ---
 
@@ -213,4 +213,4 @@ Follow `CONTRIBUTING.md` for names, commits and releases. Add tests next to the 
 3. Tasks 9 and 10, then 11-14 before the first packaged game.
 4. Tasks 15-17 when the engine reaches its web phase or needs more runtimes.
 
-**Also add the Not-in-docs tasks to `docs/design/landline-serverlets.md` section 8** (build steps), so OrchestrateLang's own plan stays the single source of truth.
+**Also add the Not-in-docs tasks to `docs/features/landline-serverlets.md` section 8** (build steps), so OrchestrateLang's own plan stays the single source of truth.

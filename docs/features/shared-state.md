@@ -20,7 +20,7 @@ declared**. That principle is already everywhere in the language:
 | `fn` / `task` | a synchronous fn / an `async fn` | suspension, or not |
 
 Every one of those is the same shape: **one construct, several backends, selected by a word
-in the declaration.** [Design philosophy §8](../design-philosophy.md) states the rule —
+in the declaration.** [Choices made in syntax](../design/choices-in-syntax.md) states the rule —
 *"What the orchestrator may touch is declared, not implied. Capability markers are boring
 and greppable on purpose"* — and §4 states the goal: *use the cheapest boundary that works*,
 with the developer choosing the rung.
@@ -188,7 +188,8 @@ wherever they are used. `runtime_shared_state_is_not_copied_into_workers` covers
 5. **Reject the types decided in question 1**, with a message naming the binding.
 6. **Measure**, replace the estimate in this document and in the changelog with the number.
 7. **Docs** — `language-reference.md` §2.1 alongside `let`, the ladder in
-   `design-philosophy.md` §4, the roadmap, and the website's boundary ladder.
+   `design/polyglot-coordination-and-attachment.md`, the roadmap, and the website's
+   boundary ladder.
 
 ## 7. Out of scope
 

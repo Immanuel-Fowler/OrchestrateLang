@@ -33,7 +33,7 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   grants use — numbers, booleans, strings, arrays, and structs. A host error or panic
   fails that one call inside the guest, which logs it and continues with the default. A
   host call counts against the serverlet's `timeout`, since the guest is still inside its
-  call while the host runs. Step 7 of `docs/design/sandboxed-serverlets.md`, and the
+  call while the host runs. Step 7 of `docs/features/sandboxed-serverlets.md`, and the
   point where containment and consent become one mechanism.
 - **`on_crash` on a sandboxed serverlet** runs on the host after a call ran past its
   timeout, exhausted its memory, or stopped itself, with the trap's message bound, before
@@ -89,6 +89,19 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   `docs/language-reference.md` before "Debugging Generated Code": what a check does and
   finds, and what it does not — no codegen, no Cargo, library-only rules unenforced,
   module serverlet bodies unwalked, foreign sources unchecked.
+
+### Changed
+- **The documentation says what the language is before it says what it does.** The four
+  foundational principles each have a document under `docs/design/`: concurrency is the
+  structure, asynchronous first and synchronous second, polyglot as coordination and
+  attachment, and as many choices as possible made in syntax. Each states the claim, what
+  it buys, and what it costs, with examples that typecheck and numbers taken from
+  `benchmarks/`. `docs/design-philosophy.md` is now the index of those four plus the
+  eight principles that govern how the language is built.
+
+  The per-feature design documents moved from `docs/design/` to `docs/features/`, where
+  `README.md` lists them with their status. Every cross-reference in the repository was
+  updated, so no link moved without its target.
 
 ### Fixed
 - **Sixteen wrong programs are told so by `orchestrate check` instead of rustc.** The
@@ -191,7 +204,7 @@ State a worker can touch, declared rather than assumed.
   and structs; a serverlet client, a process, or a closure is refused by name.
 
   A program without `shared let` gains no mutex, no field, and no code. The design, and the
-  five questions it opened and how each was answered, are in `docs/design/shared-state.md`.
+  five questions it opened and how each was answered, are in `docs/features/shared-state.md`.
 
 ## [0.12.0] - 2026-09-20
 

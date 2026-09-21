@@ -165,5 +165,5 @@ appears.
 ## Out of scope
 
 Landlines on the native backend, WASM (a sandboxing story, see
-[design/sandboxed-serverlets.md](../design/sandboxed-serverlets.md)), arrays and structs
+[features/sandboxed-serverlets.md](../features/sandboxed-serverlets.md)), arrays and structs
 until scriptc carries them, cross-target archives.

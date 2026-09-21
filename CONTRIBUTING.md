@@ -3,7 +3,8 @@
 This file is the source of truth for naming, commits, branches, and releases.
 When something here and the code disagree, fix one of them — don't leave the drift.
 Check new features and design docs against the
-[design philosophy](docs/design-philosophy.md).
+[design philosophy](docs/design-philosophy.md) and the four foundational principles it
+indexes.
 
 ---
 
@@ -33,8 +34,10 @@ Check new features and design docs against the
 ```
 docs/
 ├── language-reference.md   ← the user-facing spec
+├── design-philosophy.md    ← the principles, and the index of the four foundations
 ├── roadmap.md              ← planned features and their status
-├── design/                 ← one design doc per feature (e.g. sandboxed-serverlets.md)
+├── design/                 ← one doc per foundational principle
+├── features/               ← one design doc per feature (e.g. sandboxed-serverlets.md)
 └── plans/                  ← implementation plans
 examples/
 ├── <name>.orch             ← runnable demos; must exit on their own (call stop_orch()),

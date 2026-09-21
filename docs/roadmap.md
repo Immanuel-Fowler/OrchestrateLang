@@ -14,7 +14,7 @@ There are two distinct ways this could show up in the language, and they serve d
 
 ### 1a. Polyglot Serverlets (actor-style, stateful)
 
-> **Current plan:** [design/landline-serverlets.md](design/landline-serverlets.md). It
+> **Current plan:** [features/landline-serverlets.md](features/landline-serverlets.md). It
 > supersedes the sketch below: handler bodies run over a pipe or embedded in-process, with
 > a binary protocol and an interface check at startup, and OrchestrateLang can build as a
 > library a host application links. First adopter: a Rust game engine's scripting layer.
@@ -66,7 +66,8 @@ load_foreign "typescript" "./math.ts"   // requires math.orch_ffi sidecar
   backend; `ORCH_TS_BACKEND` is the project-wide default. TypeScript landlines remain the
   path for independently started instances, host callbacks, ticks, and budgets.
 
-**Next FFI work** (preferred over landlines; see the [design philosophy](design-philosophy.md) §4):
+**Next FFI work** (preferred over landlines; see
+[polyglot: coordination and attachment](design/polyglot-coordination-and-attachment.md)):
 
 - **TypeScript in-process, through scriptc's library mode.** `scriptc build --lib
   --profile` (scriptc 0.1.1) emits a C-ABI static archive from a TypeScript module. A
@@ -140,7 +141,7 @@ generates the same code it does today.
 This is the language's own idiom — one construct, several backends, chosen by a word in the
 declaration, the way `secret`, `sandbox`, and `via` already work. The design, the guarantee
 (a statement touching shared state is atomic with respect to all shared state), and the open
-questions are in [design/shared-state.md](design/shared-state.md).
+questions are in [features/shared-state.md](features/shared-state.md).
 
 ---
 
@@ -198,7 +199,7 @@ is [plans/language-gaps.md](plans/language-gaps.md).
   type and the numeric ones gained `float` variants.
 - **Sandboxed serverlets contain their code — shipped in 0.9.0.** The guest runs under
   wasmtime with a memory cap, a per-call timeout, and no import it was not granted. Step 7
-  of [design/sandboxed-serverlets.md](design/sandboxed-serverlets.md), turning a `grant`
+  of [features/sandboxed-serverlets.md](features/sandboxed-serverlets.md), turning a `grant`
   into a mediated host function, shipped after 0.14.0.
 - **Core defects found in the 2026-09-19 review — fixed in 0.11.0.** Four bugs that all
   leaked generated Rust to the user: string concatenation moved its operands, a match on a
@@ -228,7 +229,7 @@ Given the combined scope of these four features, recommend picking **one end-to-
 1. ~~**PROM** first — smallest, self-contained, validates registry plumbing.~~ **[SHIPPED]**
 2. ~~**Loaded foreign Rust module** (1b, Rust only) — validates the "non-OrchestrateLang module" pattern with the lowest possible risk (no FFI, no embedded interpreter).~~ **[SHIPPED]**
 3. ~~**Loaded foreign C/C++ module** (1b, C and C++) — via `.orch_ffi` sidecar and `cc-rs`.~~ **[SHIPPED]**
-4. **Landline serverlets** — [build plan](design/landline-serverlets.md): Python and
+4. **Landline serverlets** — [build plan](features/landline-serverlets.md): Python and
    TypeScript landlines are implemented, including TypeScript 7 checking, scriptc/Bun
    executable selection, protocol v1, grants, library packaging, budgets, and late-result
    policies. TypeScript FFI, Zig FFI, Swift FFI, C# via Native AOT (0.10.0), and

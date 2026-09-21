@@ -320,7 +320,8 @@ guest, but only as well as wasmtime does, and only the guest's compute, memory, 
 — not the answers it returns. The project names these boundaries precisely rather than
 letting a word imply the stronger guarantee.
 
-The full rationale is in [Design Philosophy](docs/design-philosophy.md).
+The full rationale is in [Design Philosophy](docs/design-philosophy.md), which indexes
+the four foundational principles in [docs/design/](docs/design/).
 
 ## Language features
 
@@ -576,7 +577,7 @@ There are several serverlet boundaries:
 Secret and landline serverlets perform a startup handshake that checks protocol and
 handler signatures. Landlines also support call budgets and policies for late replies.
 See the [Python SDK](sdk/python/README.md), [TypeScript SDK](sdk/typescript/README.md), and
-[landline design](docs/design/landline-serverlets.md).
+[landline design](docs/features/landline-serverlets.md).
 
 ### Secret serverlets
 
@@ -830,7 +831,11 @@ Swift examples require their respective compilers.
 - [Language reference](docs/language-reference.md) — syntax, types, compiler behavior,
   and generated-code details
 - [Design philosophy](docs/design-philosophy.md) — the principles used to evaluate new
-  features
+  features, indexing the four foundations in [docs/design/](docs/design/): concurrency as
+  structure, asynchronous first, polyglot coordination and attachment, and choices made
+  in syntax
+- [Feature designs](docs/features/) — one document per feature: the problem, the design,
+  what was hard, and what shipped
 - [Library mode](docs/library-mode.md) — host lifecycle, ticks, events, callbacks,
   deterministic execution, and packaging
 - [Python SDK](sdk/python/README.md) — Python landline implementation and setup

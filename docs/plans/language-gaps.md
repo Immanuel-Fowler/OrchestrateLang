@@ -161,7 +161,7 @@ behaviour.
 
 `serverlet X sandbox(...)` parses, validates, and builds a `wasm32-wasip1` guest — and
 then runs the serverlet in-process with no isolation, with a warning. Steps 3–7 of
-[design/sandboxed-serverlets.md](../design/sandboxed-serverlets.md) (wasmtime wiring,
+[features/sandboxed-serverlets.md](../features/sandboxed-serverlets.md) (wasmtime wiring,
 memory limits, epoch timeouts, string marshaling, grants as narrow host functions) are the
 real work and are planned there in detail; this section does not repeat them.
 

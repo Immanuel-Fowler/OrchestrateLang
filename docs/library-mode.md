@@ -356,5 +356,5 @@ with a clear message when the target differs.
 
 Bound slow landline calls made from `on_tick` with a landline `budget` and `late` policy,
 and batch per-item work by passing arrays; see
-[landline-serverlets.md](design/landline-serverlets.md) §5. To measure call latency on
+[landline-serverlets.md](features/landline-serverlets.md) §5. To measure call latency on
 your machine, see [benchmarks/README.md](../benchmarks/README.md).

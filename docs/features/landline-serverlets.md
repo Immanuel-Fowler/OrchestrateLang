@@ -43,7 +43,8 @@ other serverlet.
 
 Landlines are not the first choice for every language. A language that can export
 C-callable functions (C#, Zig, Swift) should use FFI instead; see the
-[design philosophy](../design-philosophy.md) §4 and §8 below. Python needs its interpreter;
+[design philosophy](../design-philosophy.md) — attachment before coordination — and §8
+below. Python needs its interpreter;
 TypeScript also has a persistent executable FFI bridge, but its calls are synchronous and
 serialized through one process per imported module. Python and TypeScript use landlines
 for independently started instances, asynchronous handlers, host callbacks, and budgets.

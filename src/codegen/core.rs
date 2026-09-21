@@ -177,7 +177,7 @@ fn __panic_message(e: &Box<dyn std::any::Any + Send>) -> String {
 
 "#;
 
-/// Serverlet wire protocol v1 (docs/design/landline-serverlets.md §7), shared by both ends.
+/// Serverlet wire protocol v1 (docs/features/landline-serverlets.md §7), shared by both ends.
 ///
 /// Frame: `[u32 length][u8 kind][u32 call_id][payload]`, little-endian; the length covers
 /// kind + call_id + payload. Values use the `OrchWire` encoding: int and float as 8 bytes,

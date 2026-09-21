@@ -1010,7 +1010,7 @@ tokio::spawn(async move {
 
 - **`Documentation/../language-reference.md`** — Rewrite the "Process Blocks" section entirely. Document restart policies, `on_crash` handler, backoff behavior, and what "supervised" means in concrete terms. Add a table: "What happens when an automatic block panics?" with Before/After the fix.
 - **`Documentation/README.md`** — Update the "Design Philosophy" section. The claim "Automatic process blocks never die silently" should become true with this implementation. Add a supervision guarantees table.
-- **`Documentation/../design/serverlet-files.md`** — Add a "Fault Tolerance" subsection documenting `on_crash` handlers in serverlets and the `catch_unwind` guarantee. Clarify that state is preserved across handler panics (the state variables live outside the dispatch loop).
+- **`Documentation/../features/serverlet-files.md`** — Add a "Fault Tolerance" subsection documenting `on_crash` handlers in serverlets and the `catch_unwind` guarantee. Clarify that state is preserved across handler panics (the state variables live outside the dispatch loop).
 
 ---
 
