@@ -134,3 +134,16 @@ version of the claim.
   200 ns: the trigger allocates the event future, the drain runs it, and the handler's
   host call is inside. It is on the table because a host that fires events every tick
   should know the price, not because it belongs to the tick-glue claim.
+
+## Deterministic mode
+
+- **An exclusion surfaces to the host without its reason.** A worker, serverlet, or
+  landline started in deterministic mode, or a `sleep` in a tick, panics inside the
+  library with a message naming deterministic mode; the host sees `ready` fail with
+  "library startup task failed" or `tick` fail with "tick task failed", and the message
+  only reaches the process's panic hook. Under `tick_sync` the panic reaches the calling
+  thread. Documented precisely now; carrying the reason into the error would need the
+  coordinator to catch the unwind, which this work did not do.
+- **The exclusions are checked at run time, not by `check`.** A program that starts a
+  serverlet is a fine program in normal mode; only the host's `StartOptions` makes it an
+  error. `check` cannot know which mode the host will choose.

@@ -714,6 +714,150 @@ fn main() {
     assert_eq!(output.trim(), "replays match");
 }
 
+/// Deterministic mode, at length: the same tick and event sequence, replayed over 10,000
+/// ticks on fresh instances, on a current-thread and a multithreaded runtime, through
+/// `tick_blocking` and `tick_sync`, produces a byte-identical host-call trace. The trace
+/// has to be interesting to mean anything: events fired by the host and by handlers,
+/// handlers that sleep on host time across several ticks, and instance state.
+#[test]
+fn engine_deterministic_trace_is_byte_identical_over_ten_thousand_ticks() {
+    let root = root("deterministic_trace");
+    build(&root, r#"
+host world { fn record(tag: int, value: int) }
+let ticks = 0
+let fired = 0
+on hit(n: int) {
+    world.record(1, n)
+    sleep(5)
+    world.record(2, n + 100)
+}
+on pulse(a: int, b: int) {
+    world.record(3, a * b)
+    trigger hit(a + b)
+}
+on_tick(dt: float) {
+    ticks = ticks + 1
+    world.record(0, ticks)
+    if ticks % 7 == 0 {
+        fired = fired + 1
+        trigger pulse(ticks, fired)
+    }
+}
+orchestrator main() {}
+"#);
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<u8>>>);
+impl scripts::Host for Host {
+    fn world_record(&self, tag: i64, value: i64) -> Result<(), String> {
+        let mut trace = self.0.lock().unwrap();
+        trace.extend_from_slice(&tag.to_le_bytes());
+        trace.extend_from_slice(&value.to_le_bytes());
+        Ok(())
+    }
+}
+const TICKS: usize = 10_000;
+fn run(runtime: &tokio::runtime::Runtime, sync: bool) -> Vec<u8> {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let options = scripts::StartOptions { deterministic: true, ..Default::default() };
+    let mut scripts = scripts::start_with_options(runtime.handle(), Host(trace.clone()), options).unwrap();
+    scripts.ready_blocking(runtime).unwrap();
+    for i in 0..TICKS {
+        // A scripted, replayable sequence: events on some ticks, a varying dt on all.
+        if i % 3 == 0 { scripts.trigger_hit(i as i64).unwrap(); }
+        if i % 11 == 0 { scripts.trigger_pulse(i as i64, 5).unwrap(); }
+        let dt = 0.001 + (i % 5) as f64 * 0.001;
+        if sync { scripts.tick_sync(runtime, dt).unwrap(); } else { scripts.tick_blocking(runtime, dt).unwrap(); }
+    }
+    // A few quiet ticks, so the last handlers' sleeps finish on host time before the end.
+    for _ in 0..10 {
+        if sync { scripts.tick_sync(runtime, 0.005).unwrap(); } else { scripts.tick_blocking(runtime, 0.005).unwrap(); }
+    }
+    scripts.shutdown_blocking(runtime).unwrap();
+    let result = trace.lock().unwrap().clone();
+    result
+}
+fn main() {
+    let single = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let multi = tokio::runtime::Runtime::new().unwrap();
+    let reference = run(&single, false);
+    assert_eq!(reference, run(&single, false), "a second instance on the same runtime diverged");
+    assert_eq!(reference, run(&single, true), "tick_sync diverged from tick_blocking");
+    assert_eq!(reference, run(&multi, false), "the multithreaded runtime diverged");
+    assert_eq!(reference, run(&multi, true), "tick_sync on the multithreaded runtime diverged");
+    // The trace must actually contain what the program can do: tick records, host-fired
+    // and handler-fired events, and sleeps that completed on host time.
+    let records: Vec<(i64, i64)> = reference.chunks_exact(16).map(|c| (
+        i64::from_le_bytes(c[..8].try_into().unwrap()), i64::from_le_bytes(c[8..].try_into().unwrap()),
+    )).collect();
+    let count = |tag: i64| records.iter().filter(|(t, _)| *t == tag).count();
+    assert_eq!(count(0), TICKS + 10, "one tick record per tick");
+    assert!(count(1) > 3_000 && count(2) == count(1), "every hit slept and finished on host time: {} started, {} finished", count(1), count(2));
+    assert!(count(3) > 1_000, "pulses were handled: {}", count(3));
+    println!("trace {} bytes, {} records", reference.len(), records.len());
+}
+"#);
+    assert!(output.starts_with("trace "), "{output}");
+    println!("{}", output.trim());
+}
+
+/// The documented exclusions from deterministic mode fail the way the documentation says:
+/// a spawned worker, a serverlet, a landline, and a `sleep` outside an event handler each
+/// stop the library with the deterministic-mode message. On the coordinator's task the
+/// panic surfaces to the host as an error from `ready` or `tick`; under `tick_sync` the
+/// body runs on the host's own thread, so the panic reaches that thread.
+#[test]
+fn engine_deterministic_mode_refuses_what_it_excludes() {
+    let programs = [
+        ("worker", "host world { fn record(n: int) }\nlet worker = automatic { world.record(1) }\non_tick(dt: float) { }\norchestrator main(procs: process[worker]) {}\n", "startup"),
+        ("serverlet", "host world { fn record(n: int) }\nserverlet Counter { on add(n: int) -> int { return n } }\nlet counter = start Counter()\non_tick(dt: float) { world.record(counter.add(1)) }\norchestrator main() {}\n", "startup"),
+        ("landline", "host world { fn record(n: int) }\nserverlet P via python(source: \"impl.py\") { on ping() -> int }\nlet p = start P()\non_tick(dt: float) { world.record(p.ping()) }\norchestrator main() {}\n", "startup"),
+        ("sleep", "host world { fn record(n: int) }\non_tick(dt: float) { sleep(1) world.record(1) }\norchestrator main() {}\n", "tick"),
+    ];
+    for (name, source, failure) in programs {
+        let root = root(&format!("deterministic_excludes_{name}"));
+        fs::write(root.join("impl.py"), "from orchestratelang import landline\nclass P(landline.Serverlet):\n    def ping(self) -> int: return 1\nlandline.serve(P)\n").unwrap();
+        build(&root, source);
+        let output = host(&root, &format!(r#"
+use std::sync::{{Arc, Mutex}};
+struct Host;
+impl scripts::Host for Host {{ fn world_record(&self, _: i64) -> Result<(), String> {{ Ok(()) }} }}
+fn main() {{
+    let panics: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen = panics.clone();
+    std::panic::set_hook(Box::new(move |info| {{ seen.lock().unwrap().push(info.to_string()); }}));
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let options = scripts::StartOptions {{ deterministic: true, ..Default::default() }};
+    let failure = "{failure}";
+    // The channel path: the panic is on the coordinator's task and reaches the host as an error.
+    let mut scripts = scripts::start_with_options(runtime.handle(), Host, options.clone()).unwrap();
+    let ready = scripts.ready_blocking(&runtime);
+    let tick = scripts.tick_blocking(&runtime, 0.016);
+    if failure == "startup" {{
+        assert_eq!(ready.unwrap_err(), "library startup task failed");
+    }} else {{
+        ready.unwrap();
+        assert_eq!(tick.unwrap_err(), "tick task failed");
+    }}
+    drop(scripts);
+    // The synchronous path for a tick-time failure: the body runs on this thread.
+    if failure == "tick" {{
+        let mut scripts = scripts::start_with_options(runtime.handle(), Host, options).unwrap();
+        scripts.ready_blocking(&runtime).unwrap();
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scripts.tick_sync(&runtime, 0.016)));
+        assert!(caught.is_err(), "tick_sync must panic on the calling thread");
+        drop(scripts);
+    }}
+    let panics = panics.lock().unwrap();
+    assert!(panics.iter().any(|p| p.contains("deterministic")), "expected the deterministic-mode message, got {{panics:?}}");
+    println!("refused as documented: {{}}", panics.iter().find(|p| p.contains("deterministic")).unwrap().lines().last().unwrap_or(""));
+}}
+"#));
+        assert!(output.starts_with("refused as documented"), "{name}: {output}");
+        println!("{name}: {}", output.trim());
+    }
+}
+
 #[test]
 fn engine_host_logs_and_fast_shutdown() {
     let root = root("logs_shutdown");

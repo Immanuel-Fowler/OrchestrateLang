@@ -62,6 +62,14 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   boundary ladder. The 8 ns tick and 1.5 ns host-call figures from the 0.8.1 notes come
   from this measurement now, not from a release note.
 
+- **Deterministic mode is tested at length.** One scripted sequence of 10,000 ticks and
+  events — host-fired events, events fired by handlers, handlers that sleep on host time
+  across ticks, and instance state — replayed on fresh instances, on a current-thread and
+  a multithreaded runtime, through `tick_blocking` and `tick_sync`, produces a
+  byte-identical host-call trace. A second test asserts that each documented exclusion
+  (a spawned worker, a serverlet, a landline, a `sleep` outside an event handler) fails
+  the way `docs/library-mode.md` now says, with the deterministic-mode message.
+
 ### Fixed
 - **A block whose last statement touches shared state takes the lock.** `while c {
   hits = hits + 1 }`, `if c { hits = hits + 1 }`, and `on_tick(dt: float) { hits = hits + 1 }`

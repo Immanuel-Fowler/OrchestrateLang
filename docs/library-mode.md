@@ -229,8 +229,21 @@ runtimes.
 - Ready events run in FIFO order; events that are sleeping stay queued.
 - The orchestrator body runs to completion during startup instead of on its own task.
 - Spawned workers (`automatic` blocks), serverlets and landlines, and `sleep` outside
-  event handlers are not supported and panic.
+  event handlers are not supported: the library panics with a message naming
+  deterministic mode. On the coordinator's task that panic reaches the host as an error
+  — `ready` returns "library startup task failed" for a worker, serverlet, or landline
+  started at the top level, and `tick` returns "tick task failed" for a `sleep` in a
+  tick — and the message itself goes to the process's panic hook. Under `tick_sync`,
+  whose body runs on the calling thread, the panic reaches the caller directly.
 - Host implementations must be deterministic themselves.
+
+The guarantee is tested at length: `engine_deterministic_trace_is_byte_identical_over_ten_thousand_ticks`
+replays one scripted sequence of 10,000 ticks and events — host-fired events, events
+fired by handlers, handlers that sleep on host time across ticks, and instance state —
+on fresh instances, on a current-thread and a multithreaded runtime, through
+`tick_blocking` and `tick_sync`, and asserts a byte-identical host-call trace.
+`engine_deterministic_mode_refuses_what_it_excludes` asserts that each exclusion above
+fails as described.
 
 ## Declaring and granting host functions
 
