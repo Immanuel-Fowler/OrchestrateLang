@@ -58,9 +58,10 @@ if you restore it; install the toolchain to regenerate them.
 
 The site is published at <https://immanuel-fowler.github.io/OrchestrateLang/> from the
 `website` branch. `.github/workflows/pages.yml` publishes `website/` with GitHub Pages on
-every push to that branch, and once a day to refresh the fallback snapshot. That snapshot
-is checked out from `main`, not from the `website` branch, so it cannot drift from what
-the pages read at runtime.
+every push to that branch, or when the workflow is run by hand to refresh the fallback
+snapshot (GitHub fires `schedule` only from the default branch, so there is no cron
+here). That snapshot is checked out from `main`, not from the `website` branch, so it
+cannot drift from what the pages read at runtime.
 
 Only changes to the site itself need a deploy. Documentation changes do not: push them to
 `main` and the live pages pick them up. To ship a change to the site:
