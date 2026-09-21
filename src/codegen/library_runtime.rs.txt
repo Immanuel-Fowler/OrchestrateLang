@@ -333,7 +333,7 @@ impl OrchContext {
             for (task, _) in self.tasks.lock().unwrap().iter() { task.abort(); }
             while self.active.load(std::sync::atomic::Ordering::Acquire) != 0 { self.idle.notified().await; }
         }
-        let _ = std::fs::remove_dir_all(&self.assets);
+        if !self.assets.as_os_str().is_empty() { let _ = std::fs::remove_dir_all(&self.assets); }
     }
 }
 
@@ -455,7 +455,10 @@ pub fn start(runtime: &tokio::runtime::Handle, host: impl Host) -> Result<Script
 pub fn start_with_options(runtime: &tokio::runtime::Handle, host: impl Host, options: StartOptions) -> Result<Scripts, String> {
     __orch_check_drivers(runtime)?;
     static NEXT_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let assets = loop {
+    // An instance with nothing to unpack gets no folder. One used to be created for
+    // every instance and removed only on a clean shutdown, so a host that exited without
+    // one left an empty folder in the temp directory each time.
+    let assets = if ORCH_ASSETS.is_empty() { std::path::PathBuf::new() } else { loop {
         let id = NEXT_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!("orch_library_{}_{}", std::process::id(), id));
         match std::fs::create_dir(&path) {
@@ -463,7 +466,7 @@ pub fn start_with_options(runtime: &tokio::runtime::Handle, host: impl Host, opt
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e.to_string()),
         }
-    };
+    } };
     for (name, contents) in ORCH_ASSETS {
         let path = assets.join(name);
         let result = std::fs::create_dir_all(path.parent().unwrap()).and_then(|_| std::fs::write(&path, contents));

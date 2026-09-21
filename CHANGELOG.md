@@ -10,6 +10,12 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 ## [Unreleased]
 
 ### Fixed
+- **A library instance with nothing to unpack leaves no temp folder.** Every
+  `scripts::start` created `orch_library_<pid>_<n>` in the temp directory, even when
+  the program embeds no landline or secret executables, and removed it only on a clean
+  shutdown, so a host that exited without one left an empty folder each time. The folder
+  is now created only when there is something to put in it. Patch-level: nothing a host
+  can observe changes.
 - **The embedded standard library no longer leaves a temp folder per run.** An installed
   `orchestrate` with no `stdlib/` beside it unpacked `lists` and `strings` into a fresh
   `orchestrate_stdlib_<pid>_<n>` folder in every process and never removed it; 38 had
