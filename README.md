@@ -289,15 +289,16 @@ rejected. Where it is rejected is the measurement:
 
 | Rejected by | Programs | Meaning |
 |---|---:|---|
-| `orchestrate check` | 76 | the typechecker's own error, before any code is generated |
-| build, before Cargo | 6 | codegen or the driver, still the compiler's own error |
+| `orchestrate check` | 89 | the typechecker's own error, before any code is generated |
+| build, before Cargo | 0 | codegen or the driver, still the compiler's own error |
 | Cargo, no rustc code | 0 | a `compile_error!` the generator planted, reported through Cargo |
-| rustc | 2 | leaked: a rustc error against generated code |
+| rustc | 0 | leaked: a rustc error against generated code |
 | nothing | 0 | wrongly accepted |
 
-**81 of 88 invalid programs are rejected by `orchestrate check`.** The one that leaks is a generic called with conflicting arguments
-for one type parameter; it is listed in `KNOWN_LEAKS.txt`, which the test holds to
-exactly, so a leak that appears or disappears fails the build until the list says so.
+**All 89 invalid programs are rejected by `orchestrate check`**, each with the
+compiler's own error before any code is generated; none reaches the build, and none
+reaches rustc. `KNOWN_LEAKS.txt`, which the test holds the corpus to exactly, is empty,
+so a leak that appears fails the build until it is fixed or listed.
 
 ## OrchestrateLang in 30 seconds
 

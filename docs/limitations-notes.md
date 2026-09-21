@@ -57,8 +57,7 @@ version of the claim.
 - **Sandbox type errors were reported by the guest's cargo build**, as a `compile_error!`
   after codegen, so `orchestrate check` accepted a program the build rejected. Fixed for
   entry-file serverlets in the typechecker; for a serverlet inside an imported module the
-  gate runs in codegen, before Cargo, because module bodies are not walked by the
-  typechecker.
+  gate ran in codegen, before Cargo, until 0.15.1 made `check` walk module bodies too.
 
 - **`shared let` did not compile in three ordinary positions.** A block whose tail
   statement touched shared state — a `while` body, an `if` branch, or an `on_tick` body
@@ -190,15 +189,20 @@ version of the claim.
 
 ## Diagnostics corpus: what still reaches rustc
 
-88 invalid programs; 81 rejected by `orchestrate check`, 6 by the build before Cargo,
-1 by rustc, 0 accepted (`benchmarks/results/diagnostics_coverage.md`). The build-time six
-are compiler errors too, they just live in the driver or the generator: a `load_foreign`
-language the compiler does not know, `host` in a module or outside a library build, a
-`fn` that calls a task through a module, a sandboxed handler that waits, a `shared let`
-of an unshareable type, and a statement that both waits and touches shared state. The
-leaks that `tests/error_cases/diagnostics/KNOWN_LEAKS.txt` holds the corpus to:
+Nothing. 89 invalid programs; all 89 rejected by `orchestrate check`, none by the build,
+none by rustc, none accepted (`benchmarks/results/diagnostics_coverage.md`), and
+`tests/error_cases/diagnostics/KNOWN_LEAKS.txt` is empty.
 
-(None left: `generic_arg_conflict`, the last one, is fixed; see above.)
+For 0.15.1, six mistakes that used to pass `check` and be caught by the driver or the
+generator became `check` errors: a `load_foreign` language the compiler does not know,
+`host` or `on_tick` outside a library build (plain `check` now applies the standalone
+rules, `check --lib` the library ones), a `fn` that calls a task through a module, a
+sandboxed handler that waits, a `shared let` of an unshareable type, and a statement
+that both waits and touches shared state. The typechecker's rule for what waits is
+codegen's, from `require_async`, with one difference: a call counts as a serverlet call
+only when its receiver is known to hold a client, so the language server, which
+registers no modules, never takes a module call for one. `generic_arg_conflict`, the
+last rustc leak, is fixed; see above.
 
 Three candidates turned out to be **valid programs that fail** and are not in the
 corpus, because the corpus is invalid programs:
@@ -210,6 +214,8 @@ corpus, because the corpus is invalid programs:
 - a `task` that touches `shared let` — this one compiles and is correct; it was
   a wrong candidate, listed here so nobody adds it back.
 
-The count `check` reports is for the entry file's declarations. A serverlet declared
-inside an imported module is not walked by the typechecker, so its handler bodies are
-checked by codegen at build time, never by `check`.
+Since 0.15.1 `check` also walks each imported module's own declarations, in the module's
+own scope, so a serverlet declared in a module is typechecked by `check` rather than
+first by codegen at build time. `module_serverlet_body_type_error`, a handler inside a
+module that returns a string where it declares `int`, passed `check` and failed in Cargo
+before that.

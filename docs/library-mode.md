@@ -3,7 +3,9 @@
 `orchestrate build --lib main.orch -o generated/scripts` generates and checks a Rust
 crate named `scripts`. Add it as a Cargo path dependency in a Rust application.
 The host owns its Tokio runtime; the library never creates a runtime or exits the
-host process.
+host process. `orchestrate check --lib main.orch` checks the program as that build
+would, without generating anything; plain `check` applies the standalone rules and
+refuses `host` and `on_tick`, as `run` does.
 
 Generated crates use edition 2024 and `rust-version = "1.89"`, so the host needs Rust
 1.89 or newer. Pass `build --lib --rust-version <x.y[.z]>` to declare a different one;

@@ -830,30 +830,37 @@ orchestrate build --lib <file.orch> -o <dir> [--target <triple>] [--rust-version
 `load` sub-file, reads the sidecars of `load_foreign` declarations so that calls into
 foreign functions are typed — including reading a `.wasm` module's own export table and
 refusing a sidecar that names an export the module lacks or types it differently — and
-runs the typechecker over the entry file. A program that passes is free of the errors the
-typechecker knows how to find: unknown names, mismatched types and arities in calls,
-handler calls a serverlet does not declare, `trigger` arguments that do not match the
-event, struct literals with missing or unknown fields, non-exhaustive matches, a body
-that declares a return type but can reach its end without returning, a `fn` that
-waits, a `task` that names top-level state, a handler type that cannot cross a secret,
-landline, or sandboxed boundary, and a sandboxed handler that calls a host function it
-was not granted. A name may be any Rust keyword that is not an OrchestrateLang keyword —
+runs the typechecker over the entry file and over each imported module's own
+declarations. A program that passes is free of the errors the typechecker knows how to
+find: unknown names, mismatched types and arities in calls, generic arguments that
+disagree about one type parameter, handler calls a serverlet does not declare, `trigger`
+arguments that do not match the event, struct literals with missing or unknown fields,
+non-exhaustive matches, a body that declares a return type but can reach its end
+without returning, a `fn` or a sandboxed handler that waits, a statement that both
+waits and touches shared state, a `shared let` of a type that cannot be shared, a `task`
+that names top-level state, a handler type that cannot cross a secret, landline, or
+sandboxed boundary, a sandboxed handler that calls a host function it was not granted,
+and a `load_foreign` language the compiler does not support. A name may be any Rust keyword that is not an OrchestrateLang keyword —
 `move`, `type`, `ref`, `mod`, and the rest — and the generated Rust escapes it; the four
 that Rust cannot escape, `self`, `Self`, `super`, and `crate`, are refused as names with
 an error that says so. A program that fails is reported in OrchestrateLang terms, with a
 line and a column, before any code is generated.
 
-It guarantees nothing beyond that. `check` generates no Rust and runs no Cargo, so the
-checks that live in code generation are not made: it accepts a `host` block or an
-`on_tick` outside a library build, it does not walk the handler bodies of a serverlet
-declared inside an imported module, and it cannot see a Rust foreign function's body or
-a landline's Python or TypeScript source, which `check-foreign` checks with each
-language's own tools. A program `check` accepts may therefore still be refused by
-`build`, by the compiler's own error or, in the cases listed in
-`benchmarks/results/diagnostics_coverage.md` and `docs/limitations-notes.md`, by rustc against
-generated code. The diagnostics corpus under `tests/error_cases/diagnostics/` measures
-how much of the invalid-program space `check` covers, and `benchmarks/diagnostics_coverage.py`
-prints the count.
+`check` applies the rules a build applies for its mode. Plain `check` checks a program
+the way `run` and `build` build it, so a `host` block, an `on_tick`, or a grant is an
+error there, as it is for them; `check --lib` checks it the way `build --lib` does, which
+allows those and holds a library to its own rules: host names, grants that name a host
+function, one typed `on_tick`, lifecycle hooks in the entry file, and the shape of
+`main`. Both commands call the same function for these rules.
+
+It guarantees nothing beyond that. `check` generates no Rust and runs no Cargo, and it
+cannot see a Rust foreign function's body or a landline's Python or TypeScript source,
+which `check-foreign` checks with each language's own tools. A program `check` accepts
+may therefore still be refused by `build`, or by rustc against generated code in a case
+nobody has found yet. The diagnostics corpus under `tests/error_cases/diagnostics/`
+measures how much of the invalid-program space `check` covers — every one of its 89
+programs is rejected by `check`, none by the build or rustc — and
+`benchmarks/diagnostics_coverage.py` prints the count.
 
 ### Debugging Generated Code
 
