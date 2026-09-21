@@ -20,10 +20,7 @@ fn read_message(reader: &mut dyn BufRead) -> Option<Value> {
     }
     if content_length == 0 { return None; }
     let mut buf = vec![0u8; content_length];
-    {
-        use std::io::Read;
-        reader.read_exact(&mut buf).ok()?;
-    }
+    reader.read_exact(&mut buf).ok()?;
     serde_json::from_slice(&buf).ok()
 }
 

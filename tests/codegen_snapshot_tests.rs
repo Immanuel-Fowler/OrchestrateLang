@@ -4,7 +4,7 @@
 /// On subsequent runs, output is compared against those files.
 /// To regenerate a snapshot, delete the corresponding .snap file and re-run tests.
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use orchestrate_lib::{lexer, parser, codegen, typechecker};
 
 fn snapshots_dir() -> PathBuf {
