@@ -703,6 +703,11 @@ fn runtime_regression_programs() {
             "{:?} failed:\nstdout: {}\nstderr: {}", program,
             String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     }
+    // These programs build beside their sources, into one shared cache of about 4 GB;
+    // a passing run leaves nothing in the source tree.
+    if !std::env::var_os("ORCH_KEEP_TEST_BUILDS").is_some_and(|v| v == "1") {
+        let _ = fs::remove_dir_all(dir.join(".orch_cache"));
+    }
 }
 
 #[test]

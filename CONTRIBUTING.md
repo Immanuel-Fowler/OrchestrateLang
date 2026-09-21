@@ -121,10 +121,12 @@ cargo test
 
 - Runtime tests compile real programs through cargo, so they need network access the
   first time (to fetch `tokio`) and a C/C++ compiler.
-- Each runtime test builds in its own directory under the system temp dir (about 140 MB
-  for a plain case, 400–600 MB for a sandbox case) and removes it when it passes. A
-  failing test keeps its directory for inspection. Set `ORCH_KEEP_TEST_BUILDS=1` to keep
-  every one, which makes a rerun fast; clear them with `rm -rf "$TMPDIR"/orch_*`.
+- The tests build real programs, in directories under the system temp dir (about
+  140 MB for a plain case, 400–600 MB for a sandbox case) and, for `tests/programs/`
+  and `tests/error_cases/`, in a `.orch_cache` beside the sources. Each test removes
+  what it built when it passes; a failing test keeps its build for inspection. Set
+  `ORCH_KEEP_TEST_BUILDS=1` to keep every one, which makes a rerun fast; clear them with
+  `rm -rf "$TMPDIR"/orch_*`.
 - Zig and Swift FFI tests need `zig` (0.16+) and `swiftc` (5.10+) on `PATH`; without them
   those tests print `skipping` and pass.
 - TypeScript integration tests need Bun and TypeScript 7. Install project tools with

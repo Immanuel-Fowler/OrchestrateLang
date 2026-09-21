@@ -132,10 +132,28 @@ landline.serve(Worker)
     assert_eq!(stdout, "10\n10\n20\n50\n0\n0\n1\n30", "{}", stderr);
 }
 
-fn directory(name: &str) -> PathBuf {
+/// A test's working directory under the system temp dir. It is removed when the test
+/// passes; a failing test keeps it, and `ORCH_KEEP_TEST_BUILDS=1` keeps every one.
+struct Scratch(PathBuf);
+impl std::ops::Deref for Scratch {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let keep = std::env::var_os("ORCH_KEEP_TEST_BUILDS").is_some_and(|v| v == "1");
+        if !std::thread::panicking() && !keep {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+}
+
+fn directory(name: &str) -> Scratch {
     let dir = std::env::temp_dir().join(format!("orch_landline_{}", name));
     fs::create_dir_all(&dir).unwrap();
-    dir
+    Scratch(dir)
 }
 
 fn run(dir: &std::path::Path, source: &str, python: &str) -> (String, String) {

@@ -389,8 +389,10 @@ impl Parser<'_> {
 mod tests {
     use super::*;
 
+    /// One fixed folder, reused by every run: the tests share it from parallel threads,
+    /// so none of them can remove it, and a per-process name left one behind per run.
     fn base() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("orch_dependencies_{}", std::process::id()));
+        let dir = std::env::temp_dir().join("orch_dependencies_unit_tests");
         std::fs::create_dir_all(dir.join("sdk")).unwrap();
         dir
     }

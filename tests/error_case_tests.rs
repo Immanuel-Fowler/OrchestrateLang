@@ -1,6 +1,18 @@
 use std::process::Command;
 use std::path::PathBuf;
 
+/// Removes what a passing test built: the `.orch_cache` a build leaves beside the source
+/// it compiled, and the probe binary. `ORCH_KEEP_TEST_BUILDS=1` keeps them.
+fn remove_build_leftovers(paths: &[PathBuf]) {
+    if std::env::var_os("ORCH_KEEP_TEST_BUILDS").is_some_and(|v| v == "1") {
+        return;
+    }
+    for path in paths {
+        let _ = std::fs::remove_dir_all(path);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 fn get_orchestrate_bin() -> PathBuf {
     assert!(PathBuf::from(env!("CARGO_BIN_EXE_orchestrate")).exists());
     PathBuf::from(env!("CARGO_BIN_EXE_orchestrate"))
@@ -83,6 +95,7 @@ fn test_error_cases() {
     assert_check_fails("sandbox_ungranted_host_call.orch", "add `grant call world.reset`");
     // on_crash runs on the host; the guest's state is gone by then.
     assert_compilation_fails("sandbox_crash_uses_state.orch", "on_crash uses 'calls', which is the guest's state");
+    remove_build_leftovers(&[PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/error_cases/.orch_cache")]);
 }
 
 /// Every wrong program must fail as OrchestrateLang, never as rustc.
@@ -165,4 +178,5 @@ fn diagnostics_never_leak_rustc() {
     assert!(unlisted.is_empty(), "these reached rustc and are not listed in KNOWN_LEAKS.txt: {unlisted:?}");
     let stale: Vec<&String> = known_leaks.difference(&leaked).collect();
     assert!(stale.is_empty(), "these are listed in KNOWN_LEAKS.txt but no longer leak; remove them: {stale:?}");
+    remove_build_leftovers(&[dir.join(".orch_cache"), std::env::temp_dir().join("orch_diagnostics_probe")]);
 }

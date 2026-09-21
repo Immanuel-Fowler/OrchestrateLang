@@ -10,6 +10,12 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 ## [Unreleased]
 
 ### Fixed
+- **The whole test suite cleans up after itself.** 0.15.0 did it for `runtime_tests`;
+  the rest still left their builds: about 4 GB in `tests/programs/.orch_cache` and
+  more in `tests/error_cases/`, both inside the source tree, a folder per landline test
+  in the temp directory, and one per run from the dependency unit tests. Each is
+  removed when its test passes, and kept when it fails or under
+  `ORCH_KEEP_TEST_BUILDS=1`. Patch-level: only the tests changed.
 - **Calling another orchestrator type-checks again.** 0.15.0's check for a second
   `orchestrator main` sat in front of the arm that registers each orchestrator's
   signature, so that arm never ran and `helper()` on an `orchestrator helper()` was
