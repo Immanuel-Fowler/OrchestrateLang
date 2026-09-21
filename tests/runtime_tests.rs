@@ -977,3 +977,70 @@ orchestrator main(procs: process[writer, reader]) { }
 "#);
     assert_eq!(out.trim(), "written");
 }
+
+/// Arrays and structs across the C ABI. An array parameter is a pointer and a count; an
+/// array return is a `malloc`'d pointer plus a count written through an out-parameter,
+/// which the wrapper copies and frees — the same ownership rule strings follow. A struct
+/// crosses by value, because the generated struct is `#[repr(C)]`.
+#[test]
+fn runtime_ffi_c_arrays_and_structs() {
+    write_foreign_module("ffi_c_arrays", "cmath", "c", "m.c",
+        "#include <stdlib.h>\n\
+         long long total(const long long *items, long long count) {\n\
+         \x20   long long sum = 0;\n\
+         \x20   for (long long i = 0; i < count; i++) sum += items[i];\n\
+         \x20   return sum;\n\
+         }\n\
+         double *scaled(const double *items, long long count, double by, long long *out_count) {\n\
+         \x20   double *out = malloc(sizeof(double) * (size_t)count);\n\
+         \x20   for (long long i = 0; i < count; i++) out[i] = items[i] * by;\n\
+         \x20   *out_count = count;\n\
+         \x20   return out;\n\
+         }\n\
+         struct Point { long long x; long long y; };\n\
+         struct Point shift(struct Point p) {\n\
+         \x20   struct Point moved = { p.x + 1, p.y + 2 };\n\
+         \x20   return moved;\n\
+         }\n",
+        "total(items: int[]) -> int\nscaled(items: float[], by: float) -> float[]\nshift(p: Point) -> Point\n");
+    let out = run_orch("ffi_c_arrays", r#"
+use module cmath: "./cmath"
+
+struct Point { x: int, y: int }
+
+let worker = automatic {
+    print(to_string(cmath.total([1, 2, 3, 4])))
+    let doubled = cmath.scaled([1.5, 2.5], 2.0)
+    print(to_string(doubled[0]) + "," + to_string(doubled[1]))
+    let moved = cmath.shift(Point { x: 10, y: 20 })
+    print(to_string(moved.x) + "," + to_string(moved.y))
+    stop_orch()
+}
+orchestrator main(procs: process[worker]) { }
+"#);
+    assert_eq!(out.trim(), "10\n3,5\n11,22");
+}
+
+/// The same ABI from Zig, which reaches it through `export fn` rather than C declarations.
+#[test]
+fn runtime_ffi_zig_arrays() {
+    if !has_tool("zig", "version") { return; }
+    write_foreign_module("ffi_zig_arrays", "zmath", "zig", "m.zig",
+        "const std = @import(\"std\");\n\
+         export fn total(items: [*]const i64, count: i64) i64 {\n\
+         \x20   var sum: i64 = 0;\n\
+         \x20   var i: usize = 0;\n\
+         \x20   while (i < @as(usize, @intCast(count))) : (i += 1) sum += items[i];\n\
+         \x20   return sum;\n\
+         }\n",
+        "total(items: int[]) -> int\n");
+    let out = run_orch("ffi_zig_arrays", r#"
+use module zmath: "./zmath"
+let worker = automatic {
+    print(to_string(zmath.total([5, 6, 7])))
+    stop_orch()
+}
+orchestrator main(procs: process[worker]) { }
+"#);
+    assert_eq!(out.trim(), "18");
+}

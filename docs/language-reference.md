@@ -1161,6 +1161,41 @@ through `swiftc -print-target-info`.
 > - One source file per `load_foreign`. A Zig file can `@import` other files; Swift files
 >   are compiled one at a time.
 
+**Arrays and structs across the C ABI.** An array crosses as a pointer and a count, and a
+struct crosses by value because the generated struct is `#[repr(C)]`:
+
+| `.orch_ffi` | C parameter | C return |
+| :--- | :--- | :--- |
+| `int[]` | `const long long *items, long long count` | `long long *` plus `long long *out_count` |
+| `float[]` | `const double *items, long long count` | `double *` plus `long long *out_count` |
+| `bool[]` | `const bool *items, long long count` | `bool *` plus `long long *out_count` |
+| a `struct` | `struct P p` | `struct P` |
+
+One declared array parameter is **two** C parameters, the pointer and the count, in that
+order. A returned array is one more C parameter — a `long long *` the function writes the
+count through — and the function returns the pointer. The ownership rule is the one strings
+already follow: **what the foreign side returns is `malloc`'d, and the generated wrapper
+copies it and frees it.** An array parameter is borrowed for the call and must not be kept.
+
+```c
+long long total(const long long *items, long long count);
+double *scaled(const double *items, long long count, double by, long long *out_count);
+
+struct Point { long long x; long long y; };
+struct Point shift(struct Point p);
+```
+
+```
+total(items: int[]) -> int
+scaled(items: float[], by: float) -> float[]
+shift(p: Point) -> Point
+```
+
+A struct must be declared in the program and its fields must line up with the C
+declaration, field for field and in order. Arrays carry `int`, `float`, and `bool`; an
+array of strings, of handles, or of arrays does not cross, and neither does a struct with
+those fields.
+
 **Type conversions for `load_foreign "rust"`:**
 
 *Note: Rust foreign functions take `String` directly; for C, C++, Zig, and Swift, strings and handles cross under the rules above. `handle` is not a Rust sidecar type.*

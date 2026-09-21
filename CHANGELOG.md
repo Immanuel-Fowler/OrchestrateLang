@@ -9,6 +9,37 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-09-20
+
+Arrays and structs cross the fastest boundary.
+
+### Added
+- **Arrays and structs across the C ABI.** C, C++, Zig, and Swift sidecars carried `int`,
+  `float`, `bool`, `string`, and `handle`; they now carry `int[]`, `float[]`, `bool[]`, and
+  structs declared in the program.
+
+  ```
+  total(items: int[]) -> int
+  scaled(items: float[], by: float) -> float[]
+  shift(p: Point) -> Point
+  ```
+
+  An array parameter is **two** C parameters — a pointer and a count, in that order. A
+  returned array adds one more, a `long long *` the function writes the count through, and
+  returns the pointer. The ownership rule is the one strings already follow: what the
+  foreign side returns is `malloc`'d, and the generated wrapper copies it and frees it; an
+  array parameter is borrowed for the call and must not be kept.
+
+  A struct crosses **by value**, because generated structs are now `#[repr(C)]`. Its fields
+  must line up with the foreign declaration, field for field and in order.
+
+  Arrays carry `int`, `float`, and `bool`. An array of strings, of handles, or of arrays
+  does not cross yet, and neither does a struct with those fields.
+
+### Changed
+- Structs generated from a `struct` declaration are `#[repr(C)]`, so their layout is the
+  one a foreign declaration sees. Nothing else about them changed.
+
 ## [0.13.0] - 2026-09-20
 
 State a worker can touch, declared rather than assumed.
@@ -650,7 +681,8 @@ First tagged release.
   `option` / `result`, `try` / `catch`, supervision, `check`, the language server, or the
   standard library. See `examples/` for working code.
 
-[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.10.1...v0.11.0

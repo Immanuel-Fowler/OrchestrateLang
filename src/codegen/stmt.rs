@@ -676,7 +676,7 @@ impl Codegen {
                     .map(|(fname, fty)| format!("    pub {}: {},", fname, self.compile_type(fty)))
                     .collect::<Vec<_>>()
                     .join("\n");
-                format!("#[derive(Clone, Debug, Default)]\npub struct {} {{\n{}\n}}", name, fields_str)
+                format!("#[derive(Clone, Debug, Default)]\n#[repr(C)]\npub struct {} {{\n{}\n}}", name, fields_str)
             }
             StmtNode::EnumDef { name, variants } => {
                 let variants_str = variants.iter().map(|v| {
@@ -788,7 +788,7 @@ impl Codegen {
                     .map(|(fname, fty)| format!("    pub {}: {},", fname, self.compile_type(fty)))
                     .collect::<Vec<_>>()
                     .join("\n");
-                format!("#[derive(Clone, Debug, Default)]\npub struct {} {{\n{}\n}}\n", sname, fields_str)
+                format!("#[derive(Clone, Debug, Default)]\n#[repr(C)]\npub struct {} {{\n{}\n}}\n", sname, fields_str)
             })
             .collect::<String>() + &wire_struct_impls(&self.struct_defs);
 

@@ -78,7 +78,9 @@ load_foreign "typescript" "./math.ts"   // requires math.orch_ffi sidecar
   by scriptc, and `wasm32-wasi` rejects library mode. This would ship as
   `load_foreign "typescript" "math.ts" (backend: "native")`; the plan is
   [plans/typescript-native-backend.md](plans/typescript-native-backend.md).
-- Arrays and structs across the C ABI. `string` and `handle` shipped in 0.8.0.
+- Arrays and structs across the C ABI shipped in 0.14.0, on the same ownership rule as
+  `string` and `handle` (0.8.0): an array is a pointer and a count, a returned array is
+  `malloc`'d and freed by the wrapper, and a struct crosses by value as `#[repr(C)]`.
 - Cross-compiling Zig and Swift sources for `build --lib --target`.
 - **Go** works through `-buildmode=c-archive`, but only one Go library can be loaded per process.
 
@@ -225,9 +227,9 @@ Given the combined scope of these four features, recommend picking **one end-to-
    TypeScript landlines are implemented, including TypeScript 7 checking, scriptc/Bun
    executable selection, protocol v1, grants, library packaging, budgets, and late-result
    policies. TypeScript FFI, Zig FFI, Swift FFI, C# via Native AOT (0.10.0), and
-   WebAssembly modules (0.9.0) are also implemented. Still open: arrays and structs across
-   the C ABI, and a web-compatible library subset. This supersedes the subprocess+JSON
-   sketch.
+   WebAssembly modules (0.9.0), and arrays and structs across the C ABI (0.14.0) are also
+   implemented. Still open: a web-compatible library subset. This supersedes the
+   subprocess+JSON sketch.
 5. **OPM (git-based, no hosted index)** — builds on PROM's name→location mapping.
 6. ~~**Sandboxed serverlets (wasmtime)** — largest single feature; benefits from #4's pattern and gives OPM a security story.~~ **[SHIPPED in 0.9.0, except grants]**
 

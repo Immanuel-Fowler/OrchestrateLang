@@ -90,8 +90,10 @@ pub fn parse_ffi(ffi_content: &str, language: &str, file_name: &str) -> Result<V
                 TokenKind::Identifier(n) => n.clone(),
                 _ => return Err(format!("Error in {} at line {}: expected parameter type, found {:?}", file_name, tok.line, tok.kind)),
             };
-            params.push((arg_name, c_type(&arg_type_str, file_name, tok.line)?));
+            let line = tok.line;
             pos += 1;
+            let arg_ty = c_type_at(&arg_type_str, &tokens, &mut pos, file_name, line)?;
+            params.push((arg_name, arg_ty));
 
             tok = tokens.get(pos).unwrap_or_else(|| &tokens[tokens.len()-1]);
             if tok.kind == TokenKind::Comma {
@@ -119,8 +121,9 @@ pub fn parse_ffi(ffi_content: &str, language: &str, file_name: &str) -> Result<V
                 TokenKind::Identifier(n) => n.clone(),
                 _ => return Err(format!("Error in {} at line {}: expected return type, found {:?}", file_name, tok.line, tok.kind)),
             };
-            ret = c_type(&ret_type_str, file_name, tok.line)?;
+            let line = tok.line;
             pos += 1;
+            ret = c_type_at(&ret_type_str, &tokens, &mut pos, file_name, line)?;
         }
 
         signatures.push(CSignature { name: fn_name, params, ret, drop });
@@ -160,11 +163,31 @@ pub fn generate_bindings(signatures: &[CSignature], file_name: &str) -> Result<S
     let mut returns_string = false;
 
     for signature in signatures {
-        let decl_params = signature.params.iter()
-            .map(|(name, ty)| format!("{}: {}", name, ffi_type(ty, false)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let decl_ret = if signature.ret == Type::Void { String::new() } else { format!(" -> {}", ffi_type(&signature.ret, true)) };
+        // An array is two C parameters, a pointer and a count, for one declared one.
+        let mut decl_parts: Vec<String> = Vec::new();
+        for (name, ty) in &signature.params {
+            match ty {
+                Type::Array(inner, _) => {
+                    decl_parts.push(format!("{}: *const {}", name, ffi_type(inner, false)));
+                    decl_parts.push(format!("{}_count: i64", name));
+                }
+                _ => decl_parts.push(format!("{}: {}", name, ffi_type(ty, false))),
+            }
+        }
+        // An array return is a pointer plus a count written through an out-parameter,
+        // because C returns one value.
+        let returns_array = matches!(signature.ret, Type::Array(_, _));
+        if returns_array {
+            decl_parts.push("__out_count: *mut i64".to_string());
+        }
+        let decl_params = decl_parts.join(", ");
+        let decl_ret = if signature.ret == Type::Void {
+            String::new()
+        } else if let Type::Array(inner, _) = &signature.ret {
+            format!(" -> *mut {}", ffi_type(inner, true))
+        } else {
+            format!(" -> {}", ffi_type(&signature.ret, true))
+        };
         extern_c.push_str(&format!("    #[link_name = \"{0}\"]\n    fn __ffi_{0}({1}){2};\n", signature.name, decl_params, decl_ret));
         if signature.drop {
             continue;
@@ -176,17 +199,29 @@ pub fn generate_bindings(signatures: &[CSignature], file_name: &str) -> Result<S
             .join(", ");
         let wrapper_ret = if signature.ret == Type::Void { String::new() } else { format!(" -> {}", wrapper_type(&signature.ret, true)) };
         let mut prologue = String::new();
-        let call_args = signature.params.iter().map(|(name, ty)| match ty {
-            Type::Str => {
-                prologue.push_str(&format!(
-                    "    let __{0} = std::ffi::CString::new({0}.replace('\\0', \"\")).expect(\"a string without NUL\");\n",
-                    name
-                ));
-                format!("__{}.as_ptr()", name)
+        let mut call_parts: Vec<String> = Vec::new();
+        for (name, ty) in &signature.params {
+            match ty {
+                Type::Str => {
+                    prologue.push_str(&format!(
+                        "    let __{0} = std::ffi::CString::new({0}.replace('\\0', \"\")).expect(\"a string without NUL\");\n",
+                        name
+                    ));
+                    call_parts.push(format!("__{}.as_ptr()", name));
+                }
+                Type::Handle => call_parts.push(format!("{}.ptr()", name)),
+                Type::Array(_, _) => {
+                    call_parts.push(format!("{}.as_ptr()", name));
+                    call_parts.push(format!("{}.len() as i64", name));
+                }
+                _ => call_parts.push(name.clone()),
             }
-            Type::Handle => format!("{}.ptr()", name),
-            _ => name.clone(),
-        }).collect::<Vec<_>>().join(", ");
+        }
+        if returns_array {
+            prologue.push_str("    let mut __count: i64 = 0;\n");
+            call_parts.push("&mut __count".to_string());
+        }
+        let call_args = call_parts.join(", ");
         let call = format!("unsafe {{ __ffi_{}({}) }}", signature.name, call_args);
         let body = match &signature.ret {
             Type::Str => {
@@ -196,6 +231,13 @@ pub fn generate_bindings(signatures: &[CSignature], file_name: &str) -> Result<S
                 )
             }
             Type::Handle => format!("    crate::OrchHandle::new({call}, {})", release.as_deref().unwrap_or("__ffi_drop")),
+            Type::Array(inner, _) => {
+                returns_string = true;
+                let inner = ffi_type(inner, true);
+                format!(
+                    "    let __result = {call};\n    if __result.is_null() || __count <= 0 {{ Vec::new() }} else {{\n        let __items = unsafe {{ std::slice::from_raw_parts(__result as *const {inner}, __count as usize) }}.to_vec();\n        unsafe {{ {free_symbol}(__result as *mut std::ffi::c_void) }};\n        __items\n    }}"
+                )
+            }
             _ => format!("    {call}"),
         };
         wrappers.push_str(&format!("pub fn {}({}){} {{\n{}{}\n}}\n", signature.name, wrapper_params, wrapper_ret, prologue, body));
@@ -208,6 +250,32 @@ pub fn generate_bindings(signatures: &[CSignature], file_name: &str) -> Result<S
     Ok(format!("{}{}", extern_c, wrappers))
 }
 
+/// A sidecar type, with any `[]` suffixes that follow it consumed from the token stream.
+fn c_type_at(
+    name: &str,
+    tokens: &[crate::lexer::Token],
+    pos: &mut usize,
+    file_name: &str,
+    line: usize,
+) -> Result<Type, String> {
+    let mut ty = c_type(name, file_name, line)?;
+    while matches!(tokens.get(*pos).map(|t| &t.kind), Some(TokenKind::LBracket)) {
+        match tokens.get(*pos + 1).map(|t| &t.kind) {
+            Some(TokenKind::RBracket) => {}
+            _ => return Err(format!("Error in {} at line {}: expected ']' after '[' in a type", file_name, line)),
+        }
+        *pos += 2;
+        if !matches!(ty, Type::Int | Type::Float | Type::Bool) {
+            return Err(format!(
+                "Error in {} at line {}: an array across the C ABI carries int, float, or bool; '{}' does not cross as an array",
+                file_name, line, ty.display_name()
+            ));
+        }
+        ty = Type::Array(Box::new(ty), Vec::new());
+    }
+    Ok(ty)
+}
+
 fn c_type(name: &str, file_name: &str, line: usize) -> Result<Type, String> {
     match name {
         "int" => Ok(Type::Int),
@@ -216,6 +284,9 @@ fn c_type(name: &str, file_name: &str, line: usize) -> Result<Type, String> {
         "void" => Ok(Type::Void),
         "string" => Ok(Type::Str),
         "handle" => Ok(Type::Handle),
+        // A capitalised name is a struct declared in the program; the generated struct is
+        // `#[repr(C)]`, so it has the layout the foreign side sees.
+        other if other.starts_with(|c: char| c.is_ascii_uppercase()) => Ok(Type::Named(other.to_string())),
         _ => Err(format!("Error in {} at line {}: unknown type '{}'", file_name, line, name)),
     }
 }
@@ -229,6 +300,9 @@ fn ffi_type(ty: &Type, returning: bool) -> String {
         Type::Void => "()".into(),
         Type::Str => if returning { "*mut std::os::raw::c_char".into() } else { "*const std::os::raw::c_char".into() },
         Type::Handle => "*mut std::ffi::c_void".into(),
+        // A struct is declared in the program's entry file, so a module's bindings reach
+        // it through the crate root, the way handles do.
+        Type::Named(name) => format!("crate::{name}"),
         other => other.display_name(),
     }
 }
@@ -238,6 +312,7 @@ fn wrapper_type(ty: &Type, returning: bool) -> String {
     match ty {
         Type::Str => "String".into(),
         Type::Handle => if returning { "crate::OrchHandle".into() } else { "&crate::OrchHandle".into() },
+        Type::Array(inner, _) => format!("Vec<{}>", ffi_type(inner, returning)),
         other => ffi_type(other, returning),
     }
 }
