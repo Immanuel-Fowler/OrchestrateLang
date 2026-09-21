@@ -275,35 +275,62 @@ impl TypeChecker {
         }
     }
 
-    fn unify_type_param(&self, param_ty: &Type, arg_ty: &Type, type_params: &[String], subst: &mut HashMap<String, Type>) {
+    /// Binds each type parameter to the first argument type it meets. A later argument
+    /// that disagrees is an error: one `T` is one Rust type, so `same(1, "x")` against
+    /// `fn same<T>(a: T, b: T)` would otherwise reach rustc as E0308. A side the checker
+    /// does not know yet (`void`, as in `[]` or `none`) binds nothing and conflicts with
+    /// nothing.
+    fn unify_type_param(&self, param_ty: &Type, arg_ty: &Type, type_params: &[String], subst: &mut HashMap<String, Type>) -> Result<(), String> {
         match param_ty {
             Type::TypeParam(name) if type_params.contains(name) => {
-                subst.entry(name.clone()).or_insert_with(|| arg_ty.clone());
+                if Self::mentions_void(arg_ty) {
+                    return Ok(());
+                }
+                match subst.get(name) {
+                    Some(bound) if !self.types_compatible(bound, arg_ty) && !self.types_compatible(arg_ty, bound) => {
+                        return Err(format!(
+                            "type parameter {} is {} from an earlier argument but {} here; one type parameter is one type",
+                            name, bound.display_name(), arg_ty.display_name()
+                        ));
+                    }
+                    Some(_) => {}
+                    None => { subst.insert(name.clone(), arg_ty.clone()); }
+                }
             }
             Type::Array(inner, _) => {
                 if let Type::Array(arg_inner, _) = arg_ty {
-                    self.unify_type_param(inner, arg_inner, type_params, subst);
+                    self.unify_type_param(inner, arg_inner, type_params, subst)?;
                 }
             }
             Type::Option(inner) => {
                 if let Type::Option(arg_inner) = arg_ty {
-                    self.unify_type_param(inner, arg_inner, type_params, subst);
+                    self.unify_type_param(inner, arg_inner, type_params, subst)?;
                 }
             }
             Type::Result(ok, err) => {
                 if let Type::Result(arg_ok, arg_err) = arg_ty {
-                    self.unify_type_param(ok, arg_ok, type_params, subst);
-                    self.unify_type_param(err, arg_err, type_params, subst);
+                    self.unify_type_param(ok, arg_ok, type_params, subst)?;
+                    self.unify_type_param(err, arg_err, type_params, subst)?;
                 }
             }
             Type::Fn(params, _) => {
                 if let Type::Fn(arg_params, _) = arg_ty {
                     for (p, a) in params.iter().zip(arg_params.iter()) {
-                        self.unify_type_param(p, a, type_params, subst);
+                        self.unify_type_param(p, a, type_params, subst)?;
                     }
                 }
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    fn mentions_void(ty: &Type) -> bool {
+        match ty {
+            Type::Void => true,
+            Type::Array(inner, _) | Type::Option(inner) => Self::mentions_void(inner),
+            Type::Result(ok, err) => Self::mentions_void(ok) || Self::mentions_void(err),
+            _ => false,
         }
     }
 
@@ -877,8 +904,10 @@ impl TypeChecker {
                 if let Some(type_params) = self.generic_functions.get(callee).cloned() {
                     if let Some((param_types, ret_ty)) = self.functions.get(callee).cloned() {
                         let mut subst = HashMap::new();
-                        for (param_ty, arg_ty) in param_types.iter().zip(arg_types.iter()) {
-                            self.unify_type_param(param_ty, arg_ty, &type_params, &mut subst);
+                        for (index, (param_ty, arg_ty)) in param_types.iter().zip(arg_types.iter()).enumerate() {
+                            self.unify_type_param(param_ty, arg_ty, &type_params, &mut subst).map_err(|conflict| format!(
+                                "line {}, col {}: {} argument {}: {}", expr.span.line, expr.span.col, callee, index + 1, conflict
+                            ))?;
                         }
                         let concrete_ret = self.substitute_type_params(&ret_ty, &subst);
                         return Ok(concrete_ret);
@@ -1090,8 +1119,10 @@ impl TypeChecker {
                     }
                     if let Some(type_params) = self.generic_functions.get(&alias_key).cloned() {
                         let mut subst = HashMap::new();
-                        for (param_ty, arg_ty) in expected_args.iter().zip(arg_types.iter()) {
-                            self.unify_type_param(param_ty, arg_ty, &type_params, &mut subst);
+                        for (index, (param_ty, arg_ty)) in expected_args.iter().zip(arg_types.iter()).enumerate() {
+                            self.unify_type_param(param_ty, arg_ty, &type_params, &mut subst).map_err(|conflict| format!(
+                                "line {}, col {}: {}.{} argument {}: {}", expr.span.line, expr.span.col, module_local_name, function, index + 1, conflict
+                            ))?;
                         }
                         return Ok(self.substitute_type_params(&ret_ty, &subst));
                     }

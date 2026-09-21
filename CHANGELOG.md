@@ -9,6 +9,15 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+### Fixed
+- **Conflicting generic arguments are refused by `orchestrate check`.** `same(1, "x")`
+  against `fn same<T>(a: T, b: T)` passed `check` and reached rustc as E0308 against
+  generated code, the last program in the diagnostics corpus that did. The typechecker
+  now binds each type parameter to one type and names the argument that disagrees; an
+  argument whose type is not known yet, such as `[]` or `none`, binds nothing.
+  `KNOWN_LEAKS.txt` is empty. Patch-level: a wrong program is refused earlier, and no
+  valid program changes.
+
 ## [0.15.0] - 2026-09-21
 
 The sandbox catches up with the C ABI, and every claim is measured.

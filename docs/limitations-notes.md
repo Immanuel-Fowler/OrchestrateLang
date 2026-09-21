@@ -127,6 +127,12 @@ version of the claim.
   handlers alike. Every example, benchmark program, and test program still checks.
   Covered by `diagnostics_never_leak_rustc`, which now holds the corpus to one leak.
 
+- **`generic_arg_conflict` reached rustc.** `same(1, "x")` against `fn same<T>(a: T,
+  b: T)` reached rustc as E0308: `unify_type_param` kept the first binding of `T` and
+  never refused a second. Fixed for 0.15.1: a second, incompatible binding is a `check`
+  error naming the argument. Covered by `diagnostics_never_leak_rustc`; `KNOWN_LEAKS.txt`
+  is empty.
+
 ## Found, not fixed
 
 - **Struct layout across the sandbox assumes a little-endian host.** Struct bytes are
@@ -189,11 +195,9 @@ are compiler errors too, they just live in the driver or the generator: a `load_
 language the compiler does not know, `host` in a module or outside a library build, a
 `fn` that calls a task through a module, a sandboxed handler that waits, a `shared let`
 of an unshareable type, and a statement that both waits and touches shared state. The
-one leak, listed in `tests/error_cases/diagnostics/KNOWN_LEAKS.txt`:
+leaks that `tests/error_cases/diagnostics/KNOWN_LEAKS.txt` holds the corpus to:
 
-- **`generic_arg_conflict`**: `same(1, "x")` against `fn same<T>(a: T, b: T)` reaches
-  rustc as E0308. `unify_type_param` records the first binding of `T` and does not
-  refuse a second, incompatible one.
+(None left: `generic_arg_conflict`, the last one, is fixed; see above.)
 
 Three candidates turned out to be **valid programs that fail** and are not in the
 corpus, because the corpus is invalid programs:
