@@ -22,7 +22,7 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
   An array of strings or structs, or a struct holding one, does not cross the sandbox,
   though the in-process, secret, and landline boundaries carry them. That gap is written
-  down in `LIMITATIONS-notes.md`.
+  down in `docs/limitations-notes.md`.
 - **`grant call` on a sandboxed serverlet.** In a library build, a sandboxed serverlet
   takes the same grant lines a landline does, and there they are the only way the guest
   reaches the host at all: each grant is exactly one import defined in the guest's
@@ -91,6 +91,10 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   module serverlet bodies unwalked, foreign sources unchecked.
 
 ### Changed
+- **The limitations notes live under `docs/`.** `LIMITATIONS-notes.md` sat at the repo
+  root, where CONTRIBUTING.md allows only the README, changelog, contributing guide, and
+  license; it is now `docs/limitations-notes.md`, and every reference to it, including
+  the comment in `KNOWN_LEAKS.txt`, follows.
 - **The documentation says what the language is before it says what it does.** The four
   foundational principles each have a document under `docs/design/`: concurrency is the
   structure, asynchronous first and synchronous second, polyglot as coordination and

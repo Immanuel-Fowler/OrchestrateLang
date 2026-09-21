@@ -422,7 +422,7 @@ The most important limitations are behavioral, not cosmetic:
   to print the generated source and full Cargo output.
 
 Every gap found and not yet closed is collected in
-[LIMITATIONS-notes.md](LIMITATIONS-notes.md); release-specific notes are in the
+[docs/limitations-notes.md](docs/limitations-notes.md); release-specific notes are in the
 [changelog](CHANGELOG.md).
 
 ## Documentation map

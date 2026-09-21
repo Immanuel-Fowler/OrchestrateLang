@@ -126,7 +126,7 @@ where containment and consent stop being two ideas.
   a string field, cross the in-process, secret, and landline boundaries but not the
   sandbox, which carries what the C ABI carries. `option`, `result`, closures, and
   `handle` cross only in-process. The per-boundary table is in
-  [LIMITATIONS-notes.md](../../LIMITATIONS-notes.md).
+  [limitations-notes.md](../limitations-notes.md).
 - **`on_crash` means something different per boundary**: a handler panic in-process, a
   transport failure on a landline, a trap in a sandbox — where it also cannot reach the
   guest's state, because that state is inside the instance being replaced.

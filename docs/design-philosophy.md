@@ -69,7 +69,7 @@ as good as the wrapped technology, no better.
 Names, docs, and diagnostics must not promise more than the implementation delivers.
 "Secret" is not encryption; a separate process is not a security boundary; a grant is not
 a sandbox. A feature that parses but isn't enforced yet warns loudly. Gaps found and not
-yet closed are written down in [LIMITATIONS-notes.md](../LIMITATIONS-notes.md) rather
+yet closed are written down in [limitations-notes.md](limitations-notes.md) rather
 than left for a user to discover.
 
 ### 10. The host is in charge

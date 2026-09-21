@@ -846,7 +846,7 @@ declared inside an imported module, and it cannot see a Rust foreign function's 
 a landline's Python or TypeScript source, which `check-foreign` checks with each
 language's own tools. A program `check` accepts may therefore still be refused by
 `build`, by the compiler's own error or, in the cases listed in
-`benchmarks/results/diagnostics_coverage.md` and `LIMITATIONS-notes.md`, by rustc against
+`benchmarks/results/diagnostics_coverage.md` and `docs/limitations-notes.md`, by rustc against
 generated code. The diagnostics corpus under `tests/error_cases/diagnostics/` measures
 how much of the invalid-program space `check` covers, and `benchmarks/diagnostics_coverage.py`
 prints the count.

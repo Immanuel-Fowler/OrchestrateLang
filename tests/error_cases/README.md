@@ -17,5 +17,5 @@ Intentionally invalid `.orch` programs, used to test how the compiler reports er
 
 Add a case by writing the smallest program that has the mistake, named after the
 mistake. If `check` accepts it and the build leaks a rustc error, either fix the
-compiler or add the case to `KNOWN_LEAKS.txt` and explain it in `LIMITATIONS-notes.md`;
+compiler or add the case to `KNOWN_LEAKS.txt` and explain it in `docs/limitations-notes.md`;
 never leave a leak unlisted.
