@@ -162,11 +162,19 @@
       { id: "design-philosophy", path: "docs/design-philosophy.md", title: "Design philosophy", blurb: "The principles new features are checked against" },
       { id: "roadmap", path: "docs/roadmap.md", title: "Roadmap", blurb: "Planned features, separated from shipped behavior" }
     ]},
-    { group: "Design documents", items: [
-      { id: "landline-serverlets", path: "docs/design/landline-serverlets.md", title: "Landline serverlets", blurb: "Python and TypeScript services over a checked protocol" },
-      { id: "secret-serverlets", path: "docs/design/secret-serverlets.md", title: "Secret serverlets", blurb: "Out-of-process native services" },
-      { id: "sandboxed-serverlets", path: "docs/design/sandboxed-serverlets.md", title: "Sandboxed serverlets", blurb: "WASM containment: the plan, not yet shipped" },
-      { id: "serverlet-files", path: "docs/design/serverlet-files.md", title: "Serverlet files", blurb: "Independently packaged, live-editable services" }
+    { group: "Foundations", items: [
+      { id: "concurrency-is-the-structure", path: "docs/design/concurrency-is-the-structure.md", title: "Concurrency is the structure", blurb: "Workers, handlers, and services are declarations; the compiler writes the tasks" },
+      { id: "asynchronous-first", path: "docs/design/asynchronous-first-synchronous-second.md", title: "Asynchronous first, synchronous second", blurb: "One async core; synchrony at the edges, and a host that can own the loop" },
+      { id: "polyglot-coordination-and-attachment", path: "docs/design/polyglot-coordination-and-attachment.md", title: "Polyglot: coordination and attachment", blurb: "Attach a function with load_foreign; coordinate with a service through a serverlet" },
+      { id: "choices-in-syntax", path: "docs/design/choices-in-syntax.md", title: "Choices in syntax", blurb: "Transport, isolation, budget, capability, and lifetime are words in the declaration" }
+    ]},
+    { group: "Feature designs", items: [
+      { id: "features", path: "docs/features/README.md", title: "Feature designs", blurb: "One document per feature, with what has shipped" },
+      { id: "landline-serverlets", path: "docs/features/landline-serverlets.md", title: "Landline serverlets", blurb: "Python and TypeScript services over a checked protocol" },
+      { id: "secret-serverlets", path: "docs/features/secret-serverlets.md", title: "Secret serverlets", blurb: "Out-of-process native services" },
+      { id: "sandboxed-serverlets", path: "docs/features/sandboxed-serverlets.md", title: "Sandboxed serverlets", blurb: "WASM containment under a memory cap and a timeout" },
+      { id: "shared-state", path: "docs/features/shared-state.md", title: "Shared state", blurb: "shared let: state several concurrent things may touch, behind one mutex" },
+      { id: "serverlet-files", path: "docs/features/serverlet-files.md", title: "Serverlet files", blurb: "Independently packaged, live-editable services" }
     ]},
     { group: "Plans", items: [
       { id: "improvement-plan", path: "docs/plans/improvement-plan.md", title: "Improvement plan", blurb: "Error handling, types, debugging, supervision" },
