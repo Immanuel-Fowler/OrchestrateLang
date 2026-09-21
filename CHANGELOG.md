@@ -70,7 +70,30 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   (a spawned worker, a serverlet, a landline, a `sleep` outside an event handler) fails
   the way `docs/library-mode.md` now says, with the deterministic-mode message.
 
+- **The diagnostics corpus covers the language.** `tests/error_cases/diagnostics/` grew
+  from 30 to 84 deliberately invalid programs, across types, events, serverlets of every
+  kind, processes, C, Rust, and WebAssembly sidecars, and module boundaries, with the
+  module fixtures they import beside them. `diagnostics_never_leak_rustc` now runs each
+  through `orchestrate check` first and reports the count — 76 of 84 are rejected by
+  `check`, 6 more by the build before Cargo, 2 reach rustc — and holds the leaks to
+  `KNOWN_LEAKS.txt`, so a leak that appears or disappears fails the test until the list
+  says so. `benchmarks/diagnostics_coverage.py` writes the same classification as CSV,
+  JSON, and Markdown.
+
 ### Fixed
+- **Sixteen wrong programs are told so by `orchestrate check` instead of rustc.** The
+  corpus found them: a call into a module or a foreign function with the wrong argument
+  types, or to a function the module does not have (which now lists what it has); a
+  serverlet handler called with the wrong arity or types, where only the handler's name
+  was checked before; a handler declared twice in any serverlet, not only a landline; a
+  secret serverlet handler type the wire cannot carry, reported by `check` rather than by
+  the child's build; `start X(args)` on a serverlet, which takes none; `start` of
+  something that is not a process; `for` over a number or a string; `?` in a function
+  that returns neither `result` nor `option`; a piped value of the wrong type; a second
+  `orchestrator main`; and a sandboxed handler that waits, which a guest cannot do,
+  reported at build. `orchestrate check` also registers Rust sidecar signatures now, as
+  the build always did, so a call into a Rust foreign module or the standard library is
+  typed during a check instead of unknown.
 - **A block whose last statement touches shared state takes the lock.** `while c {
   hits = hits + 1 }`, `if c { hits = hits + 1 }`, and `on_tick(dt: float) { hits = hits + 1 }`
   all end in a block's tail expression, which was compiled without the guard and reached

@@ -147,3 +147,35 @@ version of the claim.
 - **The exclusions are checked at run time, not by `check`.** A program that starts a
   serverlet is a fine program in normal mode; only the host's `StartOptions` makes it an
   error. `check` cannot know which mode the host will choose.
+
+## Diagnostics corpus: what still reaches rustc
+
+84 invalid programs; 76 rejected by `orchestrate check`, 6 by the build before Cargo,
+2 by rustc, 0 accepted (`benchmarks/results/diagnostics_coverage.md`). The build-time six
+are compiler errors too, they just live in the driver or the generator: a `load_foreign`
+language the compiler does not know, `host` in a module or outside a library build, a
+`fn` that calls a task through a module, a sandboxed handler that waits, a `shared let`
+of an unshareable type, and a statement that both waits and touches shared state. The
+two leaks, listed in `tests/error_cases/diagnostics/KNOWN_LEAKS.txt`:
+
+- **`fn_missing_return`**: `fn f(n: int) -> int { if n > 0 { return 1 } }` reaches rustc
+  as E0317 ("`if` may be missing an `else` clause"). Catching it needs a definite-return
+  analysis over blocks, which the typechecker does not have; its block typing treats a
+  bare `if` as `void` and does not compare that with the declared return type when the
+  body ends in a statement.
+- **`generic_arg_conflict`**: `same(1, "x")` against `fn same<T>(a: T, b: T)` reaches
+  rustc as E0308. `unify_type_param` records the first binding of `T` and does not
+  refuse a second, incompatible one.
+
+Three candidates turned out to be **valid programs that fail** and are not in the
+corpus, because the corpus is invalid programs:
+
+- a name that is a Rust keyword (`on move(...)`, see above);
+- a string passed to a serverlet call and used again (`let a = c.shout(text)  print(text)`),
+  E0382, see above;
+- a `task` that touches `shared let` — this one compiles and is correct; it was
+  a wrong candidate, listed here so nobody adds it back.
+
+The count `check` reports is for the entry file's declarations. A serverlet declared
+inside an imported module is not walked by the typechecker, so its handler bodies are
+checked by codegen at build time, never by `check`.
