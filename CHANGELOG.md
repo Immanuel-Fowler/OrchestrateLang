@@ -103,11 +103,12 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   `README.md` lists them with their status. Every cross-reference in the repository was
   updated, so no link moved without its target.
 - **The README is a front door rather than a second reference.** Installing comes first,
-  then the four ideas in thirty seconds, then one-screen overviews of the design
-  philosophy, the feature set, and the measured numbers, each linking to the document
-  that carries the detail. The 430-line language walkthrough it used to contain is in
-  `docs/language-reference.md`, where it was already documented; the file went from 850
-  lines to 268.
+  then the feature set, then the benchmarks, then the four ideas in thirty seconds and
+  the principles they rest on. The features, benchmarks, and philosophy sections are
+  self-contained: the benchmark tables are the generated output spliced in, not a pointer
+  at `benchmarks/`, and nothing in those three sections sends a reader to another page to
+  learn what the section is about. The 430-line syntax walkthrough it used to contain is
+  in `docs/language-reference.md`, where it was already documented.
 
 ### Fixed
 - **Sixteen wrong programs are told so by `orchestrate check` instead of rustc.** The

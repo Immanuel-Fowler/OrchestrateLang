@@ -50,9 +50,255 @@ The first run builds a generated Cargo project and may take longer; later runs r
 compiler is usable from inside a Cargo workflow without leaving it.
 
 Examples live in [examples/](examples/) — `serverlet.orch`, `python_landline.orch`,
-`sandboxed_plugin.orch`, `supervised_process.orch`, thirty-one in all. Foreign
-examples need their own toolchain: Python 3.10+, TypeScript 7 and Bun, Zig, Swift, or the
-.NET SDK.
+`sandboxed_plugin.orch`, `supervised_process.orch`, thirty-one in all. Foreign examples
+need their own toolchain: Python 3.10+, TypeScript 7 and Bun, Zig, Swift, or the .NET SDK.
+
+## Features
+
+**Types and data.** `int`, `float`, `string`, `bool`, `void`; arrays `T[]`; structs;
+enums with payloads; `option<T>`; `result<T, E>`, whose error side may be any type;
+function types `fn(A) -> B`; generic functions; and `handle`, an opaque native object
+from a foreign module, released through its sidecar's `drop` function when the last owner
+drops it. Annotations are optional and inferred from the value.
+
+**Control flow.** `if`/`else`, `while`, `for x in xs`, `for i, x in xs`, `range`,
+`break`, `continue`, and `match` with literal and guard patterns and exhaustiveness
+checking. Errors travel through `try`/`catch e: Failure` and `?`. Blocks, conditionals,
+`match`, and `try` are expressions that produce values. There are closures, the
+higher-order builtins `map`, `filter`, `reduce`, `find`, `any`, `all`, the pipeline
+operator `|>`, and string interpolation with `"temperature is {reading}"`.
+
+**Orchestration.** `orchestrator main(...)` owns startup, shutdown, and the set of
+workers that run. `automatic { ... }` owns recurring work and declares its own restart
+policy — `restart: 3`, `always`, `never` — with an `on_crash e { ... }` handler beside
+it. `on name(args) { ... }` declares a typed event handler and `trigger name(args)`
+multicasts to every handler for that event. `process[a, b]` names the workers an
+orchestrator owns, and `trigger update_orchestrator([...])` replaces that set while the
+program runs. `on_start` and `on_stop` are lifecycle hooks.
+
+**State, in three rungs.** A `let` at the top level belongs to the instance and only
+hooks reach it, because a spawned worker could run while a tick holds it; a `fn`, `task`,
+or `process` that names one is a compile error saying so. `shared let` puts a binding
+behind one mutex reachable from anywhere, with a one-sentence guarantee: a statement that
+touches shared state is atomic with respect to all shared state. A statement may wait, or
+touch shared state, not both. A serverlet's state is the third rung: owned by the actor,
+touched one call at a time.
+
+**Serverlets: four boundaries, one client.** A serverlet declares handlers and private
+state, and `start X()` returns a typed client. Where the body runs is one word in the
+declaration and no caller changes:
+
+| Declaration | Body runs | What it gives |
+|---|---|---|
+| `serverlet X { }` | An in-process Tokio actor | Speed; you wrote it, you trust it |
+| `serverlet X secret { }` | A separate native executable | Crash separation, and an implementation the orchestrator binary never contains |
+| `serverlet X via python(source: "x.py")` | A persistent Python process | Python's libraries, and state that lives in Python |
+| `serverlet X via typescript(source: "x.ts")` | A compiled TypeScript executable | The same, for TypeScript, through scriptc or Bun |
+| `serverlet X sandbox(memory_limit: "64mb", timeout: "5s")` | A wasmtime guest | Containment: a memory cap, a per-call timeout, and no import it was not granted |
+
+A landline bounds its own latency with `budget: "2ms"`, and `late: "drop"` or
+`late: "latest"` decides what a caller gets when the budget expires. A landline or a
+sandboxed serverlet reaches the host only through `grant call world.record`, one line per
+function; in a sandbox each grant is exactly one import in the guest's linker, and a
+handler calling anything ungranted is refused when the program is checked.
+
+**Modules.** A directory with a `module.orch` is a module and a consent boundary;
+`use module analytics: "./analytics"` imports it and `load "helpers.orch"` merges a
+sub-file. PROM registers a module under a machine-local name so it can be imported
+without a path. The standard library ships `lists` and `strings`, generic over element
+types.
+
+**Foreign code.** `load_foreign` attaches functions from eight languages, each declaring
+its contract in a `.orch_ffi` sidecar:
+
+| Declaration | How it attaches |
+|---|---|
+| `load_foreign "rust" "./geometry.rs"` | Injected into the generated module; signatures scanned |
+| `load_foreign "c" "./m.c"`, `"cpp"` | Compiled by `cc-rs` and linked |
+| `load_foreign "zig" "./v.zig"`, `"swift"` | The language's own compiler, to a static library |
+| `load_foreign "csharp" "./Math.cs"` | .NET Native AOT to a shared library, one per module |
+| `load_foreign "wasm" "./plugin.wasm"` | Embedded and run under wasmtime, checked against the module's export table |
+| `load_foreign "typescript" "./tools.ts"` | A compiled executable per module, over a protocol |
+
+Numbers, booleans, strings, arrays of numbers, structs, and handles cross the C ABI under
+one ownership rule: what the foreign side returns is copied and freed by the generated
+wrapper, and a parameter is borrowed for the call.
+
+**Library mode.** `orchestrate build --lib` generates a Rust crate instead of a binary.
+The host implements a generated `Host` trait, calls `ready`, `tick(dt)`, and `shutdown`,
+or their `_blocking` forms, or `tick_sync` to run a tick on its own thread. Ticks can be
+typed — `on_tick(dt: float, input: Input) -> Output` — and `on_fixed_tick(step: float)`
+runs at a fixed rate. The host fires events with `Scripts::trigger_<event>(...)`, receives
+`print` output and diagnostics through `Host::log`, and learns which Tokio drivers the
+program needs from `NEEDS_IO_DRIVER`. With `StartOptions { deterministic: true }` the
+clock becomes the sum of the host's `dt` values and a tick and event sequence replays
+identically.
+
+**Tooling.** `orchestrate check` type-checks without generating code;
+`orchestrate check-foreign` runs each foreign language's own checker, and `--deep` adds
+mypy and a `cargo check` over the generated Rust. There is an `orchestrate-lsp` language
+server with hover types, a VS Code extension, and `cargo orch` for use inside a Cargo
+workflow. Rust compile errors are remapped to `.orch` source locations, and
+`ORCH_SHOW_GENERATED=1` prints the generated Rust.
+
+## Benchmarks
+
+Every number here comes from a script in `benchmarks/`, regenerated by one command:
+
+```bash
+python3 benchmarks/run_all.py
+```
+
+It writes CSV, JSON, and Markdown under `benchmarks/results/`, each with an environment
+header. The tables below are that output. One run on Apple M2 (macOS-15.3.2-arm64-arm-64bit, arm64), 2026-09-21T03:54:37+00:00, commit `afbc07fb4be4`. rustc 1.98.1 (48a229cea 2026-09-01); Python 3.12.7; wasmtime 37.0.3; TypeScript rung included. Round trips in microseconds unless the unit says otherwise; the state rungs are nanoseconds per statement.
+
+### The boundary ladder
+
+The same echo handlers behind every serverlet boundary, and the two rungs below a
+serverlet call. Round trips in microseconds: from making the call until the reply
+arrives, 200 warm-up calls then 2,000 measured.
+
+#### Payload sweep
+
+Calls back to back, one caller.
+
+| Kind | Payload | Samples | p50 | p90 | p99 | max |
+|---|---|---:|---:|---:|---:|---:|
+| in-process | int | 2000 | 14 | 20 | 31 | 136 |
+| in-process | string-1KB | 2000 | 8 | 12 | 16 | 41 |
+| in-process | int[1000] | 2000 | 7 | 10 | 14 | 29 |
+| sandbox | int | 2000 | 7 | 15 | 31 | 43 |
+| sandbox | string-1KB | 2000 | 9 | 21 | 40 | 271 |
+| sandbox | int[1000] | 2000 | 13 | 18 | 45 | 140 |
+| secret | int | 2000 | 17 | 22 | 34 | 77 |
+| secret | string-1KB | 2000 | 17 | 22 | 34 | 96 |
+| secret | int[1000] | 2000 | 25 | 31 | 45 | 118 |
+| python | int | 2000 | 24 | 32 | 49 | 186 |
+| python | string-1KB | 2000 | 25 | 29 | 44 | 131 |
+| python | int[1000] | 2000 | 568 | 596 | 677 | 1114 |
+| typescript | int | 2000 | 45 | 54 | 69 | 649 |
+| typescript | string-1KB | 2000 | 47 | 57 | 73 | 535 |
+| typescript | int[1000] | 2000 | 314 | 1024 | 1393 | 2050 |
+
+The sandbox costing about what an in-process actor costs is the useful surprise: the
+wasmtime call is small next to the channel round trip both pay. The Python array row is
+the honest one — its SDK encodes element by element, and that cost belongs to the
+boundary that chose it. The in-process `int` row runs first in the sweep and is still
+warming; read rows within a kind rather than across the first one.
+
+#### Call-rate sweep
+
+The `int` payload. At 100 Hz and 1 kHz the caller sleeps between calls; at 10 kHz it spins.
+
+| Kind | Rate | Samples | p50 | p90 | p99 | max |
+|---|---|---:|---:|---:|---:|---:|
+| in-process | unpaced | 2000 | 14 | 20 | 31 | 136 |
+| in-process | 100hz | 300 | 33 | 48 | 113 | 379 |
+| in-process | 1khz | 1000 | 29 | 41 | 58 | 119 |
+| in-process | 10khz | 2000 | 7 | 11 | 42 | 416 |
+| sandbox | unpaced | 2000 | 7 | 15 | 31 | 43 |
+| sandbox | 100hz | 300 | 34 | 50 | 66 | 244 |
+| sandbox | 1khz | 1000 | 31 | 42 | 54 | 565 |
+| sandbox | 10khz | 2000 | 7 | 11 | 19 | 33 |
+| secret | unpaced | 2000 | 17 | 22 | 34 | 77 |
+| secret | 100hz | 300 | 60 | 92 | 128 | 152 |
+| secret | 1khz | 1000 | 50 | 73 | 104 | 1028 |
+| secret | 10khz | 2000 | 15 | 26 | 36 | 84 |
+| python | unpaced | 2000 | 24 | 32 | 49 | 186 |
+| python | 100hz | 300 | 85 | 141 | 241 | 629 |
+| python | 1khz | 1000 | 59 | 104 | 150 | 641 |
+| python | 10khz | 2000 | 19 | 28 | 38 | 50 |
+| typescript | unpaced | 2000 | 45 | 54 | 69 | 649 |
+| typescript | 100hz | 300 | 108 | 321 | 2631 | 4782 |
+| typescript | 1khz | 1000 | 92 | 202 | 457 | 17651 |
+| typescript | 10khz | 2000 | 41 | 50 | 67 | 331 |
+
+This is the table a ticking host should read. A caller that idles between calls pays to
+wake the actor or the child every time, and every rung pays it: unpaced medians of 7–45 µs
+become 33–108 µs at 100 Hz.
+
+#### Concurrent callers
+
+The `int` payload with 1, 2, 4, or 8 callers sharing one serverlet; each sample is one caller's round trip.
+
+| Kind | Rate | Samples | p50 | p90 | p99 | max |
+|---|---|---:|---:|---:|---:|---:|
+| in-process | callers-1 | 2000 | 14 | 20 | 31 | 136 |
+| in-process | callers-2 | 2000 | 9 | 14 | 20 | 34 |
+| in-process | callers-4 | 4000 | 10 | 15 | 21 | 31 |
+| in-process | callers-8 | 8000 | 6 | 14 | 21 | 42 |
+| sandbox | callers-1 | 2000 | 7 | 15 | 31 | 43 |
+| sandbox | callers-2 | 2000 | 9 | 14 | 17 | 26 |
+| sandbox | callers-4 | 4000 | 11 | 16 | 19 | 36 |
+| sandbox | callers-8 | 8000 | 7 | 15 | 23 | 34 |
+| secret | callers-1 | 2000 | 17 | 22 | 34 | 77 |
+| secret | callers-2 | 2000 | 20 | 26 | 35 | 63 |
+| secret | callers-4 | 4000 | 43 | 51 | 65 | 97 |
+| secret | callers-8 | 8000 | 87 | 99 | 111 | 157 |
+| python | callers-1 | 2000 | 24 | 32 | 49 | 186 |
+| python | callers-2 | 2000 | 31 | 35 | 46 | 64 |
+| python | callers-4 | 4000 | 64 | 73 | 83 | 247 |
+| python | callers-8 | 8000 | 129 | 142 | 174 | 4003 |
+| typescript | callers-1 | 2000 | 45 | 54 | 69 | 649 |
+| typescript | callers-2 | 2000 | 70 | 149 | 2291 | 16812 |
+| typescript | callers-4 | 4000 | 125 | 150 | 185 | 679 |
+| typescript | callers-8 | 8000 | 249 | 281 | 377 | 1116 |
+
+An in-process or sandboxed serverlet keeps its per-call latency under load, because the
+actor turns calls over faster than callers queue them. A process-backed boundary does
+not, and the queue is visible in every caller's round trip.
+
+#### State rungs
+
+Nanoseconds per statement, each sample a batch of 1,000 statements; `loop-only` is the counting loop by itself.
+
+| Kind | Samples | p50 | p90 | p99 | max |
+|---|---:|---:|---:|---:|---:|
+| local-let | 2000 | 0 | 0 | 1 | 1 |
+| shared-let | 2000 | 9 | 10 | 10 | 11 |
+| loop-only | 2000 | 0 | 0 | 1 | 1 |
+
+`local-let` reads zero because LLVM folds the loop; the honest statement is "below the
+resolution of this method", and it is what sets the floor for the batch. `shared let` at
+about 9 ns a statement is the real rung between free instance state and a serverlet call.
+
+### Library-mode tick cost
+
+Nanoseconds per `tick_sync` on a current-thread runtime, in release mode: the median of
+21 rounds of 200,000 ticks after 5 warm-up rounds, next to the `Host` trait method called
+through its vtable alone.
+
+| Case | ns per tick (median) | fastest round | p90 round |
+|---|---:|---:|---:|
+| host_method_alone | 1.97 | 1.96 | 1.99 |
+| empty | 6.16 | 6.06 | 6.35 |
+| one_call | 7.27 | 7.08 | 7.43 |
+| five_calls | 14.28 | 12.59 | 14.46 |
+| instance_let | 6.28 | 6.24 | 6.39 |
+| shared_let | 11.68 | 10.86 | 11.93 |
+| event | 211.34 | 196.99 | 226.94 |
+
+Derived from the fastest rounds, which move least between runs: an empty tick costs 6.06 ns; each host call in a tick costs 1.38 ns (five calls minus one, over four), against 1.96 ns for the trait method called through its vtable alone. The empty tick and the one-call tick are within noise of each other at this resolution.
+
+Medians overlap between cases within a few nanoseconds: the OS moves the thread between core types and clock states during a run, which is why the fastest round is reported beside them. Run on an idle machine, and compare cases within one run.
+
+### Diagnostics coverage
+
+Every program in `tests/error_cases/diagnostics/` is deliberately invalid and must be
+rejected. Where it is rejected is the measurement:
+
+| Rejected by | Programs | Meaning |
+|---|---:|---|
+| `orchestrate check` | 76 | the typechecker's own error, before any code is generated |
+| build, before Cargo | 6 | codegen or the driver, still the compiler's own error |
+| Cargo, no rustc code | 0 | a `compile_error!` the generator planted, reported through Cargo |
+| rustc | 2 | leaked: a rustc error against generated code |
+| nothing | 0 | wrongly accepted |
+
+**76 of 84 invalid programs are rejected by `orchestrate check`.** The two that leak are a function that can fall off its end without
+returning, and a generic called with conflicting arguments for one type parameter; both
+are listed in `KNOWN_LEAKS.txt`, which the test holds to exactly, so a leak that appears
+or disappears fails the build until the list says so.
 
 ## OrchestrateLang in 30 seconds
 
@@ -89,137 +335,71 @@ orchestrator main(workers: process[monitor]) {
 ```
 
 The compiler supplies the Tokio tasks, the channels, the event registry, the reply
-channels, the panic handling, and the shutdown plumbing. Who may touch a binding is also
-structural: instance state reaches hooks, `shared let` reaches anything for the cost of
-one mutex, and a serverlet's state reaches only its own handlers, one call at a time.
-
-```mermaid
-flowchart LR
-    O["orchestrator<br/>owns lifecycle"]
-    W["automatic<br/>recurring workers"]
-    E["on event<br/>typed reactions"]
-    S["serverlet<br/>stateful services"]
-
-    O -->|starts and stops| W
-    O -->|registers| E
-    O -->|owns| S
-    W -->|trigger| E
-    W -->|typed calls| S
-    E -->|update worker set| O
-```
+channels, the panic handling, and the shutdown plumbing.
 
 ### 2. [Asynchronous first, synchronous second](docs/design/asynchronous-first-synchronous-second.md)
 
 Coordination compiles to one async core. `fn` is the callable form that cannot wait, and
-says so with its own diagnostic rather than letting rustc complain about generated code.
-`task` and `process` may wait.
-
-The other synchronous edge is ownership. `orchestrate build` makes a program that owns
-its runtime; `orchestrate build --lib` makes a crate that a Rust application drives,
-from the same source:
-
-| The host is | It calls | An empty tick costs |
-|---|---|---|
-| Async | `ready().await`, `tick(dt).await`, `shutdown().await` | A task hop |
-| Synchronous | `ready_blocking`, `tick_blocking`, `shutdown_blocking` | A task hop |
-| Synchronous and hot | `tick_sync(&runtime, dt)` | About 6 ns, on the calling thread |
-
-With `StartOptions { deterministic: true }` the clock becomes the sum of the host's `dt`
-values, and the same tick and event sequence produces the same host calls byte for byte —
-tested over 10,000 ticks, with the exclusions named.
+says so with its own diagnostic rather than letting rustc complain about generated code;
+`task` and `process` may wait. The other synchronous edge is ownership: the same source
+builds a program that owns its runtime, or a crate that a Rust application drives at
+about 6 ns a tick — and in deterministic mode the same tick and event sequence produces
+the same host calls byte for byte.
 
 ### 3. [Polyglot: coordination and attachment](docs/design/polyglot-coordination-and-attachment.md)
 
-Reaching into other code is two needs, not one:
-
-- **Attach a function.** `load_foreign` links Rust, C, C++, Zig, Swift, C#, or a `.wasm`
-  module into this process. A call costs 1–5 ns and a `.orch_ffi` sidecar declares the
-  contract. TypeScript attaches through a compiled executable instead.
-- **Coordinate with a service.** A `serverlet` owns state and a lifetime. Its body runs
-  in this process, in a separate native child, in a Python or TypeScript process, or
-  inside a wasmtime sandbox.
-
-A program pays only for the runtimes it names: no sandbox and no `.wasm` module means no
-`wasmtime` dependency, and no C source means no `cc` and no `build.rs`.
+Reaching into other code is two needs, not one. **Attach a function** with
+`load_foreign`, in this process, for 1–5 ns. **Coordinate with a service** through a
+`serverlet`, which owns state and a lifetime and may live in a child process, another
+language, or a sandbox. A program pays only for the runtimes it names: no sandbox means
+no `wasmtime` dependency, and no C source means no `cc` and no `build.rs`.
 
 ### 4. [As many choices as possible are made in syntax](docs/design/choices-in-syntax.md)
 
 Transport, isolation, budget, capability, and lifetime are words in the declaration they
-apply to — not configuration sitting beside it. Four boundaries, one call site:
-
-```orchestrate
-serverlet Plugin { ... }                                        // in-process actor
-serverlet Plugin secret { ... }                                 // separate native child
-serverlet Plugin via python(source: "plugin.py") { ... }        // a Python process
-serverlet Plugin sandbox(memory_limit: "64mb", timeout: "5s")   // a wasmtime guest
-```
-
-In all four the caller writes `let plugin = start Plugin()` and `plugin.run("hello")`.
-Changing where a module's code runs is one word on one line, and no caller is touched.
-What differs is the guarantees, and those are documented per boundary rather than hidden
-behind a common denominator.
+apply to, not configuration sitting beside it. `secret`, `sandbox(...)`, `via python(...)`,
+`shared let`, `grant call`, `budget:`, `restart:` — each is greppable, diffable, and read
+by the compiler. Change one and the call site does not move; what changes is the
+guarantee, and those are documented per boundary rather than hidden behind a common
+denominator.
 
 ## Design philosophy
 
 Those four decide what the language is. Eight more decide how it gets built, and they are
-the ones a proposal is checked against:
+the ones a proposal is checked against.
 
-| Principle | In short |
-|---|---|
-| General-purpose first | An adopter decides what is built next, never how it is designed |
-| Compile to Rust; no hidden runtime | No VM, no GC, no executor of our own; a foreign runtime's cost belongs to the boundary that chose it |
-| FFI is stateless; serverlets own state | Show that a serverlet plus FFI is not enough before inventing a new kind |
-| Wrap, don't build | Tokio, Cargo, `cc-rs`, wasmtime, each language's own toolchain |
-| Be honest about guarantees | "Secret" is not encryption; a process is not a sandbox; gaps are written down |
-| The host is in charge | In library mode it owns the loop, the runtime, logging, and process lifetime |
-| Measure before promising | Numbers come from `benchmarks/`, with the machine and the commit |
-| Finish one story at a time | Done means tests, docs, a changelog entry, and every example still running |
+**General-purpose first.** An adopter decides what is built next, never how it is
+designed. Every feature has to make sense for any Rust host: a simulation, a desktop app,
+a server.
 
-The full text is in [docs/design-philosophy.md](docs/design-philosophy.md).
+**Compile to Rust; no hidden runtime.** No VM, no garbage collector, no executor of our
+own, and all types resolved at compile time. Code in another language brings its own
+runtime, and that cost belongs to the boundary that chose it.
 
-## Features
+**FFI is stateless; serverlets own state.** `load_foreign` is a plain function call and
+stays one. Before adding a new kind of serverlet, show that a serverlet plus FFI — with
+the right types, such as opaque handles — is not enough.
 
-| Area | What there is | Documented in |
-|---|---|---|
-| Types and data | `int`, `float`, `string`, `bool`, arrays, structs, enums with payloads, `option<T>`, `result<T, E>`, function types, generics, `handle` | [reference §2](docs/language-reference.md) |
-| Control flow | `if`/`while`/`for`, `match` with exhaustiveness checking, `try`/`catch`, `?`, pipelines, closures, string interpolation | [reference §2](docs/language-reference.md) |
-| Orchestration | `orchestrator`, `automatic` with restart policies and `on_crash`, `on`/`trigger` events, `process[...]`, `update_orchestrator`, lifecycle hooks | [reference §3–4](docs/language-reference.md) |
-| State | Instance `let`, `shared let` behind one mutex, serverlet-owned state | [shared-state.md](docs/features/shared-state.md) |
-| Serverlets | In-process, `secret` child processes, Python and TypeScript landlines with budgets and late policies, `sandbox(...)` guests with grants | [features/](docs/features/) |
-| Modules | Directory modules with `use module`, `load` for sub-files, PROM for machine-local names, a standard library | [reference §6](docs/language-reference.md) |
-| Foreign code | `load_foreign` for Rust, C, C++, Zig, Swift, C#, TypeScript, and WebAssembly, with `.orch_ffi` sidecars | [reference §6.4](docs/language-reference.md) |
-| Library mode | `build --lib`, a generated `Host` trait, typed and fixed ticks, host-fired events, deterministic replay, logging, packaging | [library-mode.md](docs/library-mode.md) |
-| Tooling | `check`, `check-foreign`, an LSP server, a VS Code extension, Cargo subcommands, `ORCH_SHOW_GENERATED` | [reference §5](docs/language-reference.md) |
+**Wrap, don't build.** Tokio, Cargo, `cc-rs`, wasmtime, and each language's own
+toolchain, instead of inventing runtimes, sandboxes, or package formats. Guarantees are
+as good as the wrapped technology, no better.
 
-`orchestrate check` rejects 76 of the 84 deliberately invalid programs in the diagnostics
-corpus without generating any code. What it does and does not guarantee is stated
-precisely in the [language reference](docs/language-reference.md).
+**Be honest about guarantees.** "Secret" is not encryption; a separate process is not a
+security boundary; a grant is not a sandbox. A feature that parses but is not enforced
+warns loudly, and gaps found and not yet closed are written down rather than left for
+someone to discover.
 
-## Benchmarks
+**The host is in charge.** Embedded as a library, the host owns the main loop, the Tokio
+runtime, logging, and process lifetime. The library never exits the process, starts its
+own runtime, or writes where the host cannot see.
 
-Performance claims come from scripts in [benchmarks/](benchmarks/), not from memory. One
-command regenerates every table:
+**Measure before promising.** Performance claims come from benchmarks, including the slow
+tail, stated as measurements on a named machine at a named commit. Tables in
+documentation are generated from a run, never retyped — including the ones above.
 
-```bash
-python3 benchmarks/run_all.py
-```
-
-It writes CSV, JSON, and Markdown under `benchmarks/results/`, each with an environment
-header naming the CPU, OS, toolchain versions, sample counts, and commit. A run on an
-Apple M2:
-
-| Measurement | Result |
-|---|---|
-| Serverlet round trip, p50 | 7–14 µs in-process, 7–13 µs sandboxed, 17–25 µs secret child, 24 µs Python, 45 µs TypeScript |
-| The same, paced at 100 Hz | 33 µs in-process, 34 µs sandboxed, 60 µs secret, 85 µs Python, 108 µs TypeScript |
-| The same, 8 concurrent callers | 6 µs in-process, 7 µs sandboxed, 87 µs secret, 129 µs Python, 249 µs TypeScript |
-| `shared let` | About 9 ns per statement |
-| Empty `tick_sync` in library mode | About 6 ns; a host call adds about 1.4 ns |
-| Foreign function call | 1–2 ns for C, Zig, and Swift; about 5 ns for C# |
-
-The tail matters more than the median for per-tick work, which is why every table carries
-p90, p99, and max, and why landlines can declare a `budget`. The caveats — what the
-numbers do not say — are in [benchmarks/README.md](benchmarks/README.md).
+**Finish one story at a time.** A small set of fully working, tested, documented features
+beats a sprawl of half-built ones. Done means tests, docs, a changelog entry, and every
+example still running.
 
 ## Current boundaries
 
@@ -249,14 +429,13 @@ Every gap found and not yet closed is collected in
 
 - [Language reference](docs/language-reference.md) — syntax, types, compiler behavior,
   and generated-code details
-- [Design philosophy](docs/design-philosophy.md) — the principles used to evaluate new
-  features, indexing the four foundations in [docs/design/](docs/design/)
+- [Design philosophy](docs/design-philosophy.md) — the principles above in full, indexing
+  the four foundations in [docs/design/](docs/design/)
 - [Feature designs](docs/features/) — one document per feature: the problem, the design,
   what was hard, and what shipped
 - [Library mode](docs/library-mode.md) — host lifecycle, ticks, events, callbacks,
   deterministic execution, and packaging
-- [Benchmarks](benchmarks/README.md) — the boundary ladder, tick cost, and diagnostics
-  coverage, and how to regenerate them
+- [Benchmarks](benchmarks/README.md) — how each measurement above is taken, and its caveats
 - [Python SDK](sdk/python/README.md) — Python landline implementation and setup
 - [TypeScript SDK](sdk/typescript/README.md) — TypeScript FFI and landlines
 - [Roadmap](docs/roadmap.md) — proposed work, clearly separated from shipped behavior
