@@ -364,6 +364,11 @@ pub struct Codegen {
     /// that returns one of them returns a copy: the state stays where it is, and the
     /// value is not moved out of the actor, the child, or the guest.
     pub(super) handler_state: HashSet<String>,
+    /// While a sandboxed serverlet's guest is compiled: the host functions it was
+    /// granted. A host call in a handler body becomes a call through the guest's
+    /// import for that grant; an ungranted one is an error, since the guest has no
+    /// other way to reach the host.
+    pub(super) sandbox_guest_grants: Option<Vec<String>>,
 }
 
 impl Codegen {
@@ -397,6 +402,7 @@ impl Codegen {
             struct_defs: Vec::new(),
             sandbox_codecs_emitted: false,
             handler_state: HashSet::new(),
+            sandbox_guest_grants: None,
         }
     }
 

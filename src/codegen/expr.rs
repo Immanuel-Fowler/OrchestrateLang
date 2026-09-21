@@ -178,7 +178,20 @@ impl Codegen {
             ExprNode::ModuleCall { module_local_name, function, args } => {
                 let args_str = args.iter().map(|a| self.compile_expr(a)).collect::<Vec<String>>().join(", ");
 
-                if self.library && self.host_functions.iter().any(|(g, h)| g == module_local_name && h.name == *function) {
+                let is_host_call = self.host_functions.iter().any(|(g, h)| g == module_local_name && h.name == *function);
+                if let (Some(granted), true) = (&self.sandbox_guest_grants, is_host_call) {
+                    // Inside the guest the host is reachable only through the imports its
+                    // grants defined; each one is a stub that carries the call across.
+                    let call = format!("{module_local_name}.{function}");
+                    if granted.contains(&call) {
+                        return format!("__orch_grant_{module_local_name}_{function}({args_str})");
+                    }
+                    self.errors.push(format!(
+                        "sandboxed serverlet handler calls {call}, which the serverlet was not granted; add `grant call {call}` or remove the call"
+                    ));
+                    return "Default::default()".to_string();
+                }
+                if self.library && is_host_call {
                     // The trait call and one branch, with the failure out of line; the
                     // parentheses keep the match a statement where its value is dropped.
                     let receiver = if self.context_bound { "__host" } else { "crate::__orch_context().host" };

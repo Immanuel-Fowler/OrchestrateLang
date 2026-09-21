@@ -183,6 +183,87 @@ fn main() {
     assert!(output.contains("host survived both instances"));
 }
 
+/// A sandboxed serverlet's grants are mediated host functions: each `grant call` is one
+/// import in the guest's linker, behind which the `Host` method runs, and nothing else
+/// is defined. An int, a struct, and an array cross through them; a host error fails the
+/// one call inside the guest, which logs it and continues with the default; the guest's
+/// state survives across ticks.
+#[test]
+fn library_sandbox_grants_are_mediated_host_functions() {
+    let root = root("sandbox_grants");
+    build(&root, r#"
+struct Point { x: int, y: int }
+
+host world {
+    fn record(n: int) -> int
+    fn shift(p: Point) -> Point
+    fn tally(items: int[]) -> int
+    fn denied() -> int
+    fn fail() -> int
+}
+
+serverlet Plugin sandbox(memory_limit: "16mb", timeout: "2s") {
+    grant call world.record
+    grant call world.shift
+    grant call world.tally
+    grant call world.fail
+    let total = 0
+
+    on bump(n: int) -> int {
+        total = total + world.record(n)
+        return total
+    }
+    on relocate(p: Point) -> Point {
+        return world.shift(p)
+    }
+    on sum(items: int[]) -> int {
+        return world.tally(items)
+    }
+    on failing() -> int {
+        return world.fail() + 1
+    }
+}
+
+let plugin = start Plugin()
+on_tick(dt: float) {
+    world.record(plugin.bump(5))
+    let moved = plugin.relocate(Point { x: 1, y: 2 })
+    world.record(moved.x * 10 + moved.y)
+    world.record(plugin.sum([1, 2, 3]))
+    world.record(plugin.failing())
+}
+orchestrator main() {}
+"#);
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<String>>>);
+impl scripts::Host for Host {
+    fn world_record(&self, n: i64) -> Result<i64, String> { self.0.lock().unwrap().push(format!("record {n}")); Ok(n * 2) }
+    fn world_shift(&self, p: scripts::Point) -> Result<scripts::Point, String> { self.0.lock().unwrap().push(format!("shift {} {}", p.x, p.y)); Ok(scripts::Point { x: p.x + 1, y: p.y + 1 }) }
+    fn world_tally(&self, items: Vec<i64>) -> Result<i64, String> { self.0.lock().unwrap().push(format!("tally {}", items.len())); Ok(items.iter().sum()) }
+    fn world_denied(&self) -> Result<i64, String> { panic!("an ungranted host function was called") }
+    fn world_fail(&self) -> Result<i64, String> { Err("host says no".into()) }
+    fn log(&self, _: scripts::LogLevel, message: &str) { self.0.lock().unwrap().push(format!("log {message}")); }
+}
+fn main() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let mut scripts = scripts::start(runtime.handle(), Host(calls.clone())).unwrap();
+    scripts.ready_blocking(&runtime).unwrap();
+    scripts.tick_blocking(&runtime, 0.016).unwrap();
+    scripts.tick_blocking(&runtime, 0.016).unwrap();
+    scripts.shutdown_blocking(&runtime).unwrap();
+    for line in calls.lock().unwrap().iter() { println!("{line}"); }
+}
+"#);
+    let tick = |total: i64| format!(
+        "record 5\nrecord {total}\nshift 1 2\nrecord 23\ntally 3\nrecord 6\nlog [orchestrate] sandbox guest: [orchestrate] host call world.fail failed: host says no\nrecord 1"
+    );
+    // `bump` records 5 inside the guest and adds the doubled reply to its state, so the
+    // second tick's total shows the guest kept its state across a host call and a tick.
+    assert_eq!(output.trim(), format!("{}\n{}", tick(10), tick(20)));
+}
+
 #[test]
 fn library_secret_and_drop_shutdown() {
     let root = root("secret");

@@ -154,6 +154,22 @@ fn __orch_pack_struct(size: usize, encode: impl FnOnce(&mut [u8])) -> i64 {
     encode(&mut bytes);
     __orch_pack_bytes(&bytes, size as i32)
 }
+/// One granted host call: the arguments go to the host as bytes in this memory, freed
+/// once the host has read them; the reply the host allocated here is copied and freed.
+/// A reply of 0 is a call the host could not make, which decodes as no reply.
+fn __orch_host_call(import: unsafe extern "C" fn(i32, i32) -> i64, payload: &[u8]) -> Vec<u8> {
+    let length = payload.len() as i32;
+    let pointer = orch_alloc(length);
+    if pointer != 0 {
+        unsafe { std::ptr::copy_nonoverlapping(payload.as_ptr(), pointer as *mut u8, payload.len()) };
+    }
+    let packed = unsafe { import(pointer, length) };
+    orch_free(pointer, length);
+    let (reply_pointer, reply_length) = ((packed >> 32) as i32, (packed & 0xffff_ffff) as i32);
+    let reply = __orch_bytes(reply_pointer, reply_length).to_vec();
+    orch_free(reply_pointer, reply_length);
+    reply
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn tally(n: i64) -> i64 {

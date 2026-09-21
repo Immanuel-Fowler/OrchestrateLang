@@ -342,7 +342,7 @@ impl Parser {
         while self.peek().kind != TokenKind::RBrace && self.peek().kind != TokenKind::EOF {
             if matches!(&self.peek().kind, TokenKind::Identifier(s) if s == "grant") {
                 self.advance();
-                if landline.is_none() { return Err("grant requires a landline serverlet".into()); }
+                if landline.is_none() && sandbox.is_none() { return Err("grant requires a landline or sandboxed serverlet".into()); }
                 if self.parse_ident("call")? != "call" { return Err("Expected 'grant call'".into()); }
                 let group = self.parse_ident("host group")?;
                 self.consume(TokenKind::Dot, "Expected '.' in host grant")?;
@@ -1346,6 +1346,29 @@ mod tests {
         } else {
             panic!("Expected Serverlet statement");
         }
+    }
+
+    #[test]
+    fn test_parser_sandbox_serverlet_takes_grants_and_on_crash() {
+        let src = "serverlet Plugin sandbox(memory_limit: \"64mb\", timeout: \"5s\") { grant call world.record  on run(x: int) -> int { return world.record(x) }  on_crash reason { print(reason) } }";
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let ast = parser.parse().unwrap();
+        if let StmtNode::Serverlet { grants, crash_handler, sandbox, .. } = &ast[0].node {
+            assert_eq!(grants, &vec!["world.record".to_string()]);
+            assert!(crash_handler.is_some());
+            assert!(sandbox.is_some());
+        } else {
+            panic!("Expected Serverlet statement");
+        }
+        // A plain in-process serverlet still cannot be granted anything: it reaches the
+        // host directly, so a grant would be a claim the compiler does not enforce.
+        let src = "serverlet Plain { grant call world.record  on run() -> int { return 1 } }";
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().unwrap();
+        let error = Parser::new(tokens).parse().unwrap_err();
+        assert!(error.contains("grant requires a landline or sandboxed serverlet"), "{error}");
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use crate::ast::{ExprNode, StmtNode, Stmt, Type, Handler};
+use crate::ast::{Expr, ExprNode, StmtNode, Stmt, Type, Handler};
 use super::core::{Codegen, StateRewrite, pascal_case, runtime_preamble, SECRET_CHILD_FRAMES};
 
 fn type_params_str(type_params: &[String]) -> String {
@@ -483,21 +483,10 @@ impl Codegen {
                 // driver). The orchestrator still runs the serverlet in-process for
                 // now — host integration is step 3 — and the driver warns about it.
                 if sandbox.is_some() {
-                    // A grant is a hole punched in the wall on purpose, and each one has
-                    // to become a mediated host function before it can be honoured.
-                    if !grants.is_empty() {
-                        return format!(
-                            "compile_error!({:?});",
-                            format!("sandboxed serverlet '{name}': grants are not supported yet; a sandboxed serverlet cannot reach the host, so remove the grant or drop sandbox(...)")
-                        );
-                    }
-                    if crash_handler.is_some() {
-                        return format!(
-                            "compile_error!({:?});",
-                            format!("sandboxed serverlet '{name}': on_crash is not supported yet; a call that traps is logged and answered with a default")
-                        );
-                    }
-                    let guest = self.compile_sandbox_guest(name, state, handlers);
+                    // A grant is a hole punched in the wall on purpose: each one becomes
+                    // exactly one import the guest can reach, defined in the linker by
+                    // the host loop below and called through a stub in the guest.
+                    let guest = self.compile_sandbox_guest(name, state, handlers, grants);
                     self.sandbox_programs.push((name.clone(), guest));
                 }
                 let mut enum_variants = Vec::new();
@@ -654,7 +643,7 @@ impl Codegen {
                 if let Some(config) = sandbox {
                     // The handlers run in the guest, so the host loop marshals rather
                     // than executing anything the serverlet declared.
-                    let start_fn = self.compile_sandbox_host(name, handlers, config);
+                    let start_fn = self.compile_sandbox_host(name, state, handlers, config, crash_handler, grants);
                     let start_fn = if self.library {
                         start_fn.replace("tokio::spawn(", "__ORCH_LINE_SPAWN(")
                             .replace("rx.recv().await", "crate::__orch_recv(&mut rx).await")
@@ -826,10 +815,32 @@ impl Codegen {
     fn compile_sandbox_host(
         &mut self,
         name: &str,
+        state: &[Stmt],
         handlers: &[Handler],
         config: &crate::ast::SandboxConfig,
+        crash_handler: &Option<(String, Box<Expr>)>,
+        grants: &[String],
     ) -> String {
-        let bail = "{ eprintln!(\"[orchestrate] {}\", __error); __guest.reset(); let _ = reply_to.send(Default::default()); continue; }";
+        // `on_crash` runs on the host, after the trap is reported and before the guest is
+        // replaced, with the trap's message bound. The guest's state is not reachable
+        // from here: it is inside the instance being thrown away.
+        let crash = match crash_handler {
+            Some((error_name, body)) => {
+                let mut free = std::collections::HashSet::new();
+                self.get_free_vars_expr(body, &mut std::collections::HashSet::new(), &mut free);
+                let mut reached: Vec<&String> = free.iter().filter(|v| state_names(state).contains(*v)).collect();
+                reached.sort();
+                if let Some(reached) = reached.first() {
+                    self.errors.push(format!(
+                        "sandboxed serverlet '{name}': on_crash uses '{reached}', which is the guest's state. on_crash runs on the host after the guest trapped, so the state is gone; report the error and let the fresh guest start over"
+                    ));
+                }
+                format!(" {{ let {error_name} = __error.clone(); {}; }}", self.compile_expr(body))
+            }
+            None => String::new(),
+        };
+        let bail = format!("{{ eprintln!(\"[orchestrate] {{}}\", __error); __guest.reset();{crash} let _ = reply_to.send(Default::default()); continue; }}");
+        let bail = bail.as_str();
         let mut arms = Vec::new();
         for h in handlers {
             let variant = pascal_case(&h.name);
@@ -961,11 +972,59 @@ impl Codegen {
             sandbox_struct_codecs(&self.struct_defs)
         };
 
+        // Each grant is one linker definition: the host method behind one import, and
+        // nothing for anything ungranted, which therefore traps if the guest names it.
+        let (grants_fn, grants_arg) = if grants.is_empty() {
+            (String::new(), "None".to_string())
+        } else {
+            let mut definitions = Vec::new();
+            for grant in grants {
+                let Some((group, handler)) = self
+                    .host_functions
+                    .iter()
+                    .find(|(group, h)| format!("{}.{}", group, h.name) == *grant)
+                    .cloned()
+                else {
+                    self.errors.push(format!("Unknown host grant '{}'", grant));
+                    continue;
+                };
+                let decode = handler.params.iter().map(|p| format!(
+                    "            let {}: {} = OrchWire::wire_decode(__payload, &mut __pos).ok_or(\"invalid host arguments\")?;\n",
+                    p.name, self.host_type(&p.ty)
+                )).collect::<String>();
+                let args = handler.params.iter().map(|p| p.name.clone()).collect::<Vec<_>>().join(", ");
+                let encode = if handler.return_type == Type::Void { "Vec::new()" } else { "__wire_to_bytes(&__value)" };
+                definitions.push(format!(
+                    "    linker.func_wrap(\"orch_host\", {import:?}, |mut __caller: wasmtime::Caller<'_, crate::__OrchGuestLimits>, __pointer: i32, __length: i32| -> i64 {{\n        \
+                         crate::__orch_grant_call(&mut __caller, __pointer, __length, |__payload| -> Result<Vec<u8>, String> {{\n            \
+                             let mut __pos = 0;\n{decode}            \
+                             if __pos != __payload.len() {{ return Err(\"trailing host arguments\".into()); }}\n            \
+                             let __value = crate::__orch_context().host.{method}({args})?;\n            \
+                             Ok({encode})\n        \
+                         }})\n    \
+                     }})?;",
+                    import = format!("{}_{}", group, handler.name),
+                    decode = decode,
+                    method = Self::host_method(&group, &handler.name),
+                    args = args,
+                    encode = encode,
+                ));
+            }
+            (
+                format!(
+                    "/// The host functions serverlet '{name}' was granted, one import each.\n\
+                     #[allow(non_snake_case)]\nfn __orch_grants_{name}(linker: &mut wasmtime::Linker<crate::__OrchGuestLimits>) -> Result<(), wasmtime::Error> {{\n{}\n    Ok(())\n}}\n",
+                    definitions.join("\n")
+                ),
+                format!("Some(__orch_grants_{name})"),
+            )
+        };
+
         format!(
-            "{codecs}#[allow(non_snake_case)]\npub fn start_{name}() -> {name}Client {{\n    \
+            "{codecs}{grants_fn}#[allow(non_snake_case)]\npub fn start_{name}() -> {name}Client {{\n    \
                  let (tx, mut rx) = tokio::sync::mpsc::channel::<{name}Msg>(100);\n    \
                  tokio::spawn(async move {{\n        \
-                     let mut __guest = match crate::__OrchGuest::new({name:?}, include_bytes!(\"sandbox_{name}.wasm\"), Some({memory}), Some({timeout})) {{\n            \
+                     let mut __guest = match crate::__OrchGuest::new({name:?}, include_bytes!(\"sandbox_{name}.wasm\"), Some({memory}), Some({timeout}), {grants_arg}) {{\n            \
                          Ok(__guest) => __guest,\n            \
                          Err(__error) => {{ eprintln!(\"[orchestrate] {{}}\", __error); return; }}\n        \
                      }};\n        \
@@ -974,6 +1033,8 @@ impl Codegen {
                  }});\n    \
                  {name}Client {{ tx }}\n}}",
             codecs = codecs,
+            grants_fn = grants_fn,
+            grants_arg = grants_arg,
             name = name,
             memory = config.memory_bytes().unwrap_or(64 * 1024 * 1024),
             timeout = config.timeout_ms().unwrap_or(5_000),
@@ -987,13 +1048,74 @@ impl Codegen {
     /// string or an array crosses as a pointer and a length or count into the guest's own
     /// memory, and a struct as its `#[repr(C)]` bytes, all allocated by the allocator
     /// both sides share.
-    fn compile_sandbox_guest(&mut self, name: &str, state: &[Stmt], handlers: &[Handler]) -> String {
+    fn compile_sandbox_guest(&mut self, name: &str, state: &[Stmt], handlers: &[Handler], grants: &[String]) -> String {
         // The entry file's serverlets were checked by the typechecker; a module's were
         // not, so the gate is here too, reported by the driver before anything builds.
         if let Some(reason) = sandbox_unsupported_reason(name, handlers, &self.struct_defs) {
             self.errors.push(reason);
             return String::new();
         }
+
+        // Each grant is one import from the host and one stub that carries a call
+        // across: arguments encoded with the wire codec into guest memory, the reply
+        // decoded from it. The guest has these imports and no others.
+        let mut imports = Vec::new();
+        let mut stubs = Vec::new();
+        for grant in grants {
+            let Some((group, handler)) = self
+                .host_functions
+                .iter()
+                .find(|(group, h)| format!("{}.{}", group, h.name) == *grant)
+                .cloned()
+            else {
+                self.errors.push(format!("Unknown host grant '{}'", grant));
+                continue;
+            };
+            let import = format!("{}_{}", group, handler.name);
+            imports.push(format!(
+                "    #[link_name = {import:?}]\n    fn __orch_import_{import}(pointer: i32, length: i32) -> i64;"
+            ));
+            let params = handler.params.iter()
+                .map(|p| format!("{}: {}", p.name, self.compile_type(&p.ty)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let encodes = handler.params.iter()
+                .map(|p| format!("    {}.wire_encode(&mut __payload);\n", p.name))
+                .collect::<String>();
+            let (returns, decode) = if handler.return_type == Type::Void {
+                (String::new(), "()".to_string())
+            } else {
+                let ty = self.compile_type(&handler.return_type);
+                (format!(" -> {ty}"), format!("<{ty} as OrchWire>::wire_decode(&__reply, &mut __pos).unwrap_or_default()"))
+            };
+            stubs.push(format!(
+                "fn __orch_grant_{import}({params}){returns} {{\n    \
+                     let mut __payload = Vec::new();\n{encodes}    \
+                     let __reply = __orch_host_call(__orch_import_{import}, &__payload);\n    \
+                     let mut __pos = 0;\n    \
+                     match bool::wire_decode(&__reply, &mut __pos) {{\n        \
+                         Some(true) => {decode},\n        \
+                         Some(false) => {{\n            \
+                             let __error = String::wire_decode(&__reply, &mut __pos).unwrap_or_default();\n            \
+                             eprintln!(\"[orchestrate] host call {grant} failed: {{}}\", __error);\n            \
+                             Default::default()\n        \
+                         }}\n        \
+                         None => {{ eprintln!(\"[orchestrate] host call {grant}: no reply from the host\"); Default::default() }}\n    \
+                     }}\n}}",
+                import = import, params = params, returns = returns, encodes = encodes, decode = decode, grant = grant
+            ));
+        }
+        let grants_code = if imports.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "#[link(wasm_import_module = \"orch_host\")]\nunsafe extern \"C\" {{\n{}\n}}\n\n{}\n\n{}\n",
+                imports.join("\n"),
+                stubs.join("\n\n"),
+                super::core::WIRE_CODEC.to_string() + &wire_struct_impls(&self.struct_defs)
+            )
+        };
+        self.sandbox_guest_grants = Some(grants.to_vec());
 
         // The state's types come from the typechecker, since a struct field cannot be
         // written as `let mut x = ...` and inferred.
@@ -1099,6 +1221,7 @@ impl Codegen {
         }
 
         self.handler_state.clear();
+        self.sandbox_guest_grants = None;
 
         // Every struct in the file, so a handler body or the state can use any of them;
         // the codecs, for the ones that can cross.
@@ -1124,7 +1247,7 @@ struct __OrchState {{\n{fields}\n}}\n\
 impl __OrchState {{\n    fn new() -> __OrchState {{\n{initializers}\n        __OrchState {{ {names} }}\n    }}\n}}\n\
 thread_local! {{ static __ORCH_STATE: std::cell::RefCell<__OrchState> = std::cell::RefCell::new(__OrchState::new()); }}\n\
 fn __orch_state<R>(body: impl FnOnce(&mut __OrchState) -> R) -> R {{\n    __ORCH_STATE.with(|cell| body(&mut cell.borrow_mut()))\n}}\n\n\
-{marshal}\n{exports}\n",
+{marshal}\n{grants_code}{exports}\n",
             name = name,
             preamble = runtime_preamble(true, false),
             pod = super::core::WASM_POD,
@@ -1133,6 +1256,7 @@ fn __orch_state<R>(body: impl FnOnce(&mut __OrchState) -> R) -> R {{\n    __ORCH
             initializers = initializers.join("\n"),
             names = names.join(", "),
             marshal = SANDBOX_GUEST_MARSHAL,
+            grants_code = grants_code,
             exports = exports.join("\n\n")
         )
     }
@@ -1188,6 +1312,22 @@ fn __orch_pack_struct(size: usize, encode: impl FnOnce(&mut [u8])) -> i64 {
     let mut bytes = vec![0u8; size];
     encode(&mut bytes);
     __orch_pack_bytes(&bytes, size as i32)
+}
+/// One granted host call: the arguments go to the host as bytes in this memory, freed
+/// once the host has read them; the reply the host allocated here is copied and freed.
+/// A reply of 0 is a call the host could not make, which decodes as no reply.
+fn __orch_host_call(import: unsafe extern "C" fn(i32, i32) -> i64, payload: &[u8]) -> Vec<u8> {
+    let length = payload.len() as i32;
+    let pointer = orch_alloc(length);
+    if pointer != 0 {
+        unsafe { std::ptr::copy_nonoverlapping(payload.as_ptr(), pointer as *mut u8, payload.len()) };
+    }
+    let packed = unsafe { import(pointer, length) };
+    orch_free(pointer, length);
+    let (reply_pointer, reply_length) = ((packed >> 32) as i32, (packed & 0xffff_ffff) as i32);
+    let reply = __orch_bytes(reply_pointer, reply_length).to_vec();
+    orch_free(reply_pointer, reply_length);
+    reply
 }
 "#;
 
@@ -1342,7 +1482,7 @@ pub(crate) fn sandbox_struct_codecs(structs: &StructDefs) -> String {
                 _ => String::new(),
             }).collect::<Vec<_>>().join("\n");
             format!(
-                "fn __orch_sandbox_write_{name}(value: &{name}, out: &mut [u8]) {{\n{writes}\n}}\nfn __orch_sandbox_read_{name}(bytes: &[u8]) -> {name} {{\n    {name} {{\n{reads}\n    }}\n}}\n"
+                "#[allow(non_snake_case)]\nfn __orch_sandbox_write_{name}(value: &{name}, out: &mut [u8]) {{\n{writes}\n}}\n#[allow(non_snake_case)]\nfn __orch_sandbox_read_{name}(bytes: &[u8]) -> {name} {{\n    {name} {{\n{reads}\n    }}\n}}\n"
             )
         })
         .collect()

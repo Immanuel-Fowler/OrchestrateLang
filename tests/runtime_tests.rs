@@ -1184,3 +1184,37 @@ orchestrator main() {
 "#);
     assert_eq!(out.trim(), "2,2,2\n1,2,3\nlocal,secret,sandbox\n3,3,3");
 }
+
+/// `on_crash` on a sandboxed serverlet runs on the host after a call trapped, with the
+/// trap's message bound, before the guest is replaced and the caller gets the default.
+/// The handler cannot reach the guest's state, which is inside the instance being thrown
+/// away; a handler that tries is a compile error naming the binding.
+#[test]
+fn runtime_sandbox_on_crash_runs_on_the_host() {
+    let out = run_orch("sandbox_on_crash", r#"
+serverlet Hostile sandbox(memory_limit: "16mb", timeout: "300ms") {
+    let calls = 0
+    on spin() -> int {
+        while true { calls = calls + 1 }
+        return calls
+    }
+    on behave(n: int) -> int {
+        calls = calls + 1
+        return calls + n
+    }
+    on_crash reason { print("crashed: " + reason) }
+}
+orchestrator main() {
+    let h = start Hostile()
+    print(to_string(h.behave(10)))
+    print(to_string(h.spin()))
+    print(to_string(h.behave(10)))
+    stop_orch()
+}
+"#);
+    // 11 twice: the second `behave` runs against a fresh guest, so the count restarted.
+    assert_eq!(
+        out.trim(),
+        "11\ncrashed: wasm call 'Hostile::spin' failed: the guest ran past its timeout\n0\n11"
+    );
+}

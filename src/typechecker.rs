@@ -24,6 +24,10 @@ pub struct TypeChecker {
     var_serverlet: HashMap<String, String>,
     /// Events declared by an `on name(...)` block, so `trigger` can be checked.
     declared_events: HashMap<String, Vec<Type>>,
+    /// While a sandboxed serverlet's handlers are checked: its name and the host
+    /// functions it was granted. A guest reaches nothing else, so a call to an
+    /// ungranted host function is an error here rather than a trap at run time.
+    sandbox_grants: Option<(String, HashSet<String>)>,
 }
 
 impl TypeChecker {
@@ -43,6 +47,7 @@ impl TypeChecker {
             serverlet_names: HashSet::new(),
             var_serverlet: HashMap::new(),
             declared_events: HashMap::new(),
+            sandbox_grants: None,
         };
 
         // `print` is generic over anything displayable in the generated code, so its
@@ -500,6 +505,9 @@ impl TypeChecker {
                     }
                 }
                 self.serverlet_state.insert(serverlet.clone(), recorded);
+                if sandbox.is_some() {
+                    self.sandbox_grants = Some((serverlet.clone(), grants.iter().cloned().collect()));
+                }
                 for h in handlers {
                     let prev_return = self.current_return_type.clone();
                     self.current_return_type = Some(h.return_type.clone());
@@ -507,10 +515,15 @@ impl TypeChecker {
                     for p in &h.params {
                         self.define_var(p.name.clone(), p.ty.clone());
                     }
-                    self.infer_expr(&h.body)?;
+                    let checked = self.infer_expr(&h.body);
                     self.pop_env();
                     self.current_return_type = prev_return;
+                    if let Err(error) = checked {
+                        self.sandbox_grants = None;
+                        return Err(error);
+                    }
                 }
+                self.sandbox_grants = None;
                 if let Some((err_name, handler_body)) = crash_handler {
                     self.push_env();
                     self.define_var(err_name.clone(), Type::Str);
@@ -956,6 +969,15 @@ impl TypeChecker {
                     if self.host_groups.contains(module_local_name) {
                         for (expected, actual) in expected_args.iter().zip(&arg_types) {
                             if !self.types_compatible(expected, actual) { return Err(format!("Host argument type mismatch for {}.{}", module_local_name, function)); }
+                        }
+                        if let Some((serverlet, granted)) = &self.sandbox_grants {
+                            let call = format!("{}.{}", module_local_name, function);
+                            if !granted.contains(&call) {
+                                return Err(format!(
+                                    "line {}, col {}: sandboxed serverlet '{}' calls {}, which it was not granted; a sandboxed guest reaches only the host functions its declaration grants — add `grant call {}` to the serverlet or remove the call",
+                                    expr.span.line, expr.span.col, serverlet, call, call
+                                ));
+                            }
                         }
                     }
                     if let Some(type_params) = self.generic_functions.get(&alias_key).cloned() {

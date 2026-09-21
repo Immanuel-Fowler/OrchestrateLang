@@ -32,6 +32,28 @@ fn assert_compilation_fails(file: &str, expected_msg: &str) {
     );
 }
 
+/// `orchestrate check` must reject the file with the message, before any build.
+fn assert_check_fails(file: &str, expected_msg: &str) {
+    let output = Command::new(get_orchestrate_bin())
+        .arg("check")
+        .arg(format!("tests/error_cases/{}", file))
+        .output()
+        .expect("Failed to run orchestrate process");
+    assert!(!output.status.success(), "Expected check of {} to fail, but it passed", file);
+    let combined_output = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined_output.contains(expected_msg),
+        "Expected check of {} to contain '{}', but output was:\n{}",
+        file,
+        expected_msg,
+        combined_output
+    );
+}
+
 #[test]
 fn test_error_cases() {
     assert_compilation_fails("unsupported_foreign_language.orch", "is not supported currently");
@@ -55,6 +77,12 @@ fn test_error_cases() {
     // reports it and no guest crate is ever built.
     assert_compilation_fails("sandbox_unsupported_type.orch", "does not cross the sandbox boundary");
     assert_compilation_fails("sandbox_unsupported_type.orch", "parameter 'l' has type Label");
+    // A guest reaches only what it was granted; the typechecker says so, so `check`
+    // catches it in a library program that `run` would refuse for other reasons first.
+    assert_check_fails("sandbox_ungranted_host_call.orch", "calls world.reset, which it was not granted");
+    assert_check_fails("sandbox_ungranted_host_call.orch", "add `grant call world.reset`");
+    // on_crash runs on the host; the guest's state is gone by then.
+    assert_compilation_fails("sandbox_crash_uses_state.orch", "on_crash uses 'calls', which is the guest's state");
 }
 
 /// Every wrong program must fail as OrchestrateLang, never as rustc.

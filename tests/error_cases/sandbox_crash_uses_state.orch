@@ -1,0 +1,16 @@
+// on_crash runs on the host after the guest trapped; the guest's state is inside the
+// instance being replaced, so a handler that names it is refused.
+serverlet Plugin sandbox(memory_limit: "16mb", timeout: "300ms") {
+    let calls = 0
+    on spin() -> int {
+        while true { calls = calls + 1 }
+        return calls
+    }
+    on_crash reason { print("crashed after " + to_string(calls)) }
+}
+
+orchestrator main() {
+    let p = start Plugin()
+    print(to_string(p.spin()))
+    stop_orch()
+}

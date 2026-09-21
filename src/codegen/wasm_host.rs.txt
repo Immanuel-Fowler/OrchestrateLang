@@ -144,6 +144,48 @@ fn __orch_wasm_diagnostics(linker: &mut wasmtime::Linker<__OrchGuestLimits>) -> 
     Ok(())
 }
 
+/// The host functions a sandboxed serverlet was granted, as one linker definition each:
+/// `grant call world.record` becomes exactly one import the guest can reach, and an
+/// ungranted host function is not defined at all, so a guest that names it traps.
+type __OrchGrants = fn(&mut wasmtime::Linker<__OrchGuestLimits>) -> Result<(), wasmtime::Error>;
+
+/// One granted host call, from inside the guest: the arguments arrive as bytes the guest
+/// wrote into its own memory, `body` decodes them and runs the host method, and the reply
+/// — a flag byte, then the value or the error text — is written back into guest memory
+/// through the guest's allocator and returned packed as (pointer << 32) | length. A reply
+/// of 0 means the call could not be made at all; the guest treats it as a failed call.
+/// A panic in the host method is caught here, so it fails this call and nothing else.
+fn __orch_grant_call(
+    caller: &mut wasmtime::Caller<'_, __OrchGuestLimits>,
+    pointer: i32,
+    length: i32,
+    body: impl FnOnce(&[u8]) -> Result<Vec<u8>, String>,
+) -> i64 {
+    let Some(memory) = caller.get_export("memory").and_then(|export| export.into_memory()) else { return 0 };
+    let mut payload = vec![0u8; length.max(0) as usize];
+    if length > 0 && memory.read(&*caller, pointer as usize, &mut payload).is_err() {
+        return 0;
+    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&payload)))
+        .unwrap_or_else(|_| Err("host function panicked".to_string()));
+    let mut reply = Vec::new();
+    match result {
+        Ok(value) => { reply.push(1); reply.extend(value); }
+        Err(error) => {
+            reply.push(0);
+            reply.extend_from_slice(&(error.len() as u32).to_le_bytes());
+            reply.extend_from_slice(error.as_bytes());
+        }
+    }
+    let Some(alloc) = caller.get_export("orch_alloc").and_then(|export| export.into_func()) else { return 0 };
+    let Ok(alloc) = alloc.typed::<i32, i32>(&*caller) else { return 0 };
+    let Ok(reply_pointer) = alloc.call(&mut *caller, reply.len() as i32) else { return 0 };
+    if reply_pointer == 0 || memory.write(&mut *caller, reply_pointer as usize, &reply).is_err() {
+        return 0;
+    }
+    ((reply_pointer as i64) << 32) | reply.len() as i64
+}
+
 /// A fresh store and instance for a module: its own linear memory, its own memory cap, and
 /// no import it was not granted.
 fn __orch_wasm_instantiate(
@@ -151,6 +193,7 @@ fn __orch_wasm_instantiate(
     module: &wasmtime::Module,
     memory_bytes: Option<usize>,
     deadline: u64,
+    grants: Option<__OrchGrants>,
 ) -> Result<(wasmtime::Store<__OrchGuestLimits>, wasmtime::Instance), String> {
     let engine = __orch_wasm_engine();
     let mut builder = wasmtime::StoreLimitsBuilder::new();
@@ -161,6 +204,9 @@ fn __orch_wasm_instantiate(
     store.limiter(|state| &mut state.limits);
     let mut linker: wasmtime::Linker<__OrchGuestLimits> = wasmtime::Linker::new(engine);
     __orch_wasm_diagnostics(&mut linker).map_err(|e| format!("wasm module '{}': {}", name, e))?;
+    if let Some(grants) = grants {
+        grants(&mut linker).map_err(|e| format!("wasm module '{}': {}", name, e))?;
+    }
     // Default-deny: every other import the guest asks for becomes a trap, so a guest that
     // reaches for the host stops instead of reaching it. This defines only what is still
     // undefined, so the two above stand.
@@ -188,6 +234,8 @@ struct __OrchGuest {
     /// Epoch ticks one call may take, or `__ORCH_WASM_NO_DEADLINE` for a guest that was
     /// given no timeout.
     deadline: u64,
+    /// The host functions this guest was granted, applied again when it is replaced.
+    grants: Option<__OrchGrants>,
 }
 
 impl __OrchGuest {
@@ -196,12 +244,13 @@ impl __OrchGuest {
         wasm: &[u8],
         memory_bytes: Option<usize>,
         timeout_ms: Option<u64>,
+        grants: Option<__OrchGrants>,
     ) -> Result<__OrchGuest, String> {
         let module = wasmtime::Module::new(__orch_wasm_engine(), wasm)
             .map_err(|e| format!("wasm module '{}' failed to load: {}", name, e))?;
         let deadline = timeout_ms.map_or(__ORCH_WASM_NO_DEADLINE, |ms| ms.div_ceil(__ORCH_WASM_TICK_MS).max(1));
-        let (store, instance) = __orch_wasm_instantiate(name, &module, memory_bytes, deadline)?;
-        Ok(__OrchGuest { name, module, memory_bytes, store, instance, deadline })
+        let (store, instance) = __orch_wasm_instantiate(name, &module, memory_bytes, deadline, grants)?;
+        Ok(__OrchGuest { name, module, memory_bytes, store, instance, deadline, grants })
     }
 
     /// Called before every guest call, so each call gets the whole timeout rather than
@@ -219,7 +268,7 @@ impl __OrchGuest {
     /// guest is thrown away and a fresh one takes its place, which means a call that traps
     /// also resets the guest's state. Containment costs what it costs.
     fn reset(&mut self) {
-        match __orch_wasm_instantiate(self.name, &self.module, self.memory_bytes, self.deadline) {
+        match __orch_wasm_instantiate(self.name, &self.module, self.memory_bytes, self.deadline, self.grants) {
             Ok((store, instance)) => {
                 self.store = store;
                 self.instance = instance;
@@ -390,7 +439,7 @@ struct __OrchWasmModule {
 
 impl __OrchWasmModule {
     fn load(name: &'static str, wasm: &[u8]) -> __OrchWasmModule {
-        let guest = match __OrchGuest::new(name, wasm, None, None) {
+        let guest = match __OrchGuest::new(name, wasm, None, None, None) {
             Ok(guest) => Some(guest),
             Err(error) => {
                 eprintln!("[orchestrate] {}", error);

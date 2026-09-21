@@ -1,0 +1,18 @@
+// A sandboxed guest reaches only the host functions its declaration grants, so a call to
+// any other host function is refused when the program is checked, not trapped at run time.
+host world {
+    fn record(n: int) -> int
+    fn reset()
+}
+
+serverlet Plugin sandbox(memory_limit: "16mb", timeout: "2s") {
+    grant call world.record
+    on bump(n: int) -> int {
+        world.reset()
+        return world.record(n)
+    }
+}
+
+let plugin = start Plugin()
+on_tick(dt: float) { world.record(plugin.bump(1)) }
+orchestrator main() {}
