@@ -80,6 +80,16 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   says so. `benchmarks/diagnostics_coverage.py` writes the same classification as CSV,
   JSON, and Markdown.
 
+- **One command regenerates every table.** `python3 benchmarks/run_all.py` builds the
+  release compiler and runs the boundary ladder, the tick cost, and the diagnostics
+  coverage in order, writing every CSV, JSON, and Markdown table under
+  `benchmarks/results/` and joining the reports into `results.md`. `benchmarks/README.md`
+  documents it and the three scripts.
+- **What `orchestrate check` guarantees is written down**, in one paragraph of
+  `docs/language-reference.md` before "Debugging Generated Code": what a check does and
+  finds, and what it does not — no codegen, no Cargo, library-only rules unenforced,
+  module serverlet bodies unwalked, foreign sources unchecked.
+
 ### Fixed
 - **Sixteen wrong programs are told so by `orchestrate check` instead of rustc.** The
   corpus found them: a call into a module or a foreign function with the wrong argument

@@ -824,6 +824,33 @@ orchestrate build --lib <file.orch> -o <dir> [--target <triple>] [--rust-version
 | `build --lib … --dependency '<name> = <spec>'` | Adds a Cargo dependency to the generated crate; repeatable. A relative `path` is resolved against the working directory |
 | `build --lib … --dependencies <file.toml>` | Adds every dependency a TOML fragment declares (a `[dependencies]` header is optional); paths resolve the same way |
 
+### What `check` guarantees
+
+`orchestrate check` parses the entry file, resolves every `use module` directory and
+`load` sub-file, reads the sidecars of `load_foreign` declarations so that calls into
+foreign functions are typed — including reading a `.wasm` module's own export table and
+refusing a sidecar that names an export the module lacks or types it differently — and
+runs the typechecker over the entry file. A program that passes is free of the errors the
+typechecker knows how to find: unknown names, mismatched types and arities in calls,
+handler calls a serverlet does not declare, `trigger` arguments that do not match the
+event, struct literals with missing or unknown fields, non-exhaustive matches, a `fn` that
+waits, a `task` that names top-level state, a handler type that cannot cross a secret,
+landline, or sandboxed boundary, and a sandboxed handler that calls a host function it
+was not granted. A program that fails is reported in OrchestrateLang terms, with a line
+and a column, before any code is generated.
+
+It guarantees nothing beyond that. `check` generates no Rust and runs no Cargo, so the
+checks that live in code generation are not made: it accepts a `host` block or an
+`on_tick` outside a library build, it does not walk the handler bodies of a serverlet
+declared inside an imported module, and it cannot see a Rust foreign function's body or
+a landline's Python or TypeScript source, which `check-foreign` checks with each
+language's own tools. A program `check` accepts may therefore still be refused by
+`build`, by the compiler's own error or, in the cases listed in
+`benchmarks/results/diagnostics_coverage.md` and `LIMITATIONS-notes.md`, by rustc against
+generated code. The diagnostics corpus under `tests/error_cases/diagnostics/` measures
+how much of the invalid-program space `check` covers, and `benchmarks/diagnostics_coverage.py`
+prints the count.
+
 ### Debugging Generated Code
 
 When a program fails to compile due to a Rust-level error, the compiler prints a translated, user-friendly error message. For more detail, set the `ORCH_SHOW_GENERATED` environment variable to `1` to dump the full cargo stderr and the generated Rust source:
