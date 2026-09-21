@@ -9,6 +9,10 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-09-21
+
+Everything the build used to catch, `check` catches first.
+
 ### Added
 - **`orchestrate check --lib`** checks a program the way `build --lib` builds it:
   `host` blocks, `on_tick`, and grants are allowed, and a library's own rules hold —
@@ -946,7 +950,8 @@ First tagged release.
   `option` / `result`, `try` / `catch`, supervision, `check`, the language server, or the
   standard library. See `examples/` for working code.
 
-[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.15.1...HEAD
+[0.15.1]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.12.0...v0.13.0
