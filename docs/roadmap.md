@@ -108,10 +108,13 @@ serverlet UntrustedPlugin sandbox(memory_limit: "64mb", timeout: "5s") {
 - `memory_limit` caps linear memory and `timeout` bounds a single call, through epoch interruption. State lives inside the guest and persists between calls.
 - Imports are denied by default. The guest is given two diagnostic functions — one carrying its own stderr out, one letting it stop itself — and nothing else, so a contained failure can still say what it was.
 - A call that exceeds a limit is logged, answered with the return type's default, and the guest is replaced, since a trap abandons it mid-call. That means a failed call resets the serverlet's state.
-- `int`, `float`, `bool`, `string`, and `void` cross. Arrays and structs do not yet.
+- `int`, `float`, `bool`, `string`, `int[]`, `float[]`, `bool[]`, structs of numbers,
+  booleans, and such structs, and `void` cross, under the C ABI's ownership and layout
+  rules: pointer and count for an array, `#[repr(C)]` bytes for a struct, and what one
+  side writes for the other it frees after the call.
 - Only a program that uses the feature gains the `wasmtime` dependency.
 
-**Still open:** `grant` on a sandboxed serverlet. Each grant has to become one narrow, mediated host function in the wasmtime linker — the point where sandboxing and the consent model become the same mechanism. Until that exists, a grant on a sandboxed serverlet is a compile error rather than a hole that opens quietly. `on_crash` is likewise a compile error. Arrays and structs across the boundary, and non-WASM isolation backends, remain out of scope.
+**Still open:** `grant` on a sandboxed serverlet. Each grant has to become one narrow, mediated host function in the wasmtime linker — the point where sandboxing and the consent model become the same mechanism. Until that exists, a grant on a sandboxed serverlet is a compile error rather than a hole that opens quietly. `on_crash` is likewise a compile error. Arrays of strings or structs, structs holding them, and non-WASM isolation backends remain out of scope.
 
 **Connects to Feature 1:** Sandboxed serverlets, polyglot serverlets (1a), and loaded foreign modules (1b) are all variations on the same underlying theme — *handler/function bodies implemented by something other than native compiled OrchestrateLang code, with the compiler generating the integration glue.* `load_foreign "wasm"` (1b) and this feature share one wasmtime host.
 

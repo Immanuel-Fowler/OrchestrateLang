@@ -1565,10 +1565,23 @@ that carries its own stderr out, so a panic or an allocation failure is reported
 `[orchestrate] sandbox guest: ...`, and one that lets it stop itself. They exist so a
 contained failure can say what it was.
 
+**What crosses the boundary.** Handler parameters and returns carry `int`, `float`,
+`bool`, `string`, `int[]`, `float[]`, `bool[]`, and structs whose fields are numbers,
+booleans, or such structs; a handler may also return nothing. That is the set the C ABI
+carries, under the same rules: an array crosses as a pointer and a count into the guest's
+memory, a struct as its `#[repr(C)]` bytes, and a string as a pointer and a length. What
+the host writes into the guest for a call, the host frees after the call; what the guest
+returns, the host copies and frees. Every value is copied across, so the guest never holds
+a reference into the host and the host never reads guest memory after the call. A
+handler's state may be of any of these types too, and a handler may return its own state.
+
+An array of strings, of structs, or of arrays does not cross, and neither does a struct
+holding one of those, an `option`, a `result`, or a closure. `orchestrate check` rejects
+such a handler by name; the in-process, secret, and landline boundaries do carry nested
+arrays and structs with string fields.
+
 **v1 limitations:**
 
-- Handler parameters and returns support `int`, `float`, `bool`, `string`, and `void`.
-  Arrays and structs are not carried yet.
 - `grant` is not supported on a sandboxed serverlet, and neither is `on_crash`; both are
   compile errors. A grant would be a deliberate hole in the wall and has to be built as
   one.

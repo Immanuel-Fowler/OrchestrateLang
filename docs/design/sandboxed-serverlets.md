@@ -5,9 +5,11 @@
 > `wasm32-wasip1` (step 2), and the orchestrator loads that guest under `wasmtime` and
 > calls it (step 3), with the memory cap (step 4), the per-call timeout via epoch
 > interruption (step 5), and `string` marshaling (step 6) all enforced. State lives in
-> the guest and persists between calls. What remains is step 7: turning a `grant` into a
-> narrow, mediated host function. Until that exists, a `grant` on a sandboxed serverlet
-> is a compile error rather than a hole that opens quietly.
+> the guest and persists between calls. Arrays of numbers and booleans, and structs of
+> those, cross as of the branch after 0.14.0, under the C ABI's ownership and layout
+> rules. What remains is step 7: turning a `grant` into a narrow, mediated host
+> function. Until that exists, a `grant` on a sandboxed serverlet is a compile error
+> rather than a hole that opens quietly.
 
 ---
 
@@ -152,7 +154,11 @@ two sides: the grant declares intent; the wasmtime linker enforces it.
    f64. Anything richer (strings, structs) must be copied through linear memory
    with an agreed layout. **Plan:** ship primitives first (`int`, `float`, `bool`),
    then `string` (ptr+len into guest memory), then structs (serialize — likely
-   JSON or a simple length-prefixed encoding) much later.
+   JSON or a simple length-prefixed encoding) much later. *What shipped:* strings
+   as pointer and length, arrays as pointer and count, and structs as their
+   `#[repr(C)]` bytes written field by field at `offset_of!` offsets, so the layout
+   is the C ABI's and neither side reads padding. The host frees what it writes
+   for a call; what the guest returns the host copies and frees.
 
 2. **Timeout enforcement.** A guest can loop forever. wasmtime offers *fuel*
    (deterministic instruction budget) and *epoch interruption* (wall-clock-ish).

@@ -9,6 +9,36 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+### Added
+- **Arrays and structs across the sandbox boundary.** A sandboxed serverlet carried `int`,
+  `float`, `bool`, and `string`; it now carries `int[]`, `float[]`, `bool[]`, and structs
+  whose fields are numbers, booleans, or such structs — the set the C ABI carries since
+  0.14.0, under the same rules. An array crosses as a pointer and a count into the guest's
+  memory, a struct as its `#[repr(C)]` bytes, each field at its own offset and padding
+  zero, so neither side reads padding or depends on the other's endianness. What the host
+  writes for a call it frees after the call; what the guest returns the host copies and
+  frees. The guest's allocator is now 8-byte aligned. A handler's state may be of these
+  types, and a handler may return it.
+
+  An array of strings or structs, or a struct holding one, does not cross the sandbox,
+  though the in-process, secret, and landline boundaries carry them. That gap is written
+  down in `LIMITATIONS-notes.md`.
+
+### Fixed
+- **A sandboxed serverlet no longer leaks guest memory on every string argument.** The
+  host allocated each string in guest memory and never freed it, so a serverlet that took
+  strings walked into its memory cap and then failed every call: under an 8mb cap, 20,000
+  one-kilobyte calls failed four times and reset the guest each time. Every allocation the
+  host makes for a call is released after it, and a test sends those 20,000 calls.
+- **A handler may return its own state.** `return seen`, where `seen` is an array or a
+  string the serverlet declares, moved the value out of the actor, the child, or the guest,
+  and rustc refused with a message about moved values in generated code — on every
+  boundary. A handler that returns a state binding now returns a copy. For a number the
+  copy is what happened before.
+- **A sandbox handler type that cannot cross is rejected by `orchestrate check`**, by
+  name, as the compiler's own error. It used to surface from the guest crate's build as a
+  `compile_error!` after codegen.
+
 ## [0.14.0] - 2026-09-20
 
 Arrays and structs cross the fastest boundary.
