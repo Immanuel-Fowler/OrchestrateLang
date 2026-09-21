@@ -1,4 +1,4 @@
-use super::core::{pascal_case, Codegen};
+use super::core::{pascal_case, rust_ident, Codegen};
 use crate::ast::{Expr, Handler, Type};
 
 impl Codegen {
@@ -40,9 +40,9 @@ impl Codegen {
             })
             .unwrap_or_default();
         let arms = handlers.iter().enumerate().map(|(id, h)| {
-            let mut bindings = h.params.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
+            let mut bindings = h.params.iter().map(|p| rust_ident(&p.name)).collect::<Vec<_>>();
             bindings.push("reply_to".into());
-            let encode = h.params.iter().map(|p| format!("{}.wire_encode(&mut __payload);", p.name)).collect::<Vec<_>>().join("\n");
+            let encode = h.params.iter().map(|p| format!("{}.wire_encode(&mut __payload);", rust_ident(&p.name))).collect::<Vec<_>>().join("\n");
             let decode = if h.return_type == Type::Void {
                 "if !f.payload.is_empty() { return Err(\"unexpected void reply payload\".to_string()); } ()".into()
             } else {
@@ -52,7 +52,7 @@ impl Codegen {
             let skip = if config.budget_micros.is_some() { "if reply_to.is_closed() { continue; }" } else { "" };
             // `late: "latest"` keeps each handler's most recent result for timed-out callers.
             let remember = if config.late == crate::ast::LatePolicy::Latest && h.return_type != Type::Void {
-                format!("*__latest.{}.lock().unwrap() = Some(value.clone());", h.name)
+                format!("*__latest.{}.lock().unwrap() = Some(value.clone());", rust_ident(&h.name))
             } else {
                 String::new()
             };
@@ -119,10 +119,10 @@ impl Codegen {
                 let args = handler
                     .params
                     .iter()
-                    .map(|p| p.name.clone())
+                    .map(|p| rust_ident(&p.name))
                     .collect::<Vec<_>>()
                     .join(", ");
-                let decode = handler.params.iter().map(|p| format!("let {}: {} = OrchWire::wire_decode(&f.payload, &mut pos).ok_or(\"invalid host arguments\")?;", p.name, self.host_type(&p.ty))).collect::<Vec<_>>().join("\n");
+                let decode = handler.params.iter().map(|p| format!("let {}: {} = OrchWire::wire_decode(&f.payload, &mut pos).ok_or(\"invalid host arguments\")?;", rust_ident(&p.name), self.host_type(&p.ty))).collect::<Vec<_>>().join("\n");
                 let encode = if handler.return_type == Type::Void {
                     "Vec::new()"
                 } else {

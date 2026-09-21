@@ -1397,3 +1397,34 @@ fn main() {
 "#);
     assert!(output.contains("sandboxed serverlet ran under the host"), "{output}");
 }
+
+/// Keyword names in a library: program state `type`, shared state `dyn`, a struct with
+/// fields `ref` and `type`, a tick parameter `move`, and a host function `move` whose
+/// trait method is `world_move` either way.
+#[test]
+fn library_keyword_names() {
+    let root = root("keyword_names");
+    build(&root, r#"
+struct Point { ref: int, type: int }
+host world { fn move(ref: int) -> int }
+let type = 0
+shared let dyn = 0
+let gen = Point { ref: 1, type: 2 }
+on_tick(move: float) { type = type + 1  dyn = dyn + 1  print(to_string(world.move(type + gen.ref + dyn))) }
+"#);
+    let output = host(&root, r#"
+struct Host;
+impl scripts::Host for Host {
+    fn world_move(&self, n: i64) -> Result<i64, String> { Ok(n * 10) }
+    fn log(&self, _: scripts::LogLevel, message: &str) { println!("{message}"); }
+}
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let mut scripts = scripts::start(runtime.handle(), Host).unwrap();
+    scripts.tick_blocking(&runtime, 0.1).unwrap();
+    scripts.tick_blocking(&runtime, 0.1).unwrap();
+    scripts.shutdown_blocking(&runtime).unwrap();
+}
+"#);
+    assert_eq!(output.trim(), "30\n50");
+}

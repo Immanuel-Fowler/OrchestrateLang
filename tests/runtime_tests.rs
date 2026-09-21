@@ -1321,3 +1321,79 @@ fn runtime_sandbox_serverlet_call_keeps_the_callers_arguments() {
     );
     assert_eq!(out.trim(), ARGUMENTS_SURVIVE);
 }
+
+/// A program that names things with Rust keywords that are not OrchestrateLang keywords
+/// — a struct field `ref` and `type`, a `fn type`, a `task async`, handlers `move`,
+/// `loop`, and `trait`, state `mod`, bindings `mut`, `unsafe`, `static`, `box`, `yield`,
+/// a closure parameter `macro`, a match binding `become`. Each crosses into generated
+/// Rust as a raw identifier; a handler's name keeps its spelling on the boundary.
+fn keyword_names_program(header: &str) -> String {
+    format!(r#"
+struct Point {{ ref: int, type: int }}
+enum Mode {{ Loop, Impl(int) }}
+fn type(ref: int) -> int {{ return ref + 1 }}
+task async(await: string) -> string {{ return await + "!" }}
+{header}
+    let mod = 0
+    on move(p: Point) -> int {{ mod = mod + p.ref + p.type  return mod }}
+    on loop(dyn: string) -> string {{ return dyn + "?" }}
+    on trait(impl: int[]) -> int {{ let where = 0  for pub in impl {{ where = where + pub }}  return where }}
+}}
+orchestrator main() {{
+    let e = start Echo()
+    let mut = Point {{ ref: 1, type: 2 }}
+    let unsafe = [1, 2, 3]
+    let static = "s"
+    let box = Mode::Impl(4)
+    let yield = fn(macro: int) -> int {{ macro * 2 }}
+    print(to_string(e.move(mut)))
+    print(e.loop(static))
+    print(to_string(e.trait(unsafe)))
+    print(to_string(type(mut.ref)))
+    print(async("a"))
+    print(to_string(yield(3)))
+    match box {{ Mode::Loop => print("loop")  Mode::Impl(become) => print(to_string(become)) }}
+    stop_orch()
+}}
+"#)
+}
+const KEYWORD_NAMES: &str = "3\ns?\n6\n2\na!\n6\n4";
+
+#[test]
+fn runtime_keyword_names_in_process() {
+    let out = run_orch("keyword_names", &keyword_names_program("serverlet Echo {"));
+    assert_eq!(out.trim(), KEYWORD_NAMES);
+}
+
+#[test]
+fn runtime_keyword_names_on_a_secret_serverlet() {
+    let out = run_orch("keyword_names_secret", &keyword_names_program("serverlet Echo secret {"));
+    assert_eq!(out.trim(), KEYWORD_NAMES);
+}
+
+#[test]
+fn runtime_keyword_names_in_a_sandbox() {
+    let out = run_orch(
+        "keyword_names_sandbox",
+        &keyword_names_program(r#"serverlet Echo sandbox(memory_limit: "16mb", timeout: "5s") {"#),
+    );
+    assert_eq!(out.trim(), KEYWORD_NAMES);
+}
+
+/// A C sidecar function and a module's local name may be Rust keywords too: the symbol
+/// keeps its spelling for the linker, the Rust wrapper and module are raw identifiers.
+#[test]
+fn runtime_keyword_names_on_a_c_sidecar_and_module() {
+    write_foreign_module("keyword_names_c", "native", "c", "native.c",
+        "long long move(long long ref) { return ref * 10; }\n",
+        "move(ref: int) -> int\n");
+    let out = run_orch("keyword_names_c", r#"
+use module impl: "./native"
+orchestrator main() {
+    let type = 4
+    print(to_string(impl.move(type)))
+    stop_orch()
+}
+"#);
+    assert_eq!(out.trim(), "40");
+}

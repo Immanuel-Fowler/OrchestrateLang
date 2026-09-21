@@ -344,3 +344,43 @@ landline.serve(Echo)
     );
     assert_eq!(stdout, "hi! hi\n6 3\n9 4", "{}", stderr);
 }
+
+#[test]
+fn python_landline_keyword_names() {
+    // Handler and parameter names that are Rust keywords reach Python by their own
+    // spelling; only the generated Rust escapes them.
+    let (stdout, stderr) = run(
+        &directory("keyword_names"),
+        r#"
+struct Point { ref: int, type: int }
+serverlet Echo via python(source: "impl.py") {
+    on move(dyn: string) -> string
+    on type(ref: int) -> int
+    on loop(impl: Point) -> int
+}
+orchestrator main() {
+    let e = start Echo()
+    let static = "s"
+    let mut = Point { ref: 1, type: 2 }
+    print(e.move(static))
+    print(to_string(e.type(mut.ref)))
+    print(to_string(e.loop(mut)))
+    stop_orch()
+}
+"#,
+        r#"
+from dataclasses import dataclass
+from orchestratelang import landline
+@dataclass
+class Point:
+    ref: int
+    type: int
+class Echo(landline.Serverlet):
+    def move(self, dyn: str) -> str: return dyn + "!"
+    def type(self, ref: int) -> int: return ref + 1
+    def loop(self, impl: Point) -> int: return impl.ref + impl.type
+landline.serve(Echo)
+"#,
+    );
+    assert_eq!(stdout, "s!\n2\n3", "{}", stderr);
+}

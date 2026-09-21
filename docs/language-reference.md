@@ -836,8 +836,11 @@ handler calls a serverlet does not declare, `trigger` arguments that do not matc
 event, struct literals with missing or unknown fields, non-exhaustive matches, a `fn` that
 waits, a `task` that names top-level state, a handler type that cannot cross a secret,
 landline, or sandboxed boundary, and a sandboxed handler that calls a host function it
-was not granted. A program that fails is reported in OrchestrateLang terms, with a line
-and a column, before any code is generated.
+was not granted. A name may be any Rust keyword that is not an OrchestrateLang keyword —
+`move`, `type`, `ref`, `mod`, and the rest — and the generated Rust escapes it; the four
+that Rust cannot escape, `self`, `Self`, `super`, and `crate`, are refused as names with
+an error that says so. A program that fails is reported in OrchestrateLang terms, with a
+line and a column, before any code is generated.
 
 It guarantees nothing beyond that. `check` generates no Rust and runs no Cargo, so the
 checks that live in code generation are not made: it accepts a `host` block or an

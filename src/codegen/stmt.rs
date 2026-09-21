@@ -1,5 +1,5 @@
 use crate::ast::{Expr, ExprNode, StmtNode, Stmt, Type, Handler};
-use super::core::{Codegen, StateRewrite, pascal_case, runtime_preamble, SECRET_CHILD_FRAMES};
+use super::core::{Codegen, StateRewrite, pascal_case, rust_ident, runtime_preamble, SECRET_CHILD_FRAMES};
 
 fn type_params_str(type_params: &[String]) -> String {
     if type_params.is_empty() {
@@ -44,12 +44,12 @@ impl Codegen {
                 if let Some(t) = ty {
                     // Closure types can't be annotated directly — let Rust infer
                     if matches!(t, Type::Fn(_, _)) {
-                        format!("let mut {} = {};", name, val_str)
+                        format!("let mut {} = {};", rust_ident(name), val_str)
                     } else {
-                        format!("let mut {}: {} = {};", name, self.compile_type(t), val_str)
+                        format!("let mut {}: {} = {};", rust_ident(name), self.compile_type(t), val_str)
                     }
                 } else {
-                    format!("let mut {} = {};", name, val_str)
+                    format!("let mut {} = {};", rust_ident(name), val_str)
                 }
             }
             StmtNode::Break => "break".to_string(),
@@ -104,7 +104,7 @@ impl Codegen {
             StmtNode::FnDecl { name, params, return_type, body, type_params } => {
                 let generics = type_params_str(type_params);
                 let params_str = params.iter()
-                    .map(|p| format!("{}: {}", p.name, self.compile_type(&p.ty)))
+                    .map(|p| format!("{}: {}", rust_ident(&p.name), self.compile_type(&p.ty)))
                     .collect::<Vec<String>>()
                     .join(", ");
                 let ret_str = if *return_type == Type::Void {
@@ -122,12 +122,12 @@ impl Codegen {
                 };
                 self.sync_fn = outer;
                 let vis = if self.is_main { "" } else { "pub " };
-                format!("{}fn {}{}({}){} {}", vis, name, generics, params_str, ret_str, body_str)
+                format!("{}fn {}{}({}){} {}", vis, rust_ident(name), generics, params_str, ret_str, body_str)
             }
             StmtNode::TaskDecl { name, params, return_type, body, type_params } => {
                 let generics = type_params_str(type_params);
                 let params_str = params.iter()
-                    .map(|p| format!("{}: {}", p.name, self.compile_type(&p.ty)))
+                    .map(|p| format!("{}: {}", rust_ident(&p.name), self.compile_type(&p.ty)))
                     .collect::<Vec<String>>()
                     .join(", ");
                 let ret_str = if *return_type == Type::Void {
@@ -143,12 +143,12 @@ impl Codegen {
                     self.compile_expr(body)
                 };
                 let vis = if self.is_main { "" } else { "pub " };
-                format!("{}async fn {}{}({}){} {}", vis, name, generics, params_str, ret_str, body_str)
+                format!("{}async fn {}{}({}){} {}", vis, rust_ident(name), generics, params_str, ret_str, body_str)
             }
             StmtNode::ProcessDecl { name, params, return_type, body, type_params } => {
                 let generics = type_params_str(type_params);
                 let params_str = params.iter()
-                    .map(|p| format!("{}: {}", p.name, self.compile_type(&p.ty)))
+                    .map(|p| format!("{}: {}", rust_ident(&p.name), self.compile_type(&p.ty)))
                     .collect::<Vec<String>>()
                     .join(", ");
                 let ret_str = if *return_type == Type::Void {
@@ -164,7 +164,7 @@ impl Codegen {
                     self.compile_expr(body)
                 };
                 let vis = if self.is_main { "" } else { "pub " };
-                format!("{}async fn {}{}({}){} {}", vis, name, generics, params_str, ret_str, body_str)
+                format!("{}async fn {}{}({}){} {}", vis, rust_ident(name), generics, params_str, ret_str, body_str)
             }
             StmtNode::OrchestratorDecl { name, params, return_type, body } => {
                 if name == "main" {
@@ -204,7 +204,7 @@ impl Codegen {
                     let exec_body_str = exec_code.join("\n");
 
                     let params_str = params.iter()
-                        .map(|p| format!("{}: {}", p.name, self.compile_type(&p.ty)))
+                        .map(|p| format!("{}: {}", rust_ident(&p.name), self.compile_type(&p.ty)))
                         .collect::<Vec<String>>()
                         .join(", ");
 
@@ -363,7 +363,7 @@ impl Codegen {
                     )
                 } else {
                     let params_str = params.iter()
-                        .map(|p| format!("{}: {}", p.name, self.compile_type(&p.ty)))
+                        .map(|p| format!("{}: {}", rust_ident(&p.name), self.compile_type(&p.ty)))
                         .collect::<Vec<String>>()
                         .join(", ");
                     let ret_str = if *return_type == Type::Void {
@@ -378,7 +378,7 @@ impl Codegen {
                     } else {
                         self.compile_expr(body)
                     };
-                    format!("async fn {}({}){} {}", name, params_str, ret_str, body_str)
+                    format!("async fn {}({}){} {}", rust_ident(name), params_str, ret_str, body_str)
                 }
             }
             StmtNode::Trigger { event_name, args } => {
@@ -463,11 +463,11 @@ impl Codegen {
                     let inner = self.compile_block_inner(body, true);
                     format!(
                         "for (__orch_enum_i, {}) in ({}).enumerate() {{\n    let {} = __orch_enum_i as i64;\n    {}\n}}",
-                        var, iter_str, idx, inner
+                        rust_ident(var), iter_str, rust_ident(idx), inner
                     )
                 } else {
                     let body_str = self.compile_expr(body);
-                    format!("for {} in {} {}", var, iter_str, body_str)
+                    format!("for {} in {} {}", rust_ident(var), iter_str, body_str)
                 };
                 self.pop_scope();
                 compiled
@@ -478,7 +478,7 @@ impl Codegen {
                 format!("while {} {}", cond_str, body_str)
             }
             StmtNode::UseModule { local_name, .. } => {
-                format!("mod {};", local_name)
+                format!("mod {};", rust_ident(local_name))
             }
             StmtNode::Load { .. } | StmtNode::LoadForeign { .. } => "".to_string(),
             StmtNode::Serverlet { name, state, handlers, secret, crash_handler, sandbox, landline, grants } => {
@@ -496,7 +496,7 @@ impl Codegen {
                 for h in handlers {
                     let variant_name = pascal_case(&h.name);
                     let mut fields = h.params.iter()
-                        .map(|p| format!("{}: {}", p.name, self.compile_type(&p.ty)))
+                        .map(|p| format!("{}: {}", rust_ident(&p.name), self.compile_type(&p.ty)))
                         .collect::<Vec<String>>();
                     let ret_ty = self.compile_type(&h.return_type);
                     fields.push(format!("reply_to: tokio::sync::oneshot::Sender<{}>", ret_ty));
@@ -511,13 +511,13 @@ impl Codegen {
                 let mut client_methods = Vec::new();
                 for h in handlers {
                     let method_params = h.params.iter()
-                        .map(|p| format!("{}: {}", p.name, self.compile_type(&p.ty)))
+                        .map(|p| format!("{}: {}", rust_ident(&p.name), self.compile_type(&p.ty)))
                         .collect::<Vec<String>>()
                         .join(", ");
                     let self_params = if method_params.is_empty() { "&self" } else { "&self, " };
                     let ret_ty = self.compile_type(&h.return_type);
                     let variant_name = pascal_case(&h.name);
-                    let mut send_fields = h.params.iter().map(|p| p.name.clone()).collect::<Vec<String>>();
+                    let mut send_fields = h.params.iter().map(|p| rust_ident(&p.name)).collect::<Vec<String>>();
                     send_fields.push("reply_to: reply_tx".to_string());
 
                     // Use ? on reply_rx.await so channel errors propagate cleanly
@@ -532,7 +532,7 @@ impl Codegen {
                         // A budgeted call returns early instead of waiting past its deadline.
                         let fallback = match landline.as_ref().map(|config| config.late) {
                             Some(crate::ast::LatePolicy::Latest) if h.return_type != Type::Void => {
-                                format!("self.latest.{}.lock().unwrap().clone().unwrap_or_default()", h.name)
+                                format!("self.latest.{}.lock().unwrap().clone().unwrap_or_default()", rust_ident(&h.name))
                             }
                             _ => "Default::default()".to_string(),
                         };
@@ -549,7 +549,7 @@ impl Codegen {
 
                     client_methods.push(format!(
                         "    pub async fn {}({}{}) -> {} {{\n{}\n    }}",
-                        h.name, self_params, method_params, ret_ty, body
+                        rust_ident(&h.name), self_params, method_params, ret_ty, body
                     ));
                 }
 
@@ -558,7 +558,7 @@ impl Codegen {
                 let (latest_struct, latest_field) = if landline.is_some() {
                     let fields = handlers.iter()
                         .filter(|h| h.return_type != Type::Void)
-                        .map(|h| format!("    {}: std::sync::Mutex<Option<{}>>,", h.name, self.compile_type(&h.return_type)))
+                        .map(|h| format!("    {}: std::sync::Mutex<Option<{}>>,", rust_ident(&h.name), self.compile_type(&h.return_type)))
                         .collect::<Vec<_>>()
                         .join("\n");
                     (
@@ -584,7 +584,7 @@ impl Codegen {
                 self.handler_state = state_names(state);
                 for h in handlers {
                     let variant_name = pascal_case(&h.name);
-                    let mut bindings = h.params.iter().map(|p| p.name.clone()).collect::<Vec<String>>();
+                    let mut bindings = h.params.iter().map(|p| rust_ident(&p.name)).collect::<Vec<String>>();
                     bindings.push("reply_to".to_string());
                     let bindings_str = bindings.join(", ");
                     let body_str = self.compile_expr(&h.body);
@@ -595,7 +595,7 @@ impl Codegen {
                         let crash_body_str = self.compile_expr(crash_body);
                         format!(
                             "Err(__panic_err) => {{\n                    let {err_name} = format!(\"{{:?}}\", __panic_err);\n                    eprintln!(\"[orchestrate] serverlet '{name}' handler '{handler_name_str}' panicked: {{}}\", {err_name});\n                    {crash_body_str};\n                    let _ = reply_to.send(Default::default());\n                }}",
-                            err_name = err_name,
+                            err_name = rust_ident(err_name),
                             name = name,
                             handler_name_str = handler_name_str,
                             crash_body_str = crash_body_str,
@@ -621,9 +621,9 @@ impl Codegen {
                     if let StmtNode::Let { name: vname, ty, value, .. } = &s.node {
                         let val_str = self.compile_expr(value);
                         if let Some(t) = ty {
-                            state_vars.push(format!("            let mut {}: {} = {};", vname, self.compile_type(t), val_str));
+                            state_vars.push(format!("            let mut {}: {} = {};", rust_ident(vname), self.compile_type(t), val_str));
                         } else {
-                            state_vars.push(format!("            let mut {} = {};", vname, val_str));
+                            state_vars.push(format!("            let mut {} = {};", rust_ident(vname), val_str));
                         }
                     }
                 }
@@ -668,7 +668,7 @@ impl Codegen {
             }
             StmtNode::StructDef { name, fields } => {
                 let fields_str = fields.iter()
-                    .map(|(fname, fty)| format!("    pub {}: {},", fname, self.compile_type(fty)))
+                    .map(|(fname, fty)| format!("    pub {}: {},", rust_ident(fname), self.compile_type(fty)))
                     .collect::<Vec<_>>()
                     .join("\n");
                 format!("#[derive(Clone, Debug, Default)]\n#[repr(C)]\npub struct {} {{\n{}\n}}", name, fields_str)
@@ -676,8 +676,8 @@ impl Codegen {
             StmtNode::EnumDef { name, variants } => {
                 let variants_str = variants.iter().map(|v| {
                     match &v.payload {
-                        Some(ty) => format!("    {}({}),", v.name, self.compile_type(ty)),
-                        None => format!("    {},", v.name),
+                        Some(ty) => format!("    {}({}),", rust_ident(&v.name), self.compile_type(ty)),
+                        None => format!("    {},", rust_ident(&v.name)),
                     }
                 }).collect::<Vec<_>>().join("\n");
                 format!("#[derive(Clone, Debug)]\npub enum {} {{\n{}\n}}", name, variants_str)
@@ -693,7 +693,7 @@ impl Codegen {
         let mut arms = Vec::new();
         for (k, h) in handlers.iter().enumerate() {
             let variant = pascal_case(&h.name);
-            let param_names: Vec<String> = h.params.iter().map(|p| p.name.clone()).collect();
+            let param_names: Vec<String> = h.params.iter().map(|p| rust_ident(&p.name)).collect();
             let binding = if param_names.is_empty() {
                 "reply_to".to_string()
             } else {
@@ -702,7 +702,7 @@ impl Codegen {
 
             // CALL payload: the handler id, then each argument in the wire encoding.
             let encode_args = h.params.iter()
-                .map(|p| format!("                    {}.wire_encode(&mut __payload);\n", p.name))
+                .map(|p| format!("                    {}.wire_encode(&mut __payload);\n", rust_ident(&p.name)))
                 .collect::<String>();
 
             let decode = if h.return_type == Type::Void {
@@ -745,9 +745,9 @@ impl Codegen {
             if let StmtNode::Let { name: vname, ty, value, .. } = &s.node {
                 let val_str = self.compile_expr(value);
                 if let Some(t) = ty {
-                    state_vars.push(format!("    let mut {}: {} = {};", vname, self.compile_type(t), val_str));
+                    state_vars.push(format!("    let mut {}: {} = {};", rust_ident(vname), self.compile_type(t), val_str));
                 } else {
-                    state_vars.push(format!("    let mut {} = {};", vname, val_str));
+                    state_vars.push(format!("    let mut {} = {};", rust_ident(vname), val_str));
                 }
             }
         }
@@ -760,7 +760,7 @@ impl Codegen {
                 let ty = self.compile_type(&p.ty);
                 arg_lets.push(format!(
                     "                        let {}: {} = OrchWire::wire_decode(&__frame.payload, &mut __pos).ok_or_else(|| \"invalid arguments\".to_string())?;",
-                    p.name, ty
+                    rust_ident(&p.name), ty
                 ));
             }
             let body = self.compile_expr(&h.body);
@@ -783,7 +783,7 @@ impl Codegen {
             .filter(|(sname, _)| wire_supported(&Type::Named(sname.clone()), &self.struct_defs, 0))
             .map(|(sname, fields)| {
                 let fields_str = fields.iter()
-                    .map(|(fname, fty)| format!("    pub {}: {},", fname, self.compile_type(fty)))
+                    .map(|(fname, fty)| format!("    pub {}: {},", rust_ident(fname), self.compile_type(fty)))
                     .collect::<Vec<_>>()
                     .join("\n");
                 format!("#[derive(Clone, Debug, Default)]\n#[repr(C)]\npub struct {} {{\n{}\n}}\n", sname, fields_str)
@@ -838,7 +838,7 @@ impl Codegen {
                         "sandboxed serverlet '{name}': on_crash uses '{reached}', which is the guest's state. on_crash runs on the host after the guest trapped, so the state is gone; report the error and let the fresh guest start over"
                     ));
                 }
-                format!(" {{ let {error_name} = __error.clone(); {}; }}", self.compile_expr(body))
+                format!(" {{ let {} = __error.clone(); {}; }}", rust_ident(error_name), self.compile_expr(body))
             }
             None => String::new(),
         };
@@ -850,7 +850,7 @@ impl Codegen {
             let bindings = h
                 .params
                 .iter()
-                .map(|p| p.name.clone())
+                .map(|p| rust_ident(&p.name))
                 .chain(std::iter::once("reply_to".to_string()))
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -865,8 +865,8 @@ impl Codegen {
                 match &p.ty {
                     Type::Str => {
                         setup.push_str(&format!(
-                            "                    let ({0}_pointer, {0}_length) = match __guest.write_string(&{0}) {{ Ok(__written) => __written, Err(__error) => {bail} }};\n",
-                            p.name
+                            "                    let ({0}_pointer, {0}_length) = match __guest.write_string(&{1}) {{ Ok(__written) => __written, Err(__error) => {bail} }};\n",
+                            p.name, rust_ident(&p.name)
                         ));
                         cleanup.push_str(&format!("                    __guest.free({0}_pointer, {0}_length);\n", p.name));
                         arguments.push(format!("{}_pointer", p.name));
@@ -876,8 +876,8 @@ impl Codegen {
                     }
                     Type::Array(_, _) => {
                         setup.push_str(&format!(
-                            "                    let ({0}_pointer, {0}_count, {0}_length) = match __guest.write_array(&{0}) {{ Ok(__written) => __written, Err(__error) => {bail} }};\n",
-                            p.name
+                            "                    let ({0}_pointer, {0}_count, {0}_length) = match __guest.write_array(&{1}) {{ Ok(__written) => __written, Err(__error) => {bail} }};\n",
+                            p.name, rust_ident(&p.name)
                         ));
                         cleanup.push_str(&format!("                    __guest.free({0}_pointer, {0}_length);\n", p.name));
                         arguments.push(format!("{}_pointer", p.name));
@@ -887,23 +887,23 @@ impl Codegen {
                     }
                     Type::Named(sname) => {
                         setup.push_str(&format!(
-                            "                    let ({0}_pointer, {0}_length) = match __guest.write_struct(std::mem::size_of::<{1}>(), |__out| __orch_sandbox_write_{1}(&{0}, __out)) {{ Ok(__written) => __written, Err(__error) => {bail} }};\n",
-                            p.name, sname
+                            "                    let ({0}_pointer, {0}_length) = match __guest.write_struct(std::mem::size_of::<{1}>(), |__out| __orch_sandbox_write_{1}(&{2}, __out)) {{ Ok(__written) => __written, Err(__error) => {bail} }};\n",
+                            p.name, sname, rust_ident(&p.name)
                         ));
                         cleanup.push_str(&format!("                    __guest.free({0}_pointer, {0}_length);\n", p.name));
                         arguments.push(format!("{}_pointer", p.name));
                         wasm_params.push("i32".to_string());
                     }
                     Type::Bool => {
-                        arguments.push(format!("{} as i32", p.name));
+                        arguments.push(format!("{} as i32", rust_ident(&p.name)));
                         wasm_params.push("i32".to_string());
                     }
                     Type::Float => {
-                        arguments.push(p.name.clone());
+                        arguments.push(rust_ident(&p.name));
                         wasm_params.push("f64".to_string());
                     }
                     _ => {
-                        arguments.push(p.name.clone());
+                        arguments.push(rust_ident(&p.name));
                         wasm_params.push("i64".to_string());
                     }
                 }
@@ -993,9 +993,9 @@ impl Codegen {
                 };
                 let decode = handler.params.iter().map(|p| format!(
                     "            let {}: {} = OrchWire::wire_decode(__payload, &mut __pos).ok_or(\"invalid host arguments\")?;\n",
-                    p.name, self.host_type(&p.ty)
+                    rust_ident(&p.name), self.host_type(&p.ty)
                 )).collect::<String>();
-                let args = handler.params.iter().map(|p| p.name.clone()).collect::<Vec<_>>().join(", ");
+                let args = handler.params.iter().map(|p| rust_ident(&p.name)).collect::<Vec<_>>().join(", ");
                 let encode = if handler.return_type == Type::Void { "Vec::new()" } else { "__wire_to_bytes(&__value)" };
                 definitions.push(format!(
                     "    linker.func_wrap(\"orch_host\", {import:?}, |mut __caller: wasmtime::Caller<'_, crate::__OrchGuestLimits>, __pointer: i32, __length: i32| -> i64 {{\n        \
@@ -1079,7 +1079,7 @@ impl Codegen {
                 "    #[link_name = {import:?}]\n    fn __orch_import_{import}(pointer: i32, length: i32) -> i64;"
             ));
             let params = handler.params.iter()
-                .map(|p| format!("{}: {}", p.name, self.compile_type(&p.ty)))
+                .map(|p| format!("{}: {}", rust_ident(&p.name), self.compile_type(&p.ty)))
                 .collect::<Vec<_>>()
                 .join(", ");
             let encodes = handler.params.iter()
@@ -1139,9 +1139,9 @@ impl Codegen {
                 return String::new();
             };
             let value = self.compile_expr(value);
-            initializers.push(format!("        let mut {field}: {} = {value};", self.compile_type(&resolved)));
+            initializers.push(format!("        let mut {}: {} = {};", rust_ident(field), self.compile_type(&resolved), value));
             if !names.contains(field) {
-                fields.push(format!("    {field}: {},", self.compile_type(&resolved)));
+                fields.push(format!("    {}: {},", rust_ident(field), self.compile_type(&resolved)));
                 names.push(field.clone());
             }
         }
@@ -1181,15 +1181,16 @@ impl Codegen {
                         params.push(format!("{}_pointer: i32", p.name));
                         params.push(format!("{}_length: i32", p.name));
                         unpack.push_str(&format!(
-                            "    let {0} = __orch_unpack({0}_pointer, {0}_length);\n",
-                            p.name
+                            "    let {} = __orch_unpack({1}_pointer, {1}_length);\n",
+                            rust_ident(&p.name), p.name
                         ));
                     }
                     Type::Array(inner, _) => {
                         params.push(format!("{}_pointer: i32", p.name));
                         params.push(format!("{}_count: i32", p.name));
                         unpack.push_str(&format!(
-                            "    let {0}: Vec<{1}> = __orch_unpack_array({0}_pointer, {0}_count);\n",
+                            "    let {}: Vec<{2}> = __orch_unpack_array({1}_pointer, {1}_count);\n",
+                            rust_ident(&p.name),
                             p.name,
                             self.compile_type(inner)
                         ));
@@ -1197,15 +1198,15 @@ impl Codegen {
                     Type::Named(sname) => {
                         params.push(format!("{}_pointer: i32", p.name));
                         unpack.push_str(&format!(
-                            "    let {0} = __orch_sandbox_read_{1}(__orch_bytes({0}_pointer, std::mem::size_of::<{1}>() as i32));\n",
-                            p.name, sname
+                            "    let {} = __orch_sandbox_read_{2}(__orch_bytes({1}_pointer, std::mem::size_of::<{2}>() as i32));\n",
+                            rust_ident(&p.name), p.name, sname
                         ));
                     }
                     Type::Bool => {
                         params.push(format!("{}_flag: i32", p.name));
-                        unpack.push_str(&format!("    let {0} = {0}_flag != 0;\n", p.name));
+                        unpack.push_str(&format!("    let {} = {1}_flag != 0;\n", rust_ident(&p.name), p.name));
                     }
-                    _ => params.push(format!("{}: {}", p.name, self.compile_type(&p.ty))),
+                    _ => params.push(format!("{}: {}", rust_ident(&p.name), self.compile_type(&p.ty))),
                 }
             }
             let (returns, open, close) = match &h.return_type {
@@ -1221,8 +1222,9 @@ impl Codegen {
                 other => (format!(" -> {}", self.compile_type(other)), String::new(), String::new()),
             };
             exports.push(format!(
-                "#[unsafe(no_mangle)]\npub extern \"C\" fn {hname}({params}){returns} {{\n{unpack}    {open}__orch_state(|__state| {{ {body} }}){close}\n}}",
-                hname = h.name,
+                "#[unsafe(export_name = {export:?})]\npub extern \"C\" fn {hname}({params}){returns} {{\n{unpack}    {open}__orch_state(|__state| {{ {body} }}){close}\n}}",
+                export = h.name,
+                hname = rust_ident(&h.name),
                 params = params.join(", "),
                 returns = returns,
                 unpack = unpack,
@@ -1240,7 +1242,7 @@ impl Codegen {
         let structs = self.struct_defs.iter()
             .map(|(sname, sfields)| {
                 let fields_str = sfields.iter()
-                    .map(|(fname, fty)| format!("    pub {}: {},", fname, self.compile_type(fty)))
+                    .map(|(fname, fty)| format!("    pub {}: {},", rust_ident(fname), self.compile_type(fty)))
                     .collect::<Vec<_>>()
                     .join("\n");
                 format!("#[derive(Clone, Debug, Default)]\n#[repr(C)]\npub struct {} {{\n{}\n}}\n", sname, fields_str)
@@ -1266,7 +1268,7 @@ fn __orch_state<R>(body: impl FnOnce(&mut __OrchState) -> R) -> R {{\n    __ORCH
             structs = structs,
             fields = fields.join("\n"),
             initializers = initializers.join("\n"),
-            names = names.join(", "),
+            names = names.iter().map(|n| rust_ident(n)).collect::<Vec<_>>().join(", "),
             marshal = SANDBOX_GUEST_MARSHAL,
             grants_code = grants_code,
             exports = exports.join("\n\n")
@@ -1413,8 +1415,8 @@ pub(crate) fn wire_struct_impls(structs: &StructDefs) -> String {
     structs.iter()
         .filter(|(name, _)| wire_supported(&Type::Named(name.clone()), structs, 0))
         .map(|(name, fields)| {
-            let enc = fields.iter().map(|(f, _)| format!("self.{}.wire_encode(out);", f)).collect::<Vec<_>>().join(" ");
-            let dec = fields.iter().map(|(f, _)| format!("{}: OrchWire::wire_decode(buf, pos)?", f)).collect::<Vec<_>>().join(", ");
+            let enc = fields.iter().map(|(f, _)| format!("self.{}.wire_encode(out);", rust_ident(f))).collect::<Vec<_>>().join(" ");
+            let dec = fields.iter().map(|(f, _)| format!("{}: OrchWire::wire_decode(buf, pos)?", rust_ident(f))).collect::<Vec<_>>().join(", ");
             format!(
                 "impl OrchWire for {name} {{\n    fn wire_encode(&self, out: &mut Vec<u8>) {{ {enc} }}\n    fn wire_decode(buf: &[u8], pos: &mut usize) -> Option<Self> {{ Some({name} {{ {dec} }}) }}\n}}\n",
                 name = name, enc = enc, dec = dec
@@ -1480,19 +1482,19 @@ pub(crate) fn sandbox_struct_codecs(structs: &StructDefs) -> String {
     structs.iter()
         .filter(|(name, _)| sandbox_struct_supported(name, structs, 0))
         .map(|(name, fields)| {
-            let writes = fields.iter().map(|(f, ty)| match ty {
+            let writes = fields.iter().map(|(f, ty)| { let f = rust_ident(f); match ty {
                 Type::Int | Type::Float => format!("    out[std::mem::offset_of!({name}, {f})..][..8].copy_from_slice(&value.{f}.to_le_bytes());"),
                 Type::Bool => format!("    out[std::mem::offset_of!({name}, {f})] = value.{f} as u8;"),
                 Type::Named(inner) => format!("    __orch_sandbox_write_{inner}(&value.{f}, &mut out[std::mem::offset_of!({name}, {f})..][..std::mem::size_of::<{inner}>()]);"),
                 _ => String::new(),
-            }).collect::<Vec<_>>().join("\n");
-            let reads = fields.iter().map(|(f, ty)| match ty {
+            } }).collect::<Vec<_>>().join("\n");
+            let reads = fields.iter().map(|(f, ty)| { let f = rust_ident(f); match ty {
                 Type::Int => format!("        {f}: i64::from_le_bytes(bytes[std::mem::offset_of!({name}, {f})..][..8].try_into().unwrap()),"),
                 Type::Float => format!("        {f}: f64::from_le_bytes(bytes[std::mem::offset_of!({name}, {f})..][..8].try_into().unwrap()),"),
                 Type::Bool => format!("        {f}: bytes[std::mem::offset_of!({name}, {f})] != 0,"),
                 Type::Named(inner) => format!("        {f}: __orch_sandbox_read_{inner}(&bytes[std::mem::offset_of!({name}, {f})..][..std::mem::size_of::<{inner}>()]),"),
                 _ => String::new(),
-            }).collect::<Vec<_>>().join("\n");
+            } }).collect::<Vec<_>>().join("\n");
             format!(
                 "#[allow(non_snake_case)]\nfn __orch_sandbox_write_{name}(value: &{name}, out: &mut [u8]) {{\n{writes}\n}}\n#[allow(non_snake_case)]\nfn __orch_sandbox_read_{name}(bytes: &[u8]) -> {name} {{\n    {name} {{\n{reads}\n    }}\n}}\n"
             )

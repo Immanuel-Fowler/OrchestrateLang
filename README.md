@@ -295,7 +295,7 @@ rejected. Where it is rejected is the measurement:
 | rustc | 2 | leaked: a rustc error against generated code |
 | nothing | 0 | wrongly accepted |
 
-**76 of 84 invalid programs are rejected by `orchestrate check`.** The two that leak are a function that can fall off its end without
+**80 of 88 invalid programs are rejected by `orchestrate check`.** The two that leak are a function that can fall off its end without
 returning, and a generic called with conflicting arguments for one type parameter; both
 are listed in `KNOWN_LEAKS.txt`, which the test holds to exactly, so a leak that appears
 or disappears fails the build until the list says so.

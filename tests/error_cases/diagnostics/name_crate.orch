@@ -1,0 +1,4 @@
+serverlet Echo {
+    on crate(n: int) -> int { return n }
+}
+orchestrator main() { let e = start Echo()  print(to_string(e.crate(1)))  stop_orch() }

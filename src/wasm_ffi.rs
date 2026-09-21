@@ -207,7 +207,7 @@ pub fn bindings(signatures: &[CSignature], asset: &str, label: &str) -> String {
         };
 
         code.push_str(&format!(
-            "pub fn {name}({params}){returns} {{\n    \
+            "pub fn {ident}({params}){returns} {{\n    \
                  {asset}().call({name:?}, |__guest| {{\n\
              {setup}        let __function = __guest.instance.get_typed_func::<{tuple}, {results}>(&mut __guest.store, {name:?}).map_err(|e| format!(\"wasm call '{{}}': {{}}\", {name:?}, e))?;\n        \
                  let __called = __function.call(&mut __guest.store, ({arguments}));\n        \
@@ -216,6 +216,7 @@ pub fn bindings(signatures: &[CSignature], asset: &str, label: &str) -> String {
                  }})\n\
              }}\n",
             name = name,
+            ident = crate::codegen::core::rust_ident(name),
             params = params,
             returns = returns,
             asset = asset,

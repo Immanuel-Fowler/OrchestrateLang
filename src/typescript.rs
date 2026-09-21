@@ -1,4 +1,5 @@
 //! TypeScript 7 checking and automatic scriptc/Bun executable selection.
+use crate::codegen::core::rust_ident;
 use crate::ast::{Handler, Param, Stmt, StmtNode, Type};
 use std::{
     collections::hash_map::DefaultHasher,
@@ -412,13 +413,13 @@ pub fn ffi_bindings(
         let args = h
             .params
             .iter()
-            .map(|p| Ok(format!("r#{}: {}", p.name, rust_type(&p.ty)?)))
+            .map(|p| Ok(format!("{}: {}", rust_ident(&p.name), rust_type(&p.ty)?)))
             .collect::<Result<Vec<_>, String>>()?
             .join(",");
         let encode = h
             .params
             .iter()
-            .map(|p| format!("r#{}.wire_encode(&mut payload);", p.name))
+            .map(|p| format!("{}.wire_encode(&mut payload);", rust_ident(&p.name)))
             .collect::<Vec<_>>()
             .join("\n");
         let decode = if h.return_type == Type::Void {
@@ -426,11 +427,11 @@ pub fn ffi_bindings(
         } else {
             format!("let mut pos = 0; let value = <{} as OrchWire>::wire_decode(&reply, &mut pos).expect(\"invalid TypeScript FFI reply\"); assert_eq!(pos, reply.len(), \"trailing TypeScript reply\"); value", rust_type(&h.return_type)?)
         };
-        code.push_str(&format!("pub fn r#{}({args}) -> {} {{ let mut payload = Vec::new(); {id}i64.wire_encode(&mut payload); {encode} let reply = call({base}.join({asset:?}).join(if cfg!(windows) {{\"serverlet.exe\"}} else {{\"serverlet\"}}), payload, vec![{signatures}]); {decode} }}\n", h.name, rust_type(&h.return_type)?));
+        code.push_str(&format!("pub fn {}({args}) -> {} {{ let mut payload = Vec::new(); {id}i64.wire_encode(&mut payload); {encode} let reply = call({base}.join({asset:?}).join(if cfg!(windows) {{\"serverlet.exe\"}} else {{\"serverlet\"}}), payload, vec![{signatures}]); {decode} }}\n", rust_ident(&h.name), rust_type(&h.return_type)?));
     }
     code.push_str("}\n");
     for h in handlers {
-        code.push_str(&format!("pub use {module}::r#{};\n", h.name));
+        code.push_str(&format!("pub use {module}::{};\n", rust_ident(&h.name)));
     }
     Ok(code)
 }

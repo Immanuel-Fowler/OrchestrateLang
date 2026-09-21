@@ -1,6 +1,6 @@
 use crate::ast::{ExprNode, MatchPattern, StmtNode, BinaryOp, Expr, Literal, StringPart, Type};
 use std::collections::HashSet;
-use super::core::Codegen;
+use super::core::{Codegen, rust_ident};
 
 impl Codegen {
     pub fn compile_expr(&mut self, expr: &Expr) -> String {
@@ -31,7 +31,7 @@ impl Codegen {
                     // Assigning needs a place expression, not a clone of the value.
                     let place = match &lhs.node {
                         ExprNode::Index { object, index } => format!("{}[({}) as usize]", self.compile_expr(object), self.compile_expr(index)),
-                        ExprNode::Identifier(name) if self.is_shared(name) => format!("__shared.{name}"),
+                        ExprNode::Identifier(name) if self.is_shared(name) => format!("__shared.{}", rust_ident(name)),
                         _ => lhs_str,
                     };
                     format!("{} = {}", place, rhs_str)
@@ -110,7 +110,7 @@ impl Codegen {
                     format!("tokio::time::sleep(std::time::Duration::from_millis({} as u64)).await", args_str)
                 } else if self.tasks.contains(callee) {
                     self.require_async(&format!("calls the task '{}', which it would have to wait for", callee));
-                    format!("{}({}).await", callee, args_str)
+                    format!("{}({}).await", rust_ident(callee), args_str)
                 } else if self.foreign_handle_params.contains_key(callee) {
                     let args = self.compile_args_for(callee, args);
                     format!("{}({})", self.call_name(callee), args)
@@ -129,7 +129,7 @@ impl Codegen {
                             format!("tokio::time::sleep(std::time::Duration::from_millis({} as u64)).await", val_str)
                         } else if self.tasks.contains(name) {
                             self.require_async(&format!("calls the task '{}', which it would have to wait for", name));
-                            format!("{}({}).await", name, val_str)
+                            format!("{}({}).await", rust_ident(name), val_str)
                         } else {
                             format!("{}({})", self.call_name(name), val_str)
                         }
@@ -205,12 +205,12 @@ impl Codegen {
                     let full_name = format!("{}::{}", module_local_name, function);
                     if self.tasks.contains(&full_name) {
                         self.require_async(&format!("calls the task '{}', which it would have to wait for", full_name));
-                        format!("{}::{}({}).await", module_local_name, function, args_str)
+                        format!("{}::{}({}).await", rust_ident(module_local_name), rust_ident(function), args_str)
                     } else if self.foreign_handle_params.contains_key(&full_name) {
                         let args = self.compile_args_for(&full_name, args);
-                        format!("{}::{}({})", module_local_name, function, args)
+                        format!("{}::{}({})", rust_ident(module_local_name), rust_ident(function), args)
                     } else {
-                        format!("{}::{}({})", module_local_name, function, args_str)
+                        format!("{}::{}({})", rust_ident(module_local_name), rust_ident(function), args_str)
                     }
                 } else {
                     self.require_async(&format!("calls '{}.{}', which waits for the serverlet to reply", module_local_name, function));
@@ -218,7 +218,7 @@ impl Codegen {
                     // message; a caller's binding is copied so it is still there after
                     // the call, on every boundary, without the message changing.
                     let owned_args = args.iter().map(|a| self.compile_owned_arg(a)).collect::<Vec<String>>().join(", ");
-                    format!("{}.{}({}).await", self.read_name(module_local_name), function, owned_args)
+                    format!("{}.{}({}).await", self.read_name(module_local_name), rust_ident(function), owned_args)
                 }
             }
             ExprNode::StartServerlet { name, args } => {
@@ -243,7 +243,7 @@ impl Codegen {
 
                 let mut capture_code = String::new();
                 for var in &free_vars {
-                    capture_code.push_str(&format!("let {} = {}.clone();\n    ", var, self.read_name(var)));
+                    capture_code.push_str(&format!("let {} = {}.clone();\n    ", rust_ident(var), self.read_name(var)));
                 }
                 // Inside the closure every captured name is the clone above, not a program field.
                 self.push_scope();
@@ -351,7 +351,7 @@ impl Codegen {
 
                 let mut capture_code = String::new();
                 for var in &free_vars {
-                    capture_code.push_str(&format!("let {} = {}.clone();\n    ", var, self.read_name(var)));
+                    capture_code.push_str(&format!("let {} = {}.clone();\n    ", rust_ident(var), self.read_name(var)));
                 }
                 self.push_scope();
                 for var in &free_vars { self.define_local(var); }
@@ -371,9 +371,9 @@ impl Codegen {
                 let bindings = if params.is_empty() {
                     "_".to_string()
                 } else if params.len() == 1 {
-                    params[0].name.clone()
+                    rust_ident(&params[0].name)
                 } else {
-                    let names = params.iter().map(|p| p.name.clone()).collect::<Vec<String>>().join(", ");
+                    let names = params.iter().map(|p| rust_ident(&p.name)).collect::<Vec<String>>().join(", ");
                     format!("({})", names)
                 };
 
@@ -405,13 +405,13 @@ impl Codegen {
             }
             ExprNode::StructLiteral { name, fields } => {
                 let fields_str = fields.iter()
-                    .map(|(fname, val)| format!("    {}: {},", fname, self.compile_expr(val)))
+                    .map(|(fname, val)| format!("    {}: {},", rust_ident(fname), self.compile_expr(val)))
                     .collect::<Vec<_>>()
                     .join("\n");
                 format!("{} {{\n{}\n}}", name, fields_str)
             }
             ExprNode::FieldAccess { object, field } => {
-                format!("{}.{}", self.compile_expr(object), field)
+                format!("{}.{}", self.compile_expr(object), rust_ident(field))
             }
             // Error handling expressions
             ExprNode::NoneLiteral => "None".to_string(),
@@ -453,8 +453,8 @@ impl Codegen {
             // Enum expressions
             ExprNode::EnumVariantLiteral { enum_name, variant_name, payload } => {
                 match payload {
-                    Some(p) => format!("{}::{}({})", enum_name, variant_name, self.compile_expr(p)),
-                    None => format!("{}::{}", enum_name, variant_name),
+                    Some(p) => format!("{}::{}({})", enum_name, rust_ident(variant_name), self.compile_expr(p)),
+                    None => format!("{}::{}", enum_name, rust_ident(variant_name)),
                 }
             }
             ExprNode::Match { value, arms } => {
@@ -486,7 +486,7 @@ impl Codegen {
             }
             ExprNode::Closure { params, return_type, body } => {
                 let params_str = params.iter()
-                    .map(|p| format!("{}: {}", p.name, self.compile_type(&p.ty)))
+                    .map(|p| format!("{}: {}", rust_ident(&p.name), self.compile_type(&p.ty)))
                     .collect::<Vec<_>>()
                     .join(", ");
                 let ret_str = match return_type {
@@ -544,13 +544,13 @@ impl Codegen {
                 let is_builtin = matches!(enum_name.as_str(), "option" | "result");
                 let base = if is_builtin {
                     match binding {
-                        Some(b) => format!("{}({})", variant_name, b),
+                        Some(b) => format!("{}({})", variant_name, rust_ident(b)),
                         None => variant_name.clone(),
                     }
                 } else {
                     match binding {
-                        Some(b) => format!("{}::{}({})", enum_name, variant_name, b),
-                        None => format!("{}::{}", enum_name, variant_name),
+                        Some(b) => format!("{}::{}({})", enum_name, rust_ident(variant_name), rust_ident(b)),
+                        None => format!("{}::{}", enum_name, rust_ident(variant_name)),
                     }
                 };
                 if let Some(g) = guard_str { format!("{} if {}", base, g) } else { base }
@@ -569,7 +569,7 @@ impl Codegen {
                 if let Some(g) = guard_str { format!("{} if {}", base, g) } else { base }
             }
             MatchPattern::Binding(name) => {
-                if let Some(g) = guard_str { format!("{} if {}", name, g) } else { name.clone() }
+                if let Some(g) = guard_str { format!("{} if {}", rust_ident(name), g) } else { rust_ident(name) }
             }
             MatchPattern::Guard { inner, .. } => {
                 // guard_str is pre-compiled and passed in; inner already has no nested guard

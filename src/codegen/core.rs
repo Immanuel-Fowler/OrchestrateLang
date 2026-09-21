@@ -276,6 +276,32 @@ fn __wire_from_bytes<T: OrchWire + Default>(bytes: &[u8]) -> T {
 
 "#;
 
+/// Every keyword of Rust editions 2021 and 2024 — strict, reserved, and weak — that an
+/// OrchestrateLang name could collide with. `self`, `Self`, `super`, and `crate` cannot
+/// be raw identifiers at all; the lexer refuses them as names, so they are not here.
+const RUST_KEYWORDS: &[&str] = &[
+    // strict
+    "as", "async", "await", "break", "const", "continue", "dyn", "else", "enum", "extern",
+    "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut",
+    "pub", "ref", "return", "static", "struct", "trait", "true", "type", "unsafe", "use",
+    "where", "while",
+    // reserved
+    "abstract", "become", "box", "do", "final", "macro", "override", "priv", "try",
+    "typeof", "unsized", "virtual", "yield",
+    // edition 2024
+    "gen",
+    // weak
+    "macro_rules", "union", "safe", "raw",
+];
+
+/// An OrchestrateLang name as a Rust identifier: raw (`r#move`) when it is a Rust
+/// keyword, itself otherwise. This is the only place a name is escaped, and it is a
+/// Rust-side concern: a name that crosses a boundary — a sandbox export, a landline
+/// handler, a wire field, a C symbol — keeps its spelling there.
+pub fn rust_ident(name: &str) -> String {
+    if RUST_KEYWORDS.contains(&name) { format!("r#{name}") } else { name.to_string() }
+}
+
 pub fn pascal_case(s: &str) -> String {
     let mut res = String::new();
     let mut capitalize = true;
@@ -768,13 +794,13 @@ impl Codegen {
             // A read produces a value, and the value cannot be moved out of the guard, so
             // it is cloned. For a number that is a copy; for a string or an array it is
             // the copy the reader was going to get anyway.
-            return format!("__shared.{name}.clone()");
+            return format!("__shared.{}.clone()", rust_ident(name));
         }
         let receiver = self.state_rewrite.as_ref().map_or("", |rewrite| rewrite.receiver);
         match self.state_field(name) {
-            Some(true) => format!("(&{receiver}.{name})"),
-            Some(false) => format!("{receiver}.{name}"),
-            None => name.to_string(),
+            Some(true) => format!("(&{receiver}.{})", rust_ident(name)),
+            Some(false) => format!("{receiver}.{}", rust_ident(name)),
+            None => rust_ident(name),
         }
     }
 
@@ -814,12 +840,12 @@ impl Codegen {
     pub(super) fn call_name(&self, name: &str) -> String {
         if self.is_shared(name) {
             self.shared_touches.set(self.shared_touches.get() + 1);
-            return format!("(__shared.{name})");
+            return format!("(__shared.{})", rust_ident(name));
         }
         let receiver = self.state_rewrite.as_ref().map_or("", |rewrite| rewrite.receiver);
         match self.state_field(name) {
-            Some(_) => format!("({receiver}.{name})"),
-            None => name.to_string(),
+            Some(_) => format!("({receiver}.{})", rust_ident(name)),
+            None => rust_ident(name),
         }
     }
 
@@ -872,7 +898,7 @@ impl Codegen {
         let fields = self
             .shared_fields
             .iter()
-            .map(|(name, ty)| format!("    {name}: {ty},"))
+            .map(|(name, ty)| format!("    {}: {ty},", rust_ident(name)))
             .collect::<Vec<_>>()
             .join("\n");
         let mut initialisers = Vec::new();
@@ -882,9 +908,9 @@ impl Codegen {
             let rust_ty = self.shared_fields.iter().find(|(field, _)| field == name).map(|(_, ty)| ty.clone());
             let Some(rust_ty) = rust_ty else { continue };
             let value = self.compile_expr(value);
-            initialisers.push(format!("        let {name}: {rust_ty} = {value};"));
+            initialisers.push(format!("        let {}: {rust_ty} = {value};", rust_ident(name)));
         }
-        let names = self.shared_fields.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>().join(", ");
+        let names = self.shared_fields.iter().map(|(name, _)| rust_ident(name)).collect::<Vec<_>>().join(", ");
         let mut code = format!(
             "/// Every `shared let` in the program. One mutex guards all of them, so a\n             /// statement that touches shared state is atomic with respect to all of it,\n             /// and there is no lock order to get wrong.\n             struct __OrchShared {{\n{fields}\n}}\n             impl __OrchShared {{\n    fn new() -> __OrchShared {{\n{init}\n        __OrchShared {{ {names} }}\n    }}\n}}\n",
             fields = fields,

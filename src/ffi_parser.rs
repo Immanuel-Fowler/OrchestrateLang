@@ -5,6 +5,7 @@
 //! NUL-terminated `const char *` valid for the call (parameters) or a `malloc`'d
 //! `char *` the wrapper copies and frees (returns), and `handle` as an opaque `void *`
 //! the sidecar's one `drop <function>(h: handle)` releases when the last owner drops.
+use crate::codegen::core::rust_ident;
 use crate::ast::Type;
 use crate::lexer::{Lexer, TokenKind};
 
@@ -168,10 +169,10 @@ pub fn generate_bindings(signatures: &[CSignature], file_name: &str) -> Result<S
         for (name, ty) in &signature.params {
             match ty {
                 Type::Array(inner, _) => {
-                    decl_parts.push(format!("{}: *const {}", name, ffi_type(inner, false)));
+                    decl_parts.push(format!("{}: *const {}", rust_ident(name), ffi_type(inner, false)));
                     decl_parts.push(format!("{}_count: i64", name));
                 }
-                _ => decl_parts.push(format!("{}: {}", name, ffi_type(ty, false))),
+                _ => decl_parts.push(format!("{}: {}", rust_ident(name), ffi_type(ty, false))),
             }
         }
         // An array return is a pointer plus a count written through an out-parameter,
@@ -194,7 +195,7 @@ pub fn generate_bindings(signatures: &[CSignature], file_name: &str) -> Result<S
         }
 
         let wrapper_params = signature.params.iter()
-            .map(|(name, ty)| format!("{}: {}", name, wrapper_type(ty, false)))
+            .map(|(name, ty)| format!("{}: {}", rust_ident(name), wrapper_type(ty, false)))
             .collect::<Vec<_>>()
             .join(", ");
         let wrapper_ret = if signature.ret == Type::Void { String::new() } else { format!(" -> {}", wrapper_type(&signature.ret, true)) };
@@ -204,17 +205,17 @@ pub fn generate_bindings(signatures: &[CSignature], file_name: &str) -> Result<S
             match ty {
                 Type::Str => {
                     prologue.push_str(&format!(
-                        "    let __{0} = std::ffi::CString::new({0}.replace('\\0', \"\")).expect(\"a string without NUL\");\n",
-                        name
+                        "    let __{0} = std::ffi::CString::new({1}.replace('\\0', \"\")).expect(\"a string without NUL\");\n",
+                        name, rust_ident(name)
                     ));
                     call_parts.push(format!("__{}.as_ptr()", name));
                 }
-                Type::Handle => call_parts.push(format!("{}.ptr()", name)),
+                Type::Handle => call_parts.push(format!("{}.ptr()", rust_ident(name))),
                 Type::Array(_, _) => {
-                    call_parts.push(format!("{}.as_ptr()", name));
-                    call_parts.push(format!("{}.len() as i64", name));
+                    call_parts.push(format!("{}.as_ptr()", rust_ident(name)));
+                    call_parts.push(format!("{}.len() as i64", rust_ident(name)));
                 }
-                _ => call_parts.push(name.clone()),
+                _ => call_parts.push(rust_ident(name)),
             }
         }
         if returns_array {
@@ -240,7 +241,7 @@ pub fn generate_bindings(signatures: &[CSignature], file_name: &str) -> Result<S
             }
             _ => format!("    {call}"),
         };
-        wrappers.push_str(&format!("pub fn {}({}){} {{\n{}{}\n}}\n", signature.name, wrapper_params, wrapper_ret, prologue, body));
+        wrappers.push_str(&format!("pub fn {}({}){} {{\n{}{}\n}}\n", rust_ident(&signature.name), wrapper_params, wrapper_ret, prologue, body));
     }
 
     if returns_string {

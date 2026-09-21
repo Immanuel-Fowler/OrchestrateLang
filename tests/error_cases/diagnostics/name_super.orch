@@ -1,0 +1,2 @@
+fn super(n: int) -> int { return n + 1 }
+orchestrator main() { print(to_string(super(1)))  stop_orch() }

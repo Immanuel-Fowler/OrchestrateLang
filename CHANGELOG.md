@@ -71,10 +71,10 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   the way `docs/library-mode.md` now says, with the deterministic-mode message.
 
 - **The diagnostics corpus covers the language.** `tests/error_cases/diagnostics/` grew
-  from 30 to 84 deliberately invalid programs, across types, events, serverlets of every
+  from 30 to 88 deliberately invalid programs, across types, events, serverlets of every
   kind, processes, C, Rust, and WebAssembly sidecars, and module boundaries, with the
   module fixtures they import beside them. `diagnostics_never_leak_rustc` now runs each
-  through `orchestrate check` first and reports the count — 76 of 84 are rejected by
+  through `orchestrate check` first and reports the count — 80 of 88 are rejected by
   `check`, 6 more by the build before Cargo, 2 reach rustc — and holds the leaks to
   `KNOWN_LEAKS.txt`, so a leak that appears or disappears fails the test until the list
   says so. `benchmarks/diagnostics_coverage.py` writes the same classification as CSV,
@@ -115,6 +115,22 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   in `docs/language-reference.md`, where it was already documented.
 
 ### Fixed
+- **A name that is a Rust keyword no longer breaks the generated Rust.** A handler
+  named `move`, a `fn type()`, a `let mut`, a struct field `ref`, a module called `impl`,
+  a C sidecar function `move` — any of the fifty-odd Rust keywords that are not
+  OrchestrateLang keywords — reached rustc as a syntax error in generated code; only
+  `gen` was escaped, and only in library builds. Every such name is now emitted as a raw
+  identifier (`r#move`) from one keyword list covering editions 2021 and 2024, across
+  functions, tasks, handlers, parameters, bindings, struct fields, enum variants, match
+  bindings, program and shared state, module names, and foreign wrappers. A name that
+  crosses a boundary keeps its spelling there: a sandbox export carries
+  `#[export_name = "move"]`, a landline handler is `move` on the wire and in Python or
+  TypeScript, a C symbol is `move` for the linker. `self`, `Self`, `super`, and `crate`
+  cannot be raw identifiers at all, so `orchestrate check` refuses them as names with an
+  error that says so; four corpus cases hold that, taking the corpus to 88 programs, 80
+  rejected by `check`. Regression tests use keyword names on every boundary, on a C
+  sidecar and module, and in a library build. Patch-level: valid programs that were
+  rejected now compile, and nothing that compiled before changes.
 - **The runtime tests clean up after themselves.** Each `runtime_tests` case built its
   program in its own directory under the system temp dir and left it there, about 140 MB
   a plain case and 400–600 MB a sandbox case, so a full run left roughly 7 GB behind

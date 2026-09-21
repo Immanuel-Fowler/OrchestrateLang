@@ -166,7 +166,7 @@ impl Lexer {
 
             // Identifiers / Keywords
             if c.is_alphabetic() || c == '_' {
-                tokens.push(self.read_identifier_or_keyword(start_line, start_col));
+                tokens.push(self.read_identifier_or_keyword(start_line, start_col)?);
                 continue;
             }
 
@@ -356,7 +356,7 @@ impl Lexer {
         Err(format!("Unterminated string literal at line {}, col {}", start_line, start_col))
     }
 
-    fn read_identifier_or_keyword(&mut self, start_line: usize, start_col: usize) -> Token {
+    fn read_identifier_or_keyword(&mut self, start_line: usize, start_col: usize) -> Result<Token, String> {
         let mut s = String::new();
         while let Some(c) = self.peek() {
             if c.is_alphanumeric() || c == '_' {
@@ -401,10 +401,19 @@ impl Lexer {
             "in" => TokenKind::In,
             "break" => TokenKind::Break,
             "continue" => TokenKind::Continue,
+            // The generated Rust cannot spell these as raw identifiers (`r#self` is
+            // not Rust), so no escape can carry them; every other Rust keyword can be
+            // a name here and is escaped by codegen.
+            "self" | "Self" | "super" | "crate" => {
+                return Err(format!(
+                    "'{}' cannot be a name in OrchestrateLang: it is reserved by the generated Rust and cannot be escaped, at line {}, col {}",
+                    s, start_line, start_col
+                ));
+            }
             _ => TokenKind::Identifier(s),
         };
 
-        Token { kind, line: start_line, col: start_col }
+        Ok(Token { kind, line: start_line, col: start_col })
     }
 }
 

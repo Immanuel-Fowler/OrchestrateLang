@@ -338,3 +338,44 @@ orchestrator main() {
     let lines: Vec<&str> = stdout.lines().filter(|l| !l.starts_with("[orchestrate]")).collect();
     assert_eq!(lines, vec!["hi! hi", "6 3", "9 4"], "stdout: {stdout}");
 }
+
+#[test]
+fn typescript_landline_keyword_names() {
+    // Handler and parameter names that are Rust keywords reach TypeScript by their own
+    // spelling; only the generated Rust escapes them.
+    if !available() {
+        return;
+    }
+    let root = root("keyword_names");
+    fs::write(
+        root.join("echo.ts"),
+        r#"
+export default class Echo {
+    move(dyn: string): string { return dyn + "!"; }
+    type(ref: bigint): bigint { return ref + 1n; }
+    loop(impl: {ref: bigint; type: bigint}): bigint { return impl.ref + impl.type; }
+}
+"#,
+    )
+    .unwrap();
+    let src = r#"
+struct Point { ref: int, type: int }
+serverlet Echo via typescript(source: "echo.ts") {
+    on move(dyn: string) -> string
+    on type(ref: int) -> int
+    on loop(impl: Point) -> int
+}
+orchestrator main() {
+    let e = start Echo()
+    let static = "s"
+    let mut = Point { ref: 1, type: 2 }
+    print(e.move(static))
+    print(to_string(e.type(mut.ref)))
+    print(to_string(e.loop(mut)))
+    stop_orch()
+}
+"#;
+    let stdout = success(&compile(&root, src, false, "bun"));
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.starts_with("[orchestrate]")).collect();
+    assert_eq!(lines, vec!["s!", "2", "3"], "stdout: {stdout}");
+}

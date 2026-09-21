@@ -99,20 +99,31 @@ version of the claim.
   (documented in CONTRIBUTING.md section 6). Covered by every `runtime_tests` case; the
   guard is the same shape `library_tests` and `typescript_tests` already used.
 
+- **A name that is a Rust keyword reached rustc.** `on move(p: Point)` generated
+  `pub extern "C" fn move(...)` in the sandbox guest and `pub async fn move(...)` on the
+  in-process client; either is a rustc syntax error in generated code, and the same held
+  for a `fn type()`, a struct field `ref`, a `let mut`, and every other Rust keyword that
+  is not an OrchestrateLang keyword. Only `gen` was escaped, by a post-pass over library
+  output. Fixed after the paper branches landed: one keyword list (editions 2021 and
+  2024) and one `rust_ident` helper escape a name wherever codegen emits it as a Rust
+  identifier; the post-pass is gone. Names that cross a boundary keep their spelling
+  there — a sandbox export uses `#[export_name]`, a landline handler and a wire field are
+  the plain name, a C symbol keeps `#[link_name]`. `self`, `Self`, `super`, and `crate`
+  cannot be raw identifiers, so the lexer refuses them as names. Struct and enum *type*
+  names are not escaped: the convention is PascalCase, and the only capitalised Rust
+  keyword is `Self`, which is refused. Regression tests:
+  `runtime_keyword_names_in_process`, `runtime_keyword_names_on_a_secret_serverlet`,
+  `runtime_keyword_names_in_a_sandbox`, `runtime_keyword_names_on_a_c_sidecar_and_module`,
+  `python_landline_keyword_names`, `typescript_landline_keyword_names`,
+  `library_keyword_names`; corpus cases `name_self`, `name_upper_self`, `name_super`,
+  `name_crate`.
+
 ## Found, not fixed
 
 - **Struct layout across the sandbox assumes a little-endian host.** Struct bytes are
   written field by field in little-endian order on both sides, so a big-endian host would
   still be correct; but no such host is tested, and the C ABI path (0.14.0) passes
   structs by value in native order, so the two would disagree there, not here.
-- **A name that is a Rust keyword reaches rustc.** `on move(p: Point)` generated
-  `pub extern "C" fn move(...)` in the sandbox guest and would generate
-  `pub async fn move(...)` on the in-process client; either is a rustc syntax error in
-  generated code. The same holds for a `fn type()`, a `let match = 1`, a struct field
-  named `ref`, and every other Rust keyword that is not an OrchestrateLang keyword.
-  Only `gen` is escaped today (for edition 2024 library crates). Found by naming a
-  handler `move` in the grants test; not fixed here, since the fix is a systematic
-  `r#` escape across codegen. Candidate for the diagnostics corpus as a leak.
 
 ## Benchmark caveats (boundary ladder)
 
@@ -163,7 +174,7 @@ version of the claim.
 
 ## Diagnostics corpus: what still reaches rustc
 
-84 invalid programs; 76 rejected by `orchestrate check`, 6 by the build before Cargo,
+88 invalid programs; 80 rejected by `orchestrate check`, 6 by the build before Cargo,
 2 by rustc, 0 accepted (`benchmarks/results/diagnostics_coverage.md`). The build-time six
 are compiler errors too, they just live in the driver or the generator: a `load_foreign`
 language the compiler does not know, `host` in a module or outside a library build, a
@@ -183,7 +194,8 @@ two leaks, listed in `tests/error_cases/diagnostics/KNOWN_LEAKS.txt`:
 Three candidates turned out to be **valid programs that fail** and are not in the
 corpus, because the corpus is invalid programs:
 
-- a name that is a Rust keyword (`on move(...)`, see above);
+- a name that is a Rust keyword (`on move(...)`, since fixed, see above; the four names
+  that cannot be escaped are in the corpus as `name_*`);
 - a string passed to a serverlet call and used again (`let a = c.shout(text)  print(text)`),
   E0382, since fixed, see above;
 - a `task` that touches `shared let` — this one compiles and is correct; it was

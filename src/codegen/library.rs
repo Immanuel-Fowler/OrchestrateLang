@@ -1,4 +1,4 @@
-use super::core::{Codegen, StateRewrite};
+use super::core::{Codegen, StateRewrite, rust_ident};
 use crate::ast::{Expr, ExprNode, MatchPattern, Stmt, StmtNode, StringPart, Type};
 use std::collections::HashSet;
 
@@ -168,7 +168,7 @@ impl Codegen {
                 let params = handler
                     .params
                     .iter()
-                    .map(|p| format!("{}: {}", p.name, self.compile_type(&p.ty)))
+                    .map(|p| format!("{}: {}", rust_ident(&p.name), self.compile_type(&p.ty)))
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!(
@@ -276,10 +276,10 @@ impl Codegen {
                     self.state_rewrite = Some(StateRewrite { fields: rewrite_fields.clone(), scopes: vec![scope], receiver: "__program" });
                     let compiled = self.compile_expr(&body);
                     self.state_rewrite = None;
-                    fixed.push_str(&format!("{{ let {} = __dt; {}; }}\n", param, compiled));
+                    fixed.push_str(&format!("{{ let {} = __dt; {}; }}\n", rust_ident(&param), compiled));
                 }
                 StmtNode::OnTick { param, input, return_type, body } => {
-                    let bind = input.as_ref().map(|p| format!("let {} = __input;", p.name)).unwrap_or_default();
+                    let bind = input.as_ref().map(|p| format!("let {} = __input;", rust_ident(&p.name))).unwrap_or_default();
                     let mut scope = std::collections::HashSet::new();
                     scope.insert(param.clone());
                     if let Some(p) = &input { scope.insert(p.name.clone()); }
@@ -287,8 +287,8 @@ impl Codegen {
                     let compiled = self.compile_expr(&body);
                     self.state_rewrite = None;
                     if input.is_some() || return_type != Type::Void {
-                        tick = format!("let {} = __dt; {} {}", param, bind, compiled);
-                    } else { tick.push_str(&format!("{{ let {} = __dt; {}; }}\n", param, compiled)); }
+                        tick = format!("let {} = __dt; {} {}", rust_ident(&param), bind, compiled);
+                    } else { tick.push_str(&format!("{{ let {} = __dt; {}; }}\n", rust_ident(&param), compiled)); }
                 },
                 _ => {}
             }
@@ -301,17 +301,17 @@ impl Codegen {
         let program_struct = if fields.is_empty() {
             "struct __OrchProgram {}".to_string()
         } else {
-            format!("struct __OrchProgram {{\n{}\n}}", fields.iter().map(|f| format!("    {}: {},", f.name, f.rust_type)).collect::<Vec<_>>().join("\n"))
+            format!("struct __OrchProgram {{\n{}\n}}", fields.iter().map(|f| format!("    {}: {},", rust_ident(&f.name), f.rust_type)).collect::<Vec<_>>().join("\n"))
         };
         let pack = if fields.is_empty() {
             "__OrchProgram {}".to_string()
         } else {
-            format!("__OrchProgram {{ {} }}", fields.iter().map(|f| if f.boxed { format!("{0}: Box::new({0})", f.name) } else { f.name.clone() }).collect::<Vec<_>>().join(", "))
+            format!("__OrchProgram {{ {} }}", fields.iter().map(|f| if f.boxed { format!("{0}: Box::new({0})", rust_ident(&f.name)) } else { rust_ident(&f.name) }).collect::<Vec<_>>().join(", "))
         };
         let unpack = if fields.is_empty() {
             "__OrchProgram {}".to_string()
         } else {
-            format!("__OrchProgram {{ {} }}", fields.iter().map(|f| format!("mut {}", f.name)).collect::<Vec<_>>().join(", "))
+            format!("__OrchProgram {{ {} }}", fields.iter().map(|f| format!("mut {}", rust_ident(&f.name))).collect::<Vec<_>>().join(", "))
         };
         format!(
             r#"{errors}/// The top-level bindings the hooks reach, owned by the instance rather than by a task.
@@ -371,7 +371,7 @@ async fn __orch_entry(mut commands: tokio::sync::mpsc::UnboundedReceiver<OrchCom
     }
 
     pub(super) fn library_adjust(&self, code: String) -> String {
-        escape_edition_identifiers(&code).replace("tokio::spawn(", "crate::__orch_spawn(")
+        code.replace("tokio::spawn(", "crate::__orch_spawn(")
             .replace("tokio::time::sleep(", "crate::__orch_sleep(")
             .replace("tokio::time::timeout(", "crate::__orch_timeout(")
             .replace("__ORCH_LINE_SPAWN(", "crate::__orch_spawn_line(")
@@ -382,34 +382,3 @@ async fn __orch_entry(mut commands: tokio::sync::mpsc::UnboundedReceiver<OrchCom
     }
 }
 
-
-// Generated Rust uses quoted strings for language literals; preserve their contents
-// while escaping the identifier newly reserved by edition 2024.
-fn escape_edition_identifiers(source: &str) -> String {
-    let bytes = source.as_bytes();
-    let mut output = String::new();
-    let mut start = 0;
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'"' {
-            index += 1;
-            while index < bytes.len() {
-                if bytes[index] == b'\\' { index += 2; }
-                else if bytes[index] == b'"' { index += 1; break; }
-                else { index += 1; }
-            }
-        } else if bytes[index..].starts_with(b"//") {
-            while index < bytes.len() && bytes[index] != b'\n' { index += 1; }
-        } else if bytes[index].is_ascii_alphabetic() || bytes[index] == b'_' {
-            let begin = index;
-            while index < bytes.len() && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_') { index += 1; }
-            if &source[begin..index] == "gen" && !(begin >= 2 && &bytes[begin-2..begin] == b"r#") {
-                output.push_str(&source[start..begin]);
-                output.push_str("r#gen");
-                start = index;
-            }
-        } else { index += 1; }
-    }
-    output.push_str(&source[start..]);
-    output
-}

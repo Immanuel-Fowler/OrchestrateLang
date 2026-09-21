@@ -171,7 +171,7 @@ fn __orch_host_call(import: unsafe extern "C" fn(i32, i32) -> i64, payload: &[u8
     reply
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "tally")]
 pub extern "C" fn tally(n: i64) -> i64 {
     __orch_state(|__state| { {
     // orch:5:9
@@ -181,7 +181,7 @@ pub extern "C" fn tally(n: i64) -> i64 {
 } })
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "echo")]
 pub extern "C" fn echo(s_pointer: i32, s_length: i32) -> i64 {
     let s = __orch_unpack(s_pointer, s_length);
     __orch_pack(__orch_state(|__state| { {

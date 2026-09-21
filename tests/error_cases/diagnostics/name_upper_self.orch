@@ -1,0 +1,2 @@
+struct Self { x: int }
+orchestrator main() { let s = Self { x: 1 }  print(to_string(s.x))  stop_orch() }
