@@ -586,6 +586,14 @@ orchestrator main() {
 }
 "#).unwrap();
 
+    // The deadline is for the contained calls, not for building the guest, which on a
+    // loaded machine can take minutes by itself: build first, then time the run, which
+    // finds the build already done.
+    let built = Command::new(orchestrate_bin())
+        .args(["build", src_file.to_str().unwrap(), "-o", tmp.join("hostile").to_str().unwrap()])
+        .output()
+        .expect("failed to run orchestrate");
+    assert!(built.status.success(), "build failed:\n{}", String::from_utf8_lossy(&built.stderr));
     let started = std::time::Instant::now();
     let out = Command::new(orchestrate_bin())
         .args(["run", src_file.to_str().unwrap()])
@@ -603,7 +611,7 @@ orchestrator main() {
     assert!(stderr.contains("memory allocation") || stderr.contains("stopped itself"),
         "expected the guest's own failure reported: {}", stderr);
     // An unbounded loop that was actually stopped cannot have taken long.
-    assert!(started.elapsed() < std::time::Duration::from_secs(300), "the run did not finish promptly");
+    assert!(started.elapsed() < std::time::Duration::from_secs(120), "the run did not finish promptly: {:?}", started.elapsed());
 }
 
 #[test]
