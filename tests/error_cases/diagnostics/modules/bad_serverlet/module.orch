@@ -1,0 +1,6 @@
+// A serverlet whose handler body has a type error, declared in a module: check walks
+// module bodies in their own scope, so this is refused before any code is generated.
+serverlet Tally {
+    let total = 0
+    on add(n: int) -> int { return total + "one" }
+}

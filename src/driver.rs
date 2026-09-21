@@ -397,43 +397,8 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
         ast::StmtNode::Host { name, functions } => functions.iter().map(|h| (name.clone(), h.clone())).collect(),
         _ => Vec::new(),
     }).collect::<Vec<_>>();
-    let mut host_names = std::collections::HashSet::new();
-    for (group, handler) in &host_functions {
-        if group.starts_with('_') || handler.name.starts_with('_') || !host_names.insert(format!("{}_{}", group, handler.name)) {
-            return Err("Host names must not start with underscore or generate duplicate Rust method names".into());
-        }
-    }
-    for stmt in ast.iter().chain(modules_data.iter().flat_map(|(_, stmts, _)| stmts.iter())) {
-        if library.is_none() && matches!(&stmt.node, ast::StmtNode::Host { .. } | ast::StmtNode::OnTick { .. } | ast::StmtNode::OnFixedTick { .. }) {
-            return Err("host and on_tick require build --lib".into());
-        }
-        if let ast::StmtNode::Serverlet { grants, .. } = &stmt.node {
-            let mut seen = std::collections::HashSet::new();
-            for grant in grants {
-                if library.is_none() || !seen.insert(grant) || !host_functions.iter().any(|(g,h)| format!("{}.{}", g, h.name) == *grant) {
-                    return Err(format!("Unknown or duplicate host grant '{}' (host grants require build --lib)", grant));
-                }
-            }
-        }
-    }
-    if library.is_some() {
-        let ticks = ast.iter().filter(|s| matches!(&s.node, ast::StmtNode::OnTick { .. })).collect::<Vec<_>>();
-        if ticks.len() > 1 && ticks.iter().any(|s| matches!(&s.node, ast::StmtNode::OnTick { input: Some(_), .. }) || matches!(&s.node, ast::StmtNode::OnTick { return_type, .. } if *return_type != ast::Type::Void)) {
-            return Err("A typed on_tick must be the only on_tick declaration".into());
-        }
-        for (_, stmts, _) in &modules_data {
-            if stmts.iter().any(|s| matches!(&s.node, ast::StmtNode::Host { .. } | ast::StmtNode::OnTick { .. } | ast::StmtNode::OnFixedTick { .. } | ast::StmtNode::OnStart(_) | ast::StmtNode::OnStop(_))) {
-                return Err("Library host declarations and lifecycle hooks must be in the entry file".into());
-            }
-        }
-        for stmt in &ast {
-            if let ast::StmtNode::OrchestratorDecl { name, params, .. } = &stmt.node {
-                if name == "main" && !(params.is_empty() || (params.len() == 1 && matches!(&params[0].ty, ast::Type::Array(inner, _) if **inner == ast::Type::Process))) {
-                    return Err("Library main accepts no parameters or one process[] parameter".into());
-                }
-            }
-        }
-    }
+    let module_stmts: Vec<&[ast::Stmt]> = modules_data.iter().map(|(_, stmts, _)| stmts.as_slice()).collect();
+    library_rules(&ast, &module_stmts, library.is_some())?;
     let mut all_foreign_sources = Vec::new();
     // Crates the generated crate must depend on, by name, with where each was declared.
     let mut extra_dependencies: std::collections::BTreeMap<String, (crate::dependencies::Dependency, String)> = std::collections::BTreeMap::new();
@@ -957,7 +922,56 @@ pub fn run_run(input_file: &str) -> Result<(), String> {
 }
 
 /// Type-check only (no codegen, no Cargo invocation). Designed to be fast (<100ms).
-pub fn run_check(input_file: &str) -> Result<(), String> {
+/// The rules a build applies before it generates anything that depend only on the
+/// declarations and on whether it builds a library. `build` and `check` both call this,
+/// so `check` refuses what `build` would for them, and `check --lib` means what
+/// `build --lib` does.
+fn library_rules(ast: &[ast::Stmt], modules: &[&[ast::Stmt]], library: bool) -> Result<(), String> {
+    let host_functions = ast.iter().flat_map(|s| match &s.node {
+        ast::StmtNode::Host { name, functions } => functions.iter().map(|h| (name.clone(), h.clone())).collect(),
+        _ => Vec::new(),
+    }).collect::<Vec<_>>();
+    let mut host_names = std::collections::HashSet::new();
+    for (group, handler) in &host_functions {
+        if group.starts_with('_') || handler.name.starts_with('_') || !host_names.insert(format!("{}_{}", group, handler.name)) {
+            return Err("Host names must not start with underscore or generate duplicate Rust method names".into());
+        }
+    }
+    for stmt in ast.iter().chain(modules.iter().flat_map(|stmts| stmts.iter())) {
+        if !library && matches!(&stmt.node, ast::StmtNode::Host { .. } | ast::StmtNode::OnTick { .. } | ast::StmtNode::OnFixedTick { .. }) {
+            return Err("host and on_tick require build --lib; check such a program with check --lib".into());
+        }
+        if let ast::StmtNode::Serverlet { grants, .. } = &stmt.node {
+            let mut seen = std::collections::HashSet::new();
+            for grant in grants {
+                if !library || !seen.insert(grant) || !host_functions.iter().any(|(g,h)| format!("{}.{}", g, h.name) == *grant) {
+                    return Err(format!("Unknown or duplicate host grant '{}' (host grants require build --lib, and check --lib)", grant));
+                }
+            }
+        }
+    }
+    if library {
+        let ticks = ast.iter().filter(|s| matches!(&s.node, ast::StmtNode::OnTick { .. })).collect::<Vec<_>>();
+        if ticks.len() > 1 && ticks.iter().any(|s| matches!(&s.node, ast::StmtNode::OnTick { input: Some(_), .. }) || matches!(&s.node, ast::StmtNode::OnTick { return_type, .. } if *return_type != ast::Type::Void)) {
+            return Err("A typed on_tick must be the only on_tick declaration".into());
+        }
+        for stmts in modules {
+            if stmts.iter().any(|s| matches!(&s.node, ast::StmtNode::Host { .. } | ast::StmtNode::OnTick { .. } | ast::StmtNode::OnFixedTick { .. } | ast::StmtNode::OnStart(_) | ast::StmtNode::OnStop(_))) {
+                return Err("Library host declarations and lifecycle hooks must be in the entry file".into());
+            }
+        }
+        for stmt in ast {
+            if let ast::StmtNode::OrchestratorDecl { name, params, .. } = &stmt.node {
+                if name == "main" && !(params.is_empty() || (params.len() == 1 && matches!(&params[0].ty, ast::Type::Array(inner, _) if **inner == ast::Type::Process))) {
+                    return Err("Library main accepts no parameters or one process[] parameter".into());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn run_check(input_file: &str, library: bool) -> Result<(), String> {
     let input_path = Path::new(input_file);
     let source = fs::read_to_string(input_path)
         .map_err(|e| format!("Failed to read source file '{}': {}", input_file, e))?;
@@ -974,6 +988,7 @@ pub fn run_check(input_file: &str) -> Result<(), String> {
     let parent_dir = input_path.parent().unwrap_or(Path::new("."));
 
     // Register modules for type-checking (no codegen)
+    let mut modules: Vec<(PathBuf, Vec<ast::Stmt>)> = Vec::new();
     for stmt in &ast {
         if let ast::StmtNode::UseModule { local_name, module_name } = &stmt.node {
             let module_path = if let Some(resolved) = prom::resolve_module(module_name)? {
@@ -985,61 +1000,94 @@ pub fn run_check(input_file: &str) -> Result<(), String> {
             };
             let module_stmts = compile_module(&module_path)?;
             type_checker.register_module_functions(local_name, &module_stmts);
-            for stmt in &module_stmts {
-                if let ast::StmtNode::LoadForeign { language, path, .. } = &stmt.node {
-                    if language == "rust" {
-                        // As the build does, so a call into a Rust foreign module — the
-                        // standard library included — is typed here rather than unknown.
-                        let sidecar_path = module_path.join(path).with_extension("orch_ffi");
-                        if let Ok(content) = fs::read_to_string(&sidecar_path) {
-                            let sidecar_name = sidecar_path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown.orch_ffi");
-                            let (signatures, _) = crate::dependencies::split_sidecar(&content);
-                            register_rust_ffi_from_sidecar(&signatures, local_name, sidecar_name, &mut type_checker)
-                                .map_err(|e| format!("Rust FFI sidecar error: {}", e))?;
-                        }
-                    } else if language == "typescript" {
-                        let content = fs::read_to_string(module_path.join(path).with_extension("orch_ffi")).map_err(|e| e.to_string())?;
-                        for h in crate::typescript::sidecar(&content)? {
-                            type_checker.register_foreign_function(local_name, &h.name, h.params.into_iter().map(|p| p.ty).collect(), h.return_type);
-                        }
-                    } else if language == "wasm" {
-                        // The module itself is the authority on what it exports, so this
-                        // is the same check the build runs.
-                        let (signatures, _, _) = wasm_sidecar(&module_path, path)?;
-                        for signature in signatures {
-                            let params = signature.params.iter().map(|(_, ty)| ty.clone()).collect();
-                            type_checker.register_foreign_function(local_name, &signature.name, params, signature.ret.clone());
-                        }
-                    } else if matches!(language.as_str(), "c" | "cpp" | "zig" | "swift" | "csharp") {
-                        let sidecar_path = module_path.join(path).with_extension("orch_ffi");
-                        if let Ok(content) = fs::read_to_string(&sidecar_path) {
-                            let file_name = sidecar_path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown.orch_ffi").to_string();
-                            for signature in ffi_parser::parse_ffi(&content, language, &file_name)? {
-                                if signature.drop { continue; }
-                                let params = signature.params.iter().map(|(_, ty)| ty.clone()).collect();
-                                type_checker.register_foreign_function(local_name, &signature.name, params, signature.ret.clone());
-                            }
-                        }
-                    }
-                }
-            }
+            register_module_sidecars(&mut type_checker, local_name, &module_path, &module_stmts)?;
+            modules.push((module_path, module_stmts));
         }
     }
 
-    type_checker.type_check(&ast).map_err(|e| {
-        let lines: Vec<String> = e.lines()
-            .map(|line| {
-                if line.trim_start().starts_with("line ") || line.contains(':') {
-                    format!("{}:{}", input_file, line)
-                } else {
-                    format!("{}:1: {}", input_file, line)
-                }
-            })
-            .collect();
-        format!("Type Error: {}", lines.join("\n"))
-    })?;
+    type_checker.type_check(&ast).map_err(|e| type_error_in(input_file, &e))?;
+
+    // A module's own declarations, checked in the module's own scope as the entry file's
+    // are in its: a serverlet declared in a module used to be looked at first by codegen,
+    // during a build. Its foreign functions are callable by their bare names inside it.
+    for (module_path, module_stmts) in &modules {
+        let mut module_checker = typechecker::TypeChecker::new();
+        register_module_sidecars(&mut module_checker, MODULE_SELF, module_path, module_stmts)?;
+        module_checker.expose_module_functions(MODULE_SELF);
+        let file = module_path.join("module.orch");
+        module_checker
+            .type_check(module_stmts)
+            .map_err(|e| type_error_in(&file.to_string_lossy(), &e))?;
+    }
+
+    let module_stmts: Vec<&[ast::Stmt]> = modules.iter().map(|(_, stmts)| stmts.as_slice()).collect();
+    library_rules(&ast, &module_stmts, library)?;
 
     println!("[orchestrate] {} — no type errors found", input_file);
+    Ok(())
+}
+
+/// The alias a module's own foreign functions are registered under while the module is
+/// checked by itself; `expose_module_functions` makes them callable by bare name.
+const MODULE_SELF: &str = "__module";
+
+/// A type error with the file it is in, one line per error, as `check` prints it.
+fn type_error_in(file: &str, e: &str) -> String {
+    let lines: Vec<String> = e.lines()
+        .map(|line| {
+            if line.trim_start().starts_with("line ") || line.contains(':') {
+                format!("{}:{}", file, line)
+            } else {
+                format!("{}:1: {}", file, line)
+            }
+        })
+        .collect();
+    format!("Type Error: {}", lines.join("\n"))
+}
+
+/// Registers the functions a module's `load_foreign` sidecars declare, under `local_name`,
+/// as the build does; a language the build does not support is the build's error here.
+fn register_module_sidecars(type_checker: &mut typechecker::TypeChecker, local_name: &str, module_path: &Path, module_stmts: &[ast::Stmt]) -> Result<(), String> {
+    for stmt in module_stmts {
+        if let ast::StmtNode::LoadForeign { language, path, .. } = &stmt.node {
+            if language == "rust" {
+                // As the build does, so a call into a Rust foreign module — the
+                // standard library included — is typed here rather than unknown.
+                let sidecar_path = module_path.join(path).with_extension("orch_ffi");
+                if let Ok(content) = fs::read_to_string(&sidecar_path) {
+                    let sidecar_name = sidecar_path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown.orch_ffi");
+                    let (signatures, _) = crate::dependencies::split_sidecar(&content);
+                    register_rust_ffi_from_sidecar(&signatures, local_name, sidecar_name, type_checker)
+                        .map_err(|e| format!("Rust FFI sidecar error: {}", e))?;
+                }
+            } else if language == "typescript" {
+                let content = fs::read_to_string(module_path.join(path).with_extension("orch_ffi")).map_err(|e| e.to_string())?;
+                for h in crate::typescript::sidecar(&content)? {
+                    type_checker.register_foreign_function(local_name, &h.name, h.params.into_iter().map(|p| p.ty).collect(), h.return_type);
+                }
+            } else if language == "wasm" {
+                // The module itself is the authority on what it exports, so this
+                // is the same check the build runs.
+                let (signatures, _, _) = wasm_sidecar(&module_path, path)?;
+                for signature in signatures {
+                    let params = signature.params.iter().map(|(_, ty)| ty.clone()).collect();
+                    type_checker.register_foreign_function(local_name, &signature.name, params, signature.ret.clone());
+                }
+            } else if matches!(language.as_str(), "c" | "cpp" | "zig" | "swift" | "csharp") {
+                let sidecar_path = module_path.join(path).with_extension("orch_ffi");
+                if let Ok(content) = fs::read_to_string(&sidecar_path) {
+                    let file_name = sidecar_path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown.orch_ffi").to_string();
+                    for signature in ffi_parser::parse_ffi(&content, language, &file_name)? {
+                        if signature.drop { continue; }
+                        let params = signature.params.iter().map(|(_, ty)| ty.clone()).collect();
+                        type_checker.register_foreign_function(local_name, &signature.name, params, signature.ret.clone());
+                    }
+                }
+            } else {
+                return Err(format!("load_foreign: language '{}' is not supported currently", language));
+            }
+        }
+    }
     Ok(())
 }
 

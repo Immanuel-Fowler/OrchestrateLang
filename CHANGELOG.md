@@ -9,7 +9,29 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+### Added
+- **`orchestrate check --lib`** checks a program the way `build --lib` builds it:
+  `host` blocks, `on_tick`, and grants are allowed, and a library's own rules hold —
+  host names, grants that name a host function, one typed `on_tick`, lifecycle hooks in
+  the entry file, the shape of `main`. Those rules now live in one function that `build`
+  and `check` both call, so the two cannot drift apart. Plain `check` applies the
+  standalone rules `run` and `build` apply, so it refuses a `host` block or an `on_tick`,
+  which the build without `--lib` always refused; check a library with `--lib`.
+  Patch-level, under CONTRIBUTING.md's rule for a command that only reports on existing
+  code: nothing compiles or runs differently, and the only programs plain `check` now
+  refuses are ones its matching build already refused.
+
 ### Fixed
+- **`check` walks the modules a program imports, and refuses a foreign language the
+  build does not support.** Each imported module's own declarations are typechecked in
+  the module's own scope, with its foreign functions callable by their bare names, so a
+  type error in a serverlet declared in a module is a `check` error that names the
+  module's file and line; it used to pass `check` and fail in Cargo, as the new corpus
+  program `module_serverlet_body_type_error` did. A `load_foreign` in a language the
+  compiler does not support is the build's own error, now from `check` as well. With the
+  checks above, all 89 programs in the diagnostics corpus are rejected by `check`: none
+  reaches the build, and none reaches rustc. Patch-level: invalid programs and modules
+  are refused earlier, and every valid one still checks.
 - **`orchestrate check` refuses a wait where the compiler cannot put one.** Four
   mistakes that only the build caught are `check` errors now: a `fn` that calls a task
   (a module's too), `sleep`, a serverlet, or a `parallel` block anywhere in its body; a

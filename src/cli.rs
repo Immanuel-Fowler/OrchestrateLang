@@ -15,6 +15,7 @@ fn print_help(invocation: &str) {
     println!("  build --lib --dependency '<name> = <spec>'   Add a Cargo dependency to the generated crate (repeatable)");
     println!("  build --lib --dependencies <file.toml>       Add the dependencies a TOML fragment declares");
     println!("  check <file.orch>            Type-check only — no compilation (fast)");
+    println!("  check --lib <file.orch>      Type-check as build --lib would: host blocks, ticks, grants");
     println!("  check-foreign <file.orch>    Check foreign sources with their own language's checker");
     println!("  check-foreign --deep         Also run mypy on Python and cargo check on Rust (slower)");
     println!();
@@ -111,11 +112,23 @@ pub fn run(invocation: &str, args: &[String]) {
         }
 
         "check" => {
-            if args.len() < 3 {
-                eprintln!("Usage: {} check <file.orch>", invocation);
-                std::process::exit(1);
+            let mut input = None;
+            let mut library = false;
+            for arg in &args[2..] {
+                match arg.as_str() {
+                    "--lib" => library = true,
+                    value if !value.starts_with('-') && input.is_none() => input = Some(value),
+                    _ => {
+                        eprintln!("Unknown check argument: {}", arg);
+                        std::process::exit(1);
+                    }
+                }
             }
-            if let Err(e) = driver::run_check(&args[2]) {
+            let Some(input) = input else {
+                eprintln!("Usage: {} check [--lib] <file.orch>", invocation);
+                std::process::exit(1);
+            };
+            if let Err(e) = driver::run_check(input, library) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }

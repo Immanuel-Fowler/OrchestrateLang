@@ -1,0 +1,2 @@
+use module m: "./modules/bad_serverlet"
+orchestrator main() { let t = start m.Tally()  print(to_string(t.add(1)))  stop_orch() }

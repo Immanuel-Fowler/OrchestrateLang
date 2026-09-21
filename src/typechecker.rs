@@ -261,6 +261,21 @@ impl TypeChecker {
         self.functions.contains_key(name)
     }
 
+    /// Makes the functions registered under `alias` callable by their bare names as well,
+    /// as they are from inside the module that declares them.
+    pub fn expose_module_functions(&mut self, alias: &str) {
+        let prefix = format!("{}::", alias);
+        let bare: Vec<(String, (Vec<Type>, Type))> = self.functions.iter()
+            .filter_map(|(key, signature)| key.strip_prefix(&prefix).map(|name| (name.to_string(), signature.clone())))
+            .collect();
+        for (name, signature) in bare {
+            if let Some(type_params) = self.generic_functions.get(&format!("{prefix}{name}")).cloned() {
+                self.generic_functions.entry(name.clone()).or_insert(type_params);
+            }
+            self.functions.entry(name).or_insert(signature);
+        }
+    }
+
     pub fn register_foreign_function(&mut self, alias: &str, name: &str, params: Vec<Type>, ret_ty: Type) {
         let full_name = format!("{}::{}", alias, name);
         self.functions.insert(full_name, (params, ret_ty));
