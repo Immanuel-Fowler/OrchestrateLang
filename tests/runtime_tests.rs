@@ -1044,3 +1044,143 @@ orchestrator main(procs: process[worker]) { }
 "#);
     assert_eq!(out.trim(), "18");
 }
+
+/// Arrays and structs cross the sandbox boundary under the C ABI's rules: an array is a
+/// pointer and a count, a struct is its `#[repr(C)]` bytes, what the host writes for a
+/// call it frees after it, and what the guest returns the host copies and frees. State
+/// of those types lives in the guest like any other, and a handler may return it.
+#[test]
+fn runtime_sandbox_serverlet_carries_arrays_and_structs() {
+    let out = run_orch("sandbox_arrays", r#"
+struct Point { x: int, y: int }
+struct Sample { weight: float, ok: bool, at: Point }
+struct Label { text: string, n: int }
+
+serverlet Plugin sandbox(memory_limit: "16mb", timeout: "2s") {
+    let seen = [0]
+    let origin = Point { x: 100, y: 200 }
+
+    on total(items: int[]) -> int {
+        let sum = 0
+        for item in items { sum = sum + item }
+        append(seen, sum)
+        return sum
+    }
+    on scaled(items: float[], by: float) -> float[] {
+        return map(items, fn(v: float) -> float { v * by })
+    }
+    on flip(flags: bool[]) -> bool[] {
+        return map(flags, fn(f: bool) -> bool { f == false })
+    }
+    on shift(p: Point) -> Point {
+        return Point { x: p.x + origin.x, y: p.y + origin.y }
+    }
+    on weigh(s: Sample) -> Sample {
+        return Sample { weight: s.weight * 2.0, ok: s.ok == false, at: Point { x: s.at.x + 1, y: s.at.y + 1 } }
+    }
+    on history() -> int[] { return seen }
+    on tag(text: string, items: int[]) -> string {
+        return text + ":" + to_string(length(items))
+    }
+    on empty(items: int[]) -> int[] { return items }
+}
+
+orchestrator main() {
+    let p = start Plugin()
+    print(to_string(p.total([1, 2, 3, 4])))
+    print(to_string(p.total([10, 20])))
+    let doubled = p.scaled([1.5, 2.5], 2.0)
+    print(to_string(doubled[0]) + "," + to_string(doubled[1]))
+    let flipped = p.flip([true, false, true])
+    print(to_string(flipped[0]) + "," + to_string(flipped[1]) + "," + to_string(flipped[2]))
+    let moved = p.shift(Point { x: 1, y: 2 })
+    print(to_string(moved.x) + "," + to_string(moved.y))
+    let weighed = p.weigh(Sample { weight: 1.25, ok: true, at: Point { x: 5, y: 6 } })
+    print(to_string(weighed.weight) + "," + to_string(weighed.ok) + "," + to_string(weighed.at.x) + "," + to_string(weighed.at.y))
+    let seen = p.history()
+    print(to_string(seen[0]) + "," + to_string(seen[1]) + "," + to_string(seen[2]))
+    print(p.tag("items", [7, 8, 9]))
+    let nothing = p.empty([])
+    print(to_string(length(nothing)))
+    stop_orch()
+}
+"#);
+    assert_eq!(out.trim(), "10\n30\n3,5\nfalse,true,false\n101,202\n2.5,false,6,7\n0,10,30\nitems:3\n0");
+}
+
+/// What the host writes into the guest for a call, it frees after the call. Before this
+/// was so, every string argument stayed allocated in guest memory, and a serverlet that
+/// took strings walked into its memory cap and then failed every call. 20,000 one-kilobyte
+/// strings under an 8mb cap succeed only if each one is released.
+#[test]
+fn runtime_sandbox_frees_what_the_host_writes() {
+    let out = run_orch("sandbox_frees_arguments", r#"
+serverlet Echo sandbox(memory_limit: "8mb", timeout: "5s") {
+    on shout(text: string) -> string { return text }
+    on total(items: int[]) -> int { return length(items) }
+}
+orchestrator main() {
+    let e = start Echo()
+    let text = "x"
+    for i in range(1023) { text = text + "x" }
+    let texts = [text]
+    let items = [0]
+    for i in range(1, 128) { append(items, i) }
+    let arrays = [items]
+    let failures = 0
+    for i in range(20000) {
+        let payload = texts[0]
+        if e.shout(payload) != texts[0] { failures = failures + 1 }
+        let numbers = arrays[0]
+        if e.total(numbers) != 128 { failures = failures + 1 }
+    }
+    print("failures: " + to_string(failures))
+    stop_orch()
+}
+"#);
+    assert_eq!(out.trim(), "failures: 0");
+}
+
+/// A handler may return its own state. `return seen` used to move the array out of the
+/// actor, the child, or the guest, which rustc refused with a message about moved values
+/// in code the user never wrote; it is a copy now, on every boundary.
+#[test]
+fn runtime_serverlet_handler_returns_its_state() {
+    let out = run_orch("serverlet_returns_state", r#"
+serverlet Local {
+    let seen = [0]
+    let label = "local"
+    on note(n: int) -> int { append(seen, n)  return length(seen) }
+    on history() -> int[] { return seen }
+    on name() -> string { label }
+}
+serverlet Child secret {
+    let seen = [0]
+    let label = "secret"
+    on note(n: int) -> int { append(seen, n)  return length(seen) }
+    on history() -> int[] { return seen }
+    on name() -> string { label }
+}
+serverlet Guest sandbox(memory_limit: "16mb", timeout: "2s") {
+    let seen = [0]
+    let label = "sandbox"
+    on note(n: int) -> int { append(seen, n)  return length(seen) }
+    on history() -> int[] { return seen }
+    on name() -> string { label }
+}
+orchestrator main() {
+    let l = start Local()
+    let c = start Child()
+    let g = start Guest()
+    print(to_string(l.note(1)) + "," + to_string(c.note(2)) + "," + to_string(g.note(3)))
+    let lh = l.history()
+    let ch = c.history()
+    let gh = g.history()
+    print(to_string(lh[1]) + "," + to_string(ch[1]) + "," + to_string(gh[1]))
+    print(l.name() + "," + c.name() + "," + g.name())
+    print(to_string(l.note(4)) + "," + to_string(c.note(5)) + "," + to_string(g.note(6)))
+    stop_orch()
+}
+"#);
+    assert_eq!(out.trim(), "2,2,2\n1,2,3\nlocal,secret,sandbox\n3,3,3");
+}

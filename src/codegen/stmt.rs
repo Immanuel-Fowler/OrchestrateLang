@@ -81,7 +81,7 @@ impl Codegen {
                     let before = self.shared_touches.get();
                     let awaits_before = self.awaits;
                     let outer = std::mem::replace(&mut self.guard_held, true);
-                    let compiled = self.compile_expr(expr);
+                    let compiled = format!("{}{}", self.compile_expr(expr), self.state_copy_suffix(expr));
                     self.guard_held = outer;
                     if self.shared_touches.get() != before && self.awaits != awaits_before {
                         self.errors.push(
@@ -589,6 +589,7 @@ impl Codegen {
 
                 // Build match arms with catch_unwind for panic safety
                 let mut match_arms = Vec::new();
+                self.handler_state = state_names(state);
                 for h in handlers {
                     let variant_name = pascal_case(&h.name);
                     let mut bindings = h.params.iter().map(|p| p.name.clone()).collect::<Vec<String>>();
@@ -620,6 +621,8 @@ impl Codegen {
                         name, variant_name, bindings_str, body_str, crash_recovery
                     ));
                 }
+
+                self.handler_state.clear();
 
                 let mut state_vars = Vec::new();
                 for s in state {
@@ -758,6 +761,7 @@ impl Codegen {
         }
 
         let mut arms = Vec::new();
+        self.handler_state = state_names(state);
         for (k, h) in handlers.iter().enumerate() {
             let mut arg_lets = Vec::new();
             for p in &h.params {
@@ -778,6 +782,8 @@ impl Codegen {
                 k = k, args = arg_lets.join("\n"), body = body, finish = finish
             ));
         }
+
+        self.handler_state.clear();
 
         // The child is its own program, so it needs the struct definitions (and wire impls)
         // its handlers can use.
@@ -812,12 +818,18 @@ impl Codegen {
     /// guest instead of running inline, under the declared memory cap and timeout. A call
     /// that traps is reported and answered with the return type's default, so one hostile
     /// or broken call cannot take the program with it.
+    ///
+    /// Values cross under the C ABI's rules (0.14.0): a number goes as itself; a string or
+    /// an array is a pointer and a length or count into the guest's memory; a struct is
+    /// its `#[repr(C)]` bytes behind a pointer. What the host writes for a call it frees
+    /// after the call, and what the guest returns the host copies and frees.
     fn compile_sandbox_host(
         &mut self,
         name: &str,
         handlers: &[Handler],
         config: &crate::ast::SandboxConfig,
     ) -> String {
+        let bail = "{ eprintln!(\"[orchestrate] {}\", __error); __guest.reset(); let _ = reply_to.send(Default::default()); continue; }";
         let mut arms = Vec::new();
         for h in handlers {
             let variant = pascal_case(&h.name);
@@ -829,20 +841,43 @@ impl Codegen {
                 .collect::<Vec<_>>()
                 .join(", ");
 
-            // Strings are copied into guest memory first; numbers go as they are.
+            // Strings, arrays, and structs are copied into guest memory first and freed
+            // once the call is back; numbers go as they are.
             let mut setup = String::new();
+            let mut cleanup = String::new();
             let mut arguments = Vec::new();
             let mut wasm_params = Vec::new();
             for p in &h.params {
-                match p.ty {
+                match &p.ty {
                     Type::Str => {
                         setup.push_str(&format!(
-                            "                    let ({0}_pointer, {0}_length) = match __guest.write_string(&{0}) {{\n                        Ok(__written) => __written,\n                        Err(__error) => {{ eprintln!(\"[orchestrate] {{}}\", __error); __guest.reset(); let _ = reply_to.send(Default::default()); continue; }}\n                    }};\n",
+                            "                    let ({0}_pointer, {0}_length) = match __guest.write_string(&{0}) {{ Ok(__written) => __written, Err(__error) => {bail} }};\n",
                             p.name
                         ));
+                        cleanup.push_str(&format!("                    __guest.free({0}_pointer, {0}_length);\n", p.name));
                         arguments.push(format!("{}_pointer", p.name));
                         arguments.push(format!("{}_length", p.name));
                         wasm_params.push("i32".to_string());
+                        wasm_params.push("i32".to_string());
+                    }
+                    Type::Array(_, _) => {
+                        setup.push_str(&format!(
+                            "                    let ({0}_pointer, {0}_count, {0}_length) = match __guest.write_array(&{0}) {{ Ok(__written) => __written, Err(__error) => {bail} }};\n",
+                            p.name
+                        ));
+                        cleanup.push_str(&format!("                    __guest.free({0}_pointer, {0}_length);\n", p.name));
+                        arguments.push(format!("{}_pointer", p.name));
+                        arguments.push(format!("{}_count", p.name));
+                        wasm_params.push("i32".to_string());
+                        wasm_params.push("i32".to_string());
+                    }
+                    Type::Named(sname) => {
+                        setup.push_str(&format!(
+                            "                    let ({0}_pointer, {0}_length) = match __guest.write_struct(std::mem::size_of::<{1}>(), |__out| __orch_sandbox_write_{1}(&{0}, __out)) {{ Ok(__written) => __written, Err(__error) => {bail} }};\n",
+                            p.name, sname
+                        ));
+                        cleanup.push_str(&format!("                    __guest.free({0}_pointer, {0}_length);\n", p.name));
+                        arguments.push(format!("{}_pointer", p.name));
                         wasm_params.push("i32".to_string());
                     }
                     Type::Bool => {
@@ -863,7 +898,6 @@ impl Codegen {
                 Type::Void => "()",
                 Type::Float => "f64",
                 Type::Bool => "i32",
-                Type::Str => "i64",
                 _ => "i64",
             };
             // A one-element tuple keeps its trailing comma, or it stops being a tuple.
@@ -875,9 +909,17 @@ impl Codegen {
                 1 => format!("{},", arguments[0]),
                 _ => arguments.join(", "),
             };
-            let convert = match h.return_type {
+            let convert = match &h.return_type {
                 Type::Bool => "                    let __value = __value != 0;\n".to_string(),
-                Type::Str => "                    let __value = match __guest.read_string(__value) {\n                        Ok(__text) => __text,\n                        Err(__error) => { eprintln!(\"[orchestrate] {}\", __error); __guest.reset(); let _ = reply_to.send(Default::default()); continue; }\n                    };\n".to_string(),
+                Type::Str => format!("                    let __value = match __guest.read_string(__value) {{ Ok(__text) => __text, Err(__error) => {bail} }};\n"),
+                Type::Array(inner, _) => format!(
+                    "                    let __value = match __guest.read_array::<{}>(__value) {{ Ok(__items) => __items, Err(__error) => {bail} }};\n",
+                    self.compile_type(inner)
+                ),
+                Type::Named(sname) => format!(
+                    "                    let __value = match __guest.read_struct(__value, std::mem::size_of::<{0}>(), __orch_sandbox_read_{0}) {{ Ok(__struct) => __struct, Err(__error) => {bail} }};\n",
+                    sname
+                ),
                 _ => String::new(),
             };
 
@@ -893,8 +935,8 @@ impl Codegen {
                      }};\n                    \
                      let __value = match __outcome {{\n                        \
                          Ok(__value) => __value,\n                        \
-                         Err(__error) => {{ eprintln!(\"[orchestrate] {{}}\", __error); __guest.reset(); let _ = reply_to.send(Default::default()); continue; }}\n                    \
-                     }};\n{convert}                    \
+                         Err(__error) => {bail}\n                    \
+                     }};\n{cleanup}{convert}                    \
                      let _ = reply_to.send(__value);\n                \
                  }}",
                 name = name,
@@ -905,12 +947,22 @@ impl Codegen {
                 results = results,
                 handler = h.name,
                 tuple_args = tuple_args,
+                cleanup = cleanup,
                 convert = convert,
+                bail = bail,
             ));
         }
 
+        // The struct codecs the arms above call, once per file.
+        let codecs = if self.sandbox_codecs_emitted {
+            String::new()
+        } else {
+            self.sandbox_codecs_emitted = true;
+            sandbox_struct_codecs(&self.struct_defs)
+        };
+
         format!(
-            "#[allow(non_snake_case)]\npub fn start_{name}() -> {name}Client {{\n    \
+            "{codecs}#[allow(non_snake_case)]\npub fn start_{name}() -> {name}Client {{\n    \
                  let (tx, mut rx) = tokio::sync::mpsc::channel::<{name}Msg>(100);\n    \
                  tokio::spawn(async move {{\n        \
                      let mut __guest = match crate::__OrchGuest::new({name:?}, include_bytes!(\"sandbox_{name}.wasm\"), Some({memory}), Some({timeout})) {{\n            \
@@ -921,6 +973,7 @@ impl Codegen {
                          match msg {{\n{arms}\n            }}\n        }}\n    \
                  }});\n    \
                  {name}Client {{ tx }}\n}}",
+            codecs = codecs,
             name = name,
             memory = config.memory_bytes().unwrap_or(64 * 1024 * 1024),
             timeout = config.timeout_ms().unwrap_or(5_000),
@@ -929,16 +982,17 @@ impl Codegen {
     }
 
     /// The WASM guest crate `lib.rs` for a sandboxed serverlet: the serverlet's state as a
-    /// struct that lives inside the guest between calls, and one exported `extern "C"`
-    /// function per handler. Numbers cross as themselves; a string crosses as a pointer
-    /// and a length into the guest's own memory, allocated by the allocator both sides
-    /// share.
+    /// struct that lives inside the guest between calls, the file's struct definitions,
+    /// and one exported `extern "C"` function per handler. Numbers cross as themselves; a
+    /// string or an array crosses as a pointer and a length or count into the guest's own
+    /// memory, and a struct as its `#[repr(C)]` bytes, all allocated by the allocator
+    /// both sides share.
     fn compile_sandbox_guest(&mut self, name: &str, state: &[Stmt], handlers: &[Handler]) -> String {
-        if let Some(reason) = secret_unsupported_reason(handlers) {
-            return format!(
-                "compile_error!({:?});\n",
-                format!("sandbox serverlet '{}': {}", name, reason.replace("secret serverlets", "sandboxed serverlets"))
-            );
+        // The entry file's serverlets were checked by the typechecker; a module's were
+        // not, so the gate is here too, reported by the driver before anything builds.
+        if let Some(reason) = sandbox_unsupported_reason(name, handlers, &self.struct_defs) {
+            self.errors.push(reason);
+            return String::new();
         }
 
         // The state's types come from the typechecker, since a struct field cannot be
@@ -954,10 +1008,10 @@ impl Codegen {
                 .or_else(|| declared.iter().find(|(n, _)| n == field).map(|(_, t)| t.clone()))
                 .or_else(|| literal_type(value));
             let Some(resolved) = resolved else {
-                return format!(
-                    "compile_error!({:?});\n",
-                    format!("sandbox serverlet '{name}': state '{field}' has no type the compiler can name; add a type annotation")
-                );
+                self.errors.push(format!(
+                    "sandboxed serverlet '{name}': state '{field}' has no type the compiler can name; add a type annotation"
+                ));
+                return String::new();
             };
             let value = self.compile_expr(value);
             initializers.push(format!("        let mut {field}: {} = {value};", self.compile_type(&resolved)));
@@ -970,6 +1024,7 @@ impl Codegen {
             names.iter().map(|field| (field.clone(), false)).collect();
 
         let mut exports = Vec::new();
+        self.handler_state = state_names(state);
         for h in handlers {
             // Handler parameters shadow state of the same name, as they do in-process.
             let mut scope = std::collections::HashSet::new();
@@ -987,13 +1042,29 @@ impl Codegen {
             let mut params = Vec::new();
             let mut unpack = String::new();
             for p in &h.params {
-                match p.ty {
+                match &p.ty {
                     Type::Str => {
                         params.push(format!("{}_pointer: i32", p.name));
                         params.push(format!("{}_length: i32", p.name));
                         unpack.push_str(&format!(
                             "    let {0} = __orch_unpack({0}_pointer, {0}_length);\n",
                             p.name
+                        ));
+                    }
+                    Type::Array(inner, _) => {
+                        params.push(format!("{}_pointer: i32", p.name));
+                        params.push(format!("{}_count: i32", p.name));
+                        unpack.push_str(&format!(
+                            "    let {0}: Vec<{1}> = __orch_unpack_array({0}_pointer, {0}_count);\n",
+                            p.name,
+                            self.compile_type(inner)
+                        ));
+                    }
+                    Type::Named(sname) => {
+                        params.push(format!("{}_pointer: i32", p.name));
+                        unpack.push_str(&format!(
+                            "    let {0} = __orch_sandbox_read_{1}(__orch_bytes({0}_pointer, std::mem::size_of::<{1}>() as i32));\n",
+                            p.name, sname
                         ));
                     }
                     Type::Bool => {
@@ -1003,11 +1074,17 @@ impl Codegen {
                     _ => params.push(format!("{}: {}", p.name, self.compile_type(&p.ty))),
                 }
             }
-            let (returns, open, close) = match h.return_type {
+            let (returns, open, close) = match &h.return_type {
                 Type::Void => (String::new(), String::new(), String::new()),
                 Type::Str => (" -> i64".to_string(), "__orch_pack(".to_string(), ")".to_string()),
+                Type::Array(_, _) => (" -> i64".to_string(), "__orch_pack_array(".to_string(), ")".to_string()),
+                Type::Named(sname) => (
+                    " -> i64".to_string(),
+                    "{ let __value = ".to_string(),
+                    format!("; __orch_pack_struct(std::mem::size_of::<{0}>(), |__out| __orch_sandbox_write_{0}(&__value, __out)) }}", sname),
+                ),
                 Type::Bool => (" -> i32".to_string(), "(".to_string(), ") as i32".to_string()),
-                _ => (format!(" -> {}", self.compile_type(&h.return_type)), String::new(), String::new()),
+                other => (format!(" -> {}", self.compile_type(other)), String::new(), String::new()),
             };
             exports.push(format!(
                 "#[unsafe(no_mangle)]\npub extern \"C\" fn {hname}({params}){returns} {{\n{unpack}    {open}__orch_state(|__state| {{ {body} }}){close}\n}}",
@@ -1021,46 +1098,105 @@ impl Codegen {
             ));
         }
 
+        self.handler_state.clear();
+
+        // Every struct in the file, so a handler body or the state can use any of them;
+        // the codecs, for the ones that can cross.
+        let structs = self.struct_defs.iter()
+            .map(|(sname, sfields)| {
+                let fields_str = sfields.iter()
+                    .map(|(fname, fty)| format!("    pub {}: {},", fname, self.compile_type(fty)))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!("#[derive(Clone, Debug, Default)]\n#[repr(C)]\npub struct {} {{\n{}\n}}\n", sname, fields_str)
+            })
+            .collect::<String>() + &sandbox_struct_codecs(&self.struct_defs);
+
         format!(
 "// Generated by Orchestrate Compiler — sandbox guest for serverlet '{name}'\n\
 #![allow(unused_variables)]\n#![allow(dead_code)]\n#![allow(unused_imports)]\n#![allow(unused_parens)]\n#![allow(unused_mut)]\n#![allow(improper_ctypes_definitions)]\n\n\
 {preamble}\n\
+{pod}\
+{structs}\n\
 /// The serverlet's state. It lives here, inside the guest, for as long as the instance\n\
 /// does, so one call sees what the call before it left.\n\
 struct __OrchState {{\n{fields}\n}}\n\
 impl __OrchState {{\n    fn new() -> __OrchState {{\n{initializers}\n        __OrchState {{ {names} }}\n    }}\n}}\n\
 thread_local! {{ static __ORCH_STATE: std::cell::RefCell<__OrchState> = std::cell::RefCell::new(__OrchState::new()); }}\n\
 fn __orch_state<R>(body: impl FnOnce(&mut __OrchState) -> R) -> R {{\n    __ORCH_STATE.with(|cell| body(&mut cell.borrow_mut()))\n}}\n\n\
-/// The allocator the host shares, so a string is allocated and released on one side.\n\
-#[unsafe(no_mangle)]\npub extern \"C\" fn orch_alloc(len: i32) -> i32 {{\n    \
-if len <= 0 {{ return 0; }}\n    \
-let layout = std::alloc::Layout::from_size_align(len as usize, 1).expect(\"layout\");\n    \
-unsafe {{ std::alloc::alloc(layout) as i32 }}\n}}\n\
-#[unsafe(no_mangle)]\npub extern \"C\" fn orch_free(ptr: i32, len: i32) {{\n    \
-if ptr == 0 || len <= 0 {{ return; }}\n    \
-let layout = std::alloc::Layout::from_size_align(len as usize, 1).expect(\"layout\");\n    \
-unsafe {{ std::alloc::dealloc(ptr as *mut u8, layout) }}\n}}\n\
-/// A string the host wrote into guest memory; the host owns that allocation.\n\
-fn __orch_unpack(ptr: i32, len: i32) -> String {{\n    \
-if ptr == 0 || len <= 0 {{ return String::new(); }}\n    \
-let bytes = unsafe {{ std::slice::from_raw_parts(ptr as *const u8, len as usize) }};\n    \
-String::from_utf8_lossy(bytes).into_owned()\n}}\n\
-/// A string for the host, as (pointer << 32) | length. The host reads it and hands the\n\
-/// allocation back through `orch_free`.\n\
-fn __orch_pack(text: String) -> i64 {{\n    \
-let bytes = text.into_bytes();\n    \
-if bytes.is_empty() {{ return 0; }}\n    \
-let pointer = orch_alloc(bytes.len() as i32);\n    \
-unsafe {{ std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer as *mut u8, bytes.len()) }};\n    \
-((pointer as i64) << 32) | bytes.len() as i64\n}}\n\n{exports}\n",
+{marshal}\n{exports}\n",
             name = name,
             preamble = runtime_preamble(true, false),
+            pod = super::core::WASM_POD,
+            structs = structs,
             fields = fields.join("\n"),
             initializers = initializers.join("\n"),
             names = names.join(", "),
+            marshal = SANDBOX_GUEST_MARSHAL,
             exports = exports.join("\n\n")
         )
     }
+}
+
+/// The guest's side of the boundary: the allocator both sides share, and the packing of
+/// a string, an array, or a struct for the host. Eight-byte aligned, so the guest can
+/// read numbers in place.
+const SANDBOX_GUEST_MARSHAL: &str = r#"/// The allocator the host shares, so a value is allocated and released on one side.
+#[unsafe(no_mangle)]
+pub extern "C" fn orch_alloc(len: i32) -> i32 {
+    if len <= 0 { return 0; }
+    let layout = std::alloc::Layout::from_size_align(len as usize, 8).expect("layout");
+    unsafe { std::alloc::alloc(layout) as i32 }
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn orch_free(ptr: i32, len: i32) {
+    if ptr == 0 || len <= 0 { return; }
+    let layout = std::alloc::Layout::from_size_align(len as usize, 8).expect("layout");
+    unsafe { std::alloc::dealloc(ptr as *mut u8, layout) }
+}
+/// Bytes the host wrote into guest memory for this call. The host owns that allocation
+/// and frees it once the call returns, so the guest copies what it keeps.
+fn __orch_bytes<'a>(ptr: i32, len: i32) -> &'a [u8] {
+    if ptr == 0 || len <= 0 { return &[]; }
+    unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) }
+}
+fn __orch_unpack(ptr: i32, len: i32) -> String {
+    String::from_utf8_lossy(__orch_bytes(ptr, len)).into_owned()
+}
+fn __orch_unpack_array<T: __OrchWasmPod>(ptr: i32, count: i32) -> Vec<T> {
+    let bytes = __orch_bytes(ptr, count.saturating_mul(T::SIZE as i32));
+    bytes.chunks_exact(T::SIZE).map(T::from_bytes).collect()
+}
+/// A value for the host, as (pointer << 32) | length or count. The host reads it and
+/// hands the allocation back through `orch_free`.
+fn __orch_pack_bytes(bytes: &[u8], low: i32) -> i64 {
+    if bytes.is_empty() { return 0; }
+    let pointer = orch_alloc(bytes.len() as i32);
+    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer as *mut u8, bytes.len()) };
+    ((pointer as i64) << 32) | (low as i64 & 0xffff_ffff)
+}
+fn __orch_pack(text: String) -> i64 {
+    let bytes = text.into_bytes();
+    __orch_pack_bytes(&bytes, bytes.len() as i32)
+}
+fn __orch_pack_array<T: __OrchWasmPod>(items: Vec<T>) -> i64 {
+    let mut bytes = Vec::with_capacity(items.len() * T::SIZE);
+    for item in &items { item.to_bytes(&mut bytes); }
+    __orch_pack_bytes(&bytes, items.len() as i32)
+}
+fn __orch_pack_struct(size: usize, encode: impl FnOnce(&mut [u8])) -> i64 {
+    let mut bytes = vec![0u8; size];
+    encode(&mut bytes);
+    __orch_pack_bytes(&bytes, size as i32)
+}
+"#;
+
+/// The names a serverlet's state declares.
+fn state_names(state: &[Stmt]) -> std::collections::HashSet<String> {
+    state.iter().filter_map(|s| match &s.node {
+        StmtNode::Let { name, .. } => Some(name.clone()),
+        _ => None,
+    }).collect()
 }
 
 /// The type of a literal initializer, for state whose type nothing else supplies — a
@@ -1135,22 +1271,79 @@ pub(crate) fn wire_struct_impls(structs: &StructDefs) -> String {
         .collect()
 }
 
-fn secret_unsupported_reason(handlers: &[Handler]) -> Option<String> {
+/// What crosses a sandbox boundary, in the words the diagnostics use.
+const SANDBOX_TYPES: &str = "a sandboxed serverlet carries int, float, bool, string, int[], float[], bool[], and structs whose fields are those numbers, booleans, or such structs";
+
+/// Returns Some(reason) if a handler uses a type the sandbox boundary cannot carry: the
+/// C ABI's set (0.14.0), so the fastest boundary and the contained one carry the same
+/// values under the same ownership rule. Strings cross too, as they do there.
+pub(crate) fn sandbox_unsupported_reason(name: &str, handlers: &[Handler], structs: &StructDefs) -> Option<String> {
     for h in handlers {
         for p in &h.params {
-            if !matches!(p.ty, Type::Int | Type::Float | Type::Str | Type::Bool) {
+            if !sandbox_type_supported(&p.ty, structs) {
                 return Some(format!(
-                    "handler '{}' parameter '{}' uses an unsupported type; secret serverlets support only int, float, bool, string in v1",
-                    h.name, p.name
+                    "sandboxed serverlet '{}': handler '{}' parameter '{}' has type {}, which does not cross the sandbox boundary; {}",
+                    name, h.name, p.name, p.ty.display_name(), SANDBOX_TYPES
                 ));
             }
         }
-        if !matches!(h.return_type, Type::Int | Type::Float | Type::Str | Type::Bool | Type::Void) {
+        if h.return_type != Type::Void && !sandbox_type_supported(&h.return_type, structs) {
             return Some(format!(
-                "handler '{}' uses an unsupported return type; secret serverlets support int, float, bool, string, void in v1",
-                h.name
+                "sandboxed serverlet '{}': handler '{}' returns {}, which does not cross the sandbox boundary; {}",
+                name, h.name, h.return_type.display_name(), SANDBOX_TYPES
             ));
         }
     }
     None
+}
+
+fn sandbox_type_supported(ty: &Type, structs: &StructDefs) -> bool {
+    match ty {
+        Type::Int | Type::Float | Type::Bool | Type::Str => true,
+        Type::Array(inner, _) => matches!(**inner, Type::Int | Type::Float | Type::Bool),
+        Type::Named(name) => sandbox_struct_supported(name, structs, 0),
+        _ => false,
+    }
+}
+
+/// A struct crosses as its `#[repr(C)]` bytes, so its fields must be numbers, booleans,
+/// or structs that cross the same way — the C ABI's rule for a struct by value.
+fn sandbox_struct_supported(name: &str, structs: &StructDefs, depth: usize) -> bool {
+    if depth > 32 {
+        return false;
+    }
+    structs.iter()
+        .find(|(n, _)| n == name)
+        .map_or(false, |(_, fields)| fields.iter().all(|(_, fty)| match fty {
+            Type::Int | Type::Float | Type::Bool => true,
+            Type::Named(inner) => sandbox_struct_supported(inner, structs, depth + 1),
+            _ => false,
+        }))
+}
+
+/// Field-by-field codecs for the structs that can cross a sandbox boundary: each field
+/// at its own `#[repr(C)]` offset, little-endian, padding zero. Emitted on both sides,
+/// so neither side reads a struct's padding or depends on the other's endianness.
+pub(crate) fn sandbox_struct_codecs(structs: &StructDefs) -> String {
+    structs.iter()
+        .filter(|(name, _)| sandbox_struct_supported(name, structs, 0))
+        .map(|(name, fields)| {
+            let writes = fields.iter().map(|(f, ty)| match ty {
+                Type::Int | Type::Float => format!("    out[std::mem::offset_of!({name}, {f})..][..8].copy_from_slice(&value.{f}.to_le_bytes());"),
+                Type::Bool => format!("    out[std::mem::offset_of!({name}, {f})] = value.{f} as u8;"),
+                Type::Named(inner) => format!("    __orch_sandbox_write_{inner}(&value.{f}, &mut out[std::mem::offset_of!({name}, {f})..][..std::mem::size_of::<{inner}>()]);"),
+                _ => String::new(),
+            }).collect::<Vec<_>>().join("\n");
+            let reads = fields.iter().map(|(f, ty)| match ty {
+                Type::Int => format!("        {f}: i64::from_le_bytes(bytes[std::mem::offset_of!({name}, {f})..][..8].try_into().unwrap()),"),
+                Type::Float => format!("        {f}: f64::from_le_bytes(bytes[std::mem::offset_of!({name}, {f})..][..8].try_into().unwrap()),"),
+                Type::Bool => format!("        {f}: bytes[std::mem::offset_of!({name}, {f})] != 0,"),
+                Type::Named(inner) => format!("        {f}: __orch_sandbox_read_{inner}(&bytes[std::mem::offset_of!({name}, {f})..][..std::mem::size_of::<{inner}>()]),"),
+                _ => String::new(),
+            }).collect::<Vec<_>>().join("\n");
+            format!(
+                "fn __orch_sandbox_write_{name}(value: &{name}, out: &mut [u8]) {{\n{writes}\n}}\nfn __orch_sandbox_read_{name}(bytes: &[u8]) -> {name} {{\n    {name} {{\n{reads}\n    }}\n}}\n"
+            )
+        })
+        .collect()
 }

@@ -1,0 +1,13 @@
+// A struct with a string field does not cross a sandbox boundary, and `check` must say so
+// in OrchestrateLang rather than leave it to the guest's build.
+struct Label { text: string, n: int }
+
+serverlet Plugin sandbox(memory_limit: "16mb", timeout: "2s") {
+    on tag(l: Label) -> int { return l.n }
+}
+
+orchestrator main() {
+    let p = start Plugin()
+    print(to_string(p.tag(Label { text: "a", n: 1 })))
+    stop_orch()
+}

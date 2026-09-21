@@ -101,6 +101,32 @@ impl std::fmt::Display for OrchHandle {
 
 "#;
 
+/// A value that crosses a sandbox boundary as its bytes: the element of an array, or a
+/// field of a struct. Little-endian, as wasm memory is, whatever the host is. Emitted on
+/// both sides of the boundary, so one definition decides the layout.
+pub const WASM_POD: &str = r#"trait __OrchWasmPod: Copy {
+    const SIZE: usize;
+    fn to_bytes(self, out: &mut Vec<u8>);
+    fn from_bytes(bytes: &[u8]) -> Self;
+}
+impl __OrchWasmPod for i64 {
+    const SIZE: usize = 8;
+    fn to_bytes(self, out: &mut Vec<u8>) { out.extend_from_slice(&self.to_le_bytes()); }
+    fn from_bytes(bytes: &[u8]) -> Self { i64::from_le_bytes(bytes[..8].try_into().unwrap()) }
+}
+impl __OrchWasmPod for f64 {
+    const SIZE: usize = 8;
+    fn to_bytes(self, out: &mut Vec<u8>) { out.extend_from_slice(&self.to_le_bytes()); }
+    fn from_bytes(bytes: &[u8]) -> Self { f64::from_le_bytes(bytes[..8].try_into().unwrap()) }
+}
+impl __OrchWasmPod for bool {
+    const SIZE: usize = 1;
+    fn to_bytes(self, out: &mut Vec<u8>) { out.push(self as u8); }
+    fn from_bytes(bytes: &[u8]) -> Self { bytes[0] != 0 }
+}
+
+"#;
+
 pub const SECRET_MIRROR_HELPERS: &str = r#"async fn __secret_write_frame<W: tokio::io::AsyncWriteExt + Unpin>(w: &mut W, kind: u8, call_id: u32, payload: &[u8]) -> std::io::Result<()> {
     w.write_all(&((payload.len() + 5) as u32).to_le_bytes()).await?;
     w.write_all(&[kind]).await?;
@@ -331,6 +357,13 @@ pub struct Codegen {
     pub foreign_handle_params: std::collections::HashMap<String, Vec<bool>>,
     /// Struct definitions in the file being generated, used by the serverlet wire codec.
     pub struct_defs: Vec<(String, Vec<(String, Type)>)>,
+    /// The file's sandbox struct codecs have been emitted; they are shared by every
+    /// sandboxed serverlet in the file, so the first one emits them.
+    pub(super) sandbox_codecs_emitted: bool,
+    /// The state bindings of the serverlet whose handler is being compiled. A handler
+    /// that returns one of them returns a copy: the state stays where it is, and the
+    /// value is not moved out of the actor, the child, or the guest.
+    pub(super) handler_state: HashSet<String>,
 }
 
 impl Codegen {
@@ -362,6 +395,8 @@ impl Codegen {
             foreign_handle_params: std::collections::HashMap::new(),
             sandbox_programs: Vec::new(),
             struct_defs: Vec::new(),
+            sandbox_codecs_emitted: false,
+            handler_state: HashSet::new(),
         }
     }
 
@@ -737,6 +772,16 @@ impl Codegen {
         }
     }
 
+    /// `.clone()` when `expr` is a bare name of the current handler's state, so
+    /// `return seen` hands the caller a copy rather than moving the state out of the
+    /// serverlet, which rustc would refuse. A number's clone is a copy.
+    pub(super) fn state_copy_suffix(&self, expr: &Expr) -> &'static str {
+        match &expr.node {
+            ExprNode::Identifier(name) if self.handler_state.contains(name) && !self.is_shared(name) => ".clone()",
+            _ => "",
+        }
+    }
+
     /// Arguments for a foreign function whose handle parameters are passed by reference.
     pub(super) fn compile_args_for(&mut self, key: &str, args: &[Expr]) -> String {
         let flags = self.foreign_handle_params.get(key).cloned().unwrap_or_default();
@@ -1063,12 +1108,17 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
         }
         if is_main && self.needs_wasm {
             code.push_str(include_str!("wasm_host.rs.txt"));
+            code.push_str(WASM_POD);
         }
         if is_main {
             let shared = self.shared_state_code(stmts);
             code.push_str(&shared);
         }
 
+        self.struct_defs = stmts.iter().filter_map(|s| match &s.node {
+            StmtNode::StructDef { name, fields } => Some((name.clone(), fields.clone())),
+            _ => None,
+        }).collect();
         if self.has_secret {
             if self.library && !is_main {
                 code.push_str("use crate::{OrchWire, OrchFrame, __wire_to_bytes, __wire_from_bytes, __secret_write_frame, __secret_read_frame, ORCH_WIRE_VERSION, ORCH_KIND_HELLO, ORCH_KIND_READY, ORCH_KIND_CALL, ORCH_KIND_REPLY, ORCH_KIND_ERROR, ORCH_KIND_BYE};\n");
@@ -1076,10 +1126,6 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
                 code.push_str(SECRET_MIRROR_HELPERS);
                 code.push_str(WIRE_CODEC);
             }
-            self.struct_defs = stmts.iter().filter_map(|s| match &s.node {
-                StmtNode::StructDef { name, fields } => Some((name.clone(), fields.clone())),
-                _ => None,
-            }).collect();
             code.push_str(&super::stmt::wire_struct_impls(&self.struct_defs));
         }
 
@@ -1165,7 +1211,8 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
                 };
                 match &s.node {
                     StmtNode::Expr(expr) if is_last && !force_semicolons => {
-                        parts.push(format!("{}{}", src_comment, self.compile_expr(expr)));
+                        let compiled = self.compile_expr(expr);
+                        parts.push(format!("{}{}{}", src_comment, compiled, self.state_copy_suffix(expr)));
                     }
                     _ => {
                         let compiled = self.compile_stmt(s);

@@ -51,6 +51,10 @@ fn test_error_cases() {
     assert_compilation_fails("enum_unit_variant_binds.orch", "Signal::Stop");
     assert_compilation_fails("task_uses_top_level_state.orch", "which is top-level state");
     assert_compilation_fails("task_uses_top_level_state.orch", "pass it in as a parameter");
+    // A sandbox handler type that cannot cross is the typechecker's error, so `check`
+    // reports it and no guest crate is ever built.
+    assert_compilation_fails("sandbox_unsupported_type.orch", "does not cross the sandbox boundary");
+    assert_compilation_fails("sandbox_unsupported_type.orch", "parameter 'l' has type Label");
 }
 
 /// Every wrong program must fail as OrchestrateLang, never as rustc.

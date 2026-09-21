@@ -457,11 +457,19 @@ impl TypeChecker {
             StmtNode::Break | StmtNode::Continue => {}
             StmtNode::UseModule { .. } | StmtNode::Load { .. } | StmtNode::LoadForeign { .. } |
             StmtNode::StructDef { .. } | StmtNode::EnumDef { .. } => {}
-            StmtNode::Serverlet { name: serverlet, state, handlers, crash_handler, landline, grants, .. } => {
+            StmtNode::Serverlet { name: serverlet, state, handlers, crash_handler, landline, grants, sandbox, .. } => {
                 let mut seen = HashSet::new();
                 for grant in grants {
                     if !seen.insert(grant) || !self.functions.contains_key(&grant.replace(".", "::")) || !self.host_groups.contains(grant.split('.').next().unwrap()) {
                         return Err(format!("Unknown or duplicate host grant '{}'", grant));
+                    }
+                }
+                if sandbox.is_some() {
+                    // Checked here rather than in the guest's build, so `check` rejects
+                    // it and the report is the compiler's own.
+                    let structs = self.struct_defs.iter().map(|(n, f)| (n.clone(), f.clone())).collect::<Vec<_>>();
+                    if let Some(reason) = crate::codegen::stmt::sandbox_unsupported_reason(serverlet, handlers, &structs) {
+                        return Err(reason);
                     }
                 }
                 if landline.is_some() {

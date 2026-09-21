@@ -234,9 +234,11 @@ impl __OrchGuest {
             .ok_or_else(|| format!("wasm module '{}' exports no memory, so it cannot pass strings", self.name))
     }
 
-    /// Copy a string into the guest through its own allocator and return (pointer, length).
-    fn write_string(&mut self, text: &str) -> Result<(i32, i32), String> {
-        let bytes = text.as_bytes();
+    /// Copy bytes into the guest through its own allocator and return (pointer, length).
+    /// What the host writes for a call, the host frees after it, through `free`: the
+    /// allocation is borrowed by the guest for the call, the way a C-ABI array parameter
+    /// is borrowed by the foreign function and released by its owner.
+    fn write_bytes(&mut self, bytes: &[u8]) -> Result<(i32, i32), String> {
         if bytes.is_empty() {
             return Ok((0, 0));
         }
@@ -248,30 +250,97 @@ impl __OrchGuest {
         let pointer = alloc
             .call(&mut self.store, bytes.len() as i32)
             .map_err(|e| self.failed("orch_alloc", &e))?;
+        if pointer == 0 {
+            return Err(format!("wasm module '{}' could not allocate {} bytes", self.name, bytes.len()));
+        }
         memory
             .write(&mut self.store, pointer as usize, bytes)
-            .map_err(|e| format!("wasm module '{}': writing a string failed: {}", self.name, e))?;
+            .map_err(|e| format!("wasm module '{}': writing into the guest failed: {}", self.name, e))?;
         Ok((pointer, bytes.len() as i32))
     }
 
-    /// Read a string the guest returned as a packed (pointer << 32) | length, then hand
-    /// the guest's own allocation back to it.
-    fn read_string(&mut self, packed: i64) -> Result<String, String> {
-        let pointer = (packed >> 32) as i32;
-        let length = (packed & 0xffff_ffff) as i32;
+    /// Copy a string into the guest and return (pointer, length).
+    fn write_string(&mut self, text: &str) -> Result<(i32, i32), String> {
+        self.write_bytes(text.as_bytes())
+    }
+
+    /// Copy an array into the guest as its elements' bytes and return
+    /// (pointer, count, length in bytes): the guest reads pointer and count, the host
+    /// frees pointer and length.
+    fn write_array<T: __OrchWasmPod>(&mut self, items: &[T]) -> Result<(i32, i32, i32), String> {
+        let mut bytes = Vec::with_capacity(items.len() * T::SIZE);
+        for item in items {
+            item.to_bytes(&mut bytes);
+        }
+        let (pointer, length) = self.write_bytes(&bytes)?;
+        Ok((pointer, items.len() as i32, length))
+    }
+
+    /// Copy a struct into the guest as its `#[repr(C)]` bytes, written field by field by
+    /// the generated `encode` with padding left zero, and return (pointer, length).
+    fn write_struct(&mut self, size: usize, encode: impl FnOnce(&mut [u8])) -> Result<(i32, i32), String> {
+        let mut bytes = vec![0u8; size];
+        encode(&mut bytes);
+        self.write_bytes(&bytes)
+    }
+
+    /// Hand an allocation back to the guest: everything the host wrote for a call, once
+    /// the call has returned. A guest that trapped is replaced instead, allocations and all.
+    fn free(&mut self, pointer: i32, length: i32) {
         if pointer == 0 || length <= 0 {
-            return Ok(String::new());
+            return;
+        }
+        if let Ok(free) = self.instance.get_typed_func::<(i32, i32), ()>(&mut self.store, "orch_free") {
+            let _ = free.call(&mut self.store, (pointer, length));
+        }
+    }
+
+    /// Read `length` bytes the guest allocated at `pointer`, then free them: what the
+    /// guest returns, the host copies and releases, as the C-ABI wrapper does with a
+    /// `malloc`'d return.
+    fn take_bytes(&mut self, pointer: i32, length: i32, what: &str) -> Result<Vec<u8>, String> {
+        if pointer == 0 || length <= 0 {
+            return Ok(Vec::new());
         }
         let memory = self.memory()?;
         let mut bytes = vec![0u8; length as usize];
         memory
             .read(&self.store, pointer as usize, &mut bytes)
-            .map_err(|e| format!("wasm module '{}': reading a string failed: {}", self.name, e))?;
-        if let Ok(free) = self.instance.get_typed_func::<(i32, i32), ()>(&mut self.store, "orch_free") {
-            let _ = free.call(&mut self.store, (pointer, length));
-        }
+            .map_err(|e| format!("wasm module '{}': reading {} failed: {}", self.name, what, e))?;
+        self.free(pointer, length);
+        Ok(bytes)
+    }
+
+    /// Read a string the guest returned as a packed (pointer << 32) | length.
+    fn read_string(&mut self, packed: i64) -> Result<String, String> {
+        let bytes = self.take_bytes((packed >> 32) as i32, (packed & 0xffff_ffff) as i32, "a string")?;
         String::from_utf8(bytes)
             .map_err(|_| format!("wasm module '{}' returned a string that is not UTF-8", self.name))
+    }
+
+    /// Read an array the guest returned as a packed (pointer << 32) | count.
+    fn read_array<T: __OrchWasmPod>(&mut self, packed: i64) -> Result<Vec<T>, String> {
+        let count = (packed & 0xffff_ffff) as i32;
+        let length = count
+            .checked_mul(T::SIZE as i32)
+            .ok_or_else(|| format!("wasm module '{}' returned an array too large to read", self.name))?;
+        let bytes = self.take_bytes((packed >> 32) as i32, length, "an array")?;
+        Ok(bytes.chunks_exact(T::SIZE).map(T::from_bytes).collect())
+    }
+
+    /// Read a struct the guest returned as a packed (pointer << 32) | size, decoded field
+    /// by field by the generated `decode`. The size is checked against the host's own
+    /// layout, so the two sides cannot quietly disagree about a struct.
+    fn read_struct<T>(&mut self, packed: i64, size: usize, decode: impl FnOnce(&[u8]) -> T) -> Result<T, String> {
+        let length = (packed & 0xffff_ffff) as i32;
+        if length < 0 || length as usize != size {
+            return Err(format!(
+                "wasm module '{}' returned a struct of {} bytes where the host expects {}",
+                self.name, length, size
+            ));
+        }
+        let bytes = self.take_bytes((packed >> 32) as i32, length, "a struct")?;
+        Ok(decode(&bytes))
     }
 
     fn failed(&self, function: &str, error: &wasmtime::Error) -> String {

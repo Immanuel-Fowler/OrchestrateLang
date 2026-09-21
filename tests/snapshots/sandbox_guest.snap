@@ -68,6 +68,28 @@ fn clock_micros() -> i64 {
 }
 
 
+trait __OrchWasmPod: Copy {
+    const SIZE: usize;
+    fn to_bytes(self, out: &mut Vec<u8>);
+    fn from_bytes(bytes: &[u8]) -> Self;
+}
+impl __OrchWasmPod for i64 {
+    const SIZE: usize = 8;
+    fn to_bytes(self, out: &mut Vec<u8>) { out.extend_from_slice(&self.to_le_bytes()); }
+    fn from_bytes(bytes: &[u8]) -> Self { i64::from_le_bytes(bytes[..8].try_into().unwrap()) }
+}
+impl __OrchWasmPod for f64 {
+    const SIZE: usize = 8;
+    fn to_bytes(self, out: &mut Vec<u8>) { out.extend_from_slice(&self.to_le_bytes()); }
+    fn from_bytes(bytes: &[u8]) -> Self { f64::from_le_bytes(bytes[..8].try_into().unwrap()) }
+}
+impl __OrchWasmPod for bool {
+    const SIZE: usize = 1;
+    fn to_bytes(self, out: &mut Vec<u8>) { out.push(self as u8); }
+    fn from_bytes(bytes: &[u8]) -> Self { bytes[0] != 0 }
+}
+
+
 /// The serverlet's state. It lives here, inside the guest, for as long as the instance
 /// does, so one call sees what the call before it left.
 struct __OrchState {
@@ -84,33 +106,53 @@ fn __orch_state<R>(body: impl FnOnce(&mut __OrchState) -> R) -> R {
     __ORCH_STATE.with(|cell| body(&mut cell.borrow_mut()))
 }
 
-/// The allocator the host shares, so a string is allocated and released on one side.
+/// The allocator the host shares, so a value is allocated and released on one side.
 #[unsafe(no_mangle)]
 pub extern "C" fn orch_alloc(len: i32) -> i32 {
     if len <= 0 { return 0; }
-    let layout = std::alloc::Layout::from_size_align(len as usize, 1).expect("layout");
+    let layout = std::alloc::Layout::from_size_align(len as usize, 8).expect("layout");
     unsafe { std::alloc::alloc(layout) as i32 }
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn orch_free(ptr: i32, len: i32) {
     if ptr == 0 || len <= 0 { return; }
-    let layout = std::alloc::Layout::from_size_align(len as usize, 1).expect("layout");
+    let layout = std::alloc::Layout::from_size_align(len as usize, 8).expect("layout");
     unsafe { std::alloc::dealloc(ptr as *mut u8, layout) }
 }
-/// A string the host wrote into guest memory; the host owns that allocation.
-fn __orch_unpack(ptr: i32, len: i32) -> String {
-    if ptr == 0 || len <= 0 { return String::new(); }
-    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) };
-    String::from_utf8_lossy(bytes).into_owned()
+/// Bytes the host wrote into guest memory for this call. The host owns that allocation
+/// and frees it once the call returns, so the guest copies what it keeps.
+fn __orch_bytes<'a>(ptr: i32, len: i32) -> &'a [u8] {
+    if ptr == 0 || len <= 0 { return &[]; }
+    unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) }
 }
-/// A string for the host, as (pointer << 32) | length. The host reads it and hands the
-/// allocation back through `orch_free`.
-fn __orch_pack(text: String) -> i64 {
-    let bytes = text.into_bytes();
+fn __orch_unpack(ptr: i32, len: i32) -> String {
+    String::from_utf8_lossy(__orch_bytes(ptr, len)).into_owned()
+}
+fn __orch_unpack_array<T: __OrchWasmPod>(ptr: i32, count: i32) -> Vec<T> {
+    let bytes = __orch_bytes(ptr, count.saturating_mul(T::SIZE as i32));
+    bytes.chunks_exact(T::SIZE).map(T::from_bytes).collect()
+}
+/// A value for the host, as (pointer << 32) | length or count. The host reads it and
+/// hands the allocation back through `orch_free`.
+fn __orch_pack_bytes(bytes: &[u8], low: i32) -> i64 {
     if bytes.is_empty() { return 0; }
     let pointer = orch_alloc(bytes.len() as i32);
     unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer as *mut u8, bytes.len()) };
-    ((pointer as i64) << 32) | bytes.len() as i64
+    ((pointer as i64) << 32) | (low as i64 & 0xffff_ffff)
+}
+fn __orch_pack(text: String) -> i64 {
+    let bytes = text.into_bytes();
+    __orch_pack_bytes(&bytes, bytes.len() as i32)
+}
+fn __orch_pack_array<T: __OrchWasmPod>(items: Vec<T>) -> i64 {
+    let mut bytes = Vec::with_capacity(items.len() * T::SIZE);
+    for item in &items { item.to_bytes(&mut bytes); }
+    __orch_pack_bytes(&bytes, items.len() as i32)
+}
+fn __orch_pack_struct(size: usize, encode: impl FnOnce(&mut [u8])) -> i64 {
+    let mut bytes = vec![0u8; size];
+    encode(&mut bytes);
+    __orch_pack_bytes(&bytes, size as i32)
 }
 
 #[unsafe(no_mangle)]
@@ -119,7 +161,7 @@ pub extern "C" fn tally(n: i64) -> i64 {
     // orch:5:9
         __state.count = OrchAdd::orch_add(&(__state.count), &(n));
         // orch:6:9
-        return __state.count;
+        return __state.count.clone();
 } })
 }
 
