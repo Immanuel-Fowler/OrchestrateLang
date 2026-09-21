@@ -1218,3 +1218,28 @@ orchestrator main() {
         "11\ncrashed: wasm call 'Hostile::spin' failed: the guest ran past its timeout\n0\n11"
     );
 }
+
+/// A block whose last statement touches shared state takes the lock: a `while` body, an
+/// `if` branch, and a hook body all end in a block's tail expression, which used to be
+/// compiled without the guard and reach rustc as an unknown `__shared`.
+#[test]
+fn runtime_shared_state_in_a_block_tail_takes_the_lock() {
+    let out = run_orch("shared_block_tail", r#"
+shared let hits = 0
+shared let label = "none"
+fn touch(n: int) {
+    if n % 2 == 0 { hits = hits + n } else { label = "odd" }
+}
+orchestrator main() {
+    let k = 0
+    while k < 5 { k = k + 1  hits = hits + 1 }
+    touch(4)
+    touch(3)
+    let snapshot = if hits > 5 { hits } else { 0 }
+    print(to_string(snapshot) + "," + label)
+    stop_orch()
+}
+"#);
+    // 5 from the loop's tail statement and 4 from the if branch: both took the lock.
+    assert_eq!(out.trim(), "9,odd");
+}

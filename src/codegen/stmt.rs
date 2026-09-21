@@ -33,7 +33,15 @@ impl Codegen {
                     );
                 }
                 self.define_local(name);
-                let declared = if let Some(t) = ty {
+                // A `let` that reads shared state takes the lock around its initialiser —
+                // only the initialiser, as a block expression, so the binding itself stays
+                // in the enclosing scope for the statements after it.
+                let val_str = if self.shared_touches.get() != before && !outer {
+                    self.wrap_shared(val_str)
+                } else {
+                    val_str
+                };
+                if let Some(t) = ty {
                     // Closure types can't be annotated directly — let Rust infer
                     if matches!(t, Type::Fn(_, _)) {
                         format!("let mut {} = {};", name, val_str)
@@ -42,12 +50,7 @@ impl Codegen {
                     }
                 } else {
                     format!("let mut {} = {};", name, val_str)
-                };
-                // A `let` that reads shared state takes the lock around its initialiser.
-                if self.shared_touches.get() != before && !outer {
-                    return self.wrap_shared(declared);
                 }
-                declared
             }
             StmtNode::Break => "break".to_string(),
             StmtNode::Continue => "continue".to_string(),

@@ -60,6 +60,16 @@ version of the claim.
   gate runs in codegen, before Cargo, because module bodies are not walked by the
   typechecker.
 
+- **`shared let` did not compile in three ordinary positions.** A block whose tail
+  statement touched shared state — a `while` body, an `if` branch, or an `on_tick` body
+  — was compiled without the lock and reached rustc as an unknown `__shared`; and a
+  `let` whose initialiser read shared state was wrapped whole in the lock's block, so
+  the binding was gone on the next line. Both shipped in 0.13.0 and were found by the
+  tick benchmark's `shared let` case. Fixed on the tick-cost branch: a block tail takes
+  the lock as a statement does, and the lock wraps only a `let`'s initialiser.
+  Regression tests: `runtime_shared_state_in_a_block_tail_takes_the_lock`,
+  `library_shared_state_in_hooks`.
+
 ## Found, not fixed
 
 - **A string passed to a serverlet call is moved.** `let n = s.shout(payload)` followed
@@ -112,3 +122,15 @@ version of the claim.
 - **Concurrent callers are branches of one `parallel` block**, so they are concurrent
   futures on the runtime, not OS threads. That measures callers queueing on one
   serverlet, which is the question; it does not measure two cores hammering one actor.
+
+## Benchmark caveats (tick cost)
+
+- **Medians overlap between cases within a few nanoseconds.** On an Apple M2 the OS
+  moves the thread between performance and efficiency cores and between clock states
+  during a run, so the `instance_let` median can come out below `empty`. The fastest
+  round is reported beside the median and is the figure to quote; the derived per-call
+  cost uses it. Run on an idle machine and compare cases within one run.
+- **The event case is a different question.** One host-fired event per tick costs about
+  200 ns: the trigger allocates the event future, the drain runs it, and the handler's
+  host call is inside. It is on the table because a host that fires events every tick
+  should know the price, not because it belongs to the tick-glue claim.

@@ -204,9 +204,9 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         binary = pathlib.Path(tmp) / "landline_latency"
         build = subprocess.run([orchestrate, "build", str(program), "-o", str(binary)], capture_output=True, text=True)
-        sys.stderr.write(build.stderr)
         if build.returncode != 0:
             sys.stdout.write(build.stdout)
+            sys.stderr.write(build.stderr)
             sys.exit("build failed")
         backend_lines = [line.strip() for line in build.stdout.splitlines() if "typescript" in line.lower() or "scriptc" in line.lower() or "bun" in line.lower()]
         result = subprocess.run([str(binary)], capture_output=True, text=True)

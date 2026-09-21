@@ -53,7 +53,25 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   pasted from that output rather than typed. The TypeScript rung is skipped, and said to
   be, when Bun or TypeScript 7 is missing.
 
+- **The tick cost is a committed benchmark.** `benchmarks/tick_cost/run.py` builds six
+  small library programs — an empty tick, one and five host calls, an instance `let`
+  increment, a `shared let` increment, and one host-fired event per tick — drives each
+  through `tick_sync` on a current-thread runtime in release mode, and reports the median
+  of 21 rounds of 200,000 ticks beside the `Host` trait method called through its vtable
+  alone. It writes CSV, JSON, and Markdown with the same environment header as the
+  boundary ladder. The 8 ns tick and 1.5 ns host-call figures from the 0.8.1 notes come
+  from this measurement now, not from a release note.
+
 ### Fixed
+- **A block whose last statement touches shared state takes the lock.** `while c {
+  hits = hits + 1 }`, `if c { hits = hits + 1 }`, and `on_tick(dt: float) { hits = hits + 1 }`
+  all end in a block's tail expression, which was compiled without the guard and reached
+  rustc as an unknown `__shared`. Found by the tick benchmark's `shared let` case. Every
+  block tail that touches shared state now takes the lock exactly as a statement does,
+  and a tail that also waits is refused with the same message.
+- **A `let` that reads shared state keeps its binding in scope.** `let snapshot = hits`
+  wrapped the whole declaration in the lock's block, so `snapshot` was gone on the next
+  line and rustc reported it missing. The lock now wraps only the initialiser.
 - **A sandboxed serverlet no longer leaks guest memory on every string argument.** The
   host allocated each string in guest memory and never freed it, so a serverlet that took
   strings walked into its memory cap and then failed every call: under an 8mb cap, 20,000

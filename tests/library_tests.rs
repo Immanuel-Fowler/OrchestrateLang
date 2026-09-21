@@ -264,6 +264,36 @@ fn main() {
     assert_eq!(output.trim(), format!("{}\n{}", tick(10), tick(20)));
 }
 
+/// `shared let` reached from a hook: the tick body is a block whose tail statement touches
+/// shared state, so it takes the lock through the context the hook is bound to.
+#[test]
+fn library_shared_state_in_hooks() {
+    let root = root("shared_in_hooks");
+    build(&root, r#"
+host world { fn record(n: int) }
+shared let hits = 0
+on_tick(dt: float) { hits = hits + 1 }
+on_stop { world.record(hits) }
+orchestrator main() {}
+"#);
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<i64>>>);
+impl scripts::Host for Host { fn world_record(&self, n: i64) -> Result<(), String> { self.0.lock().unwrap().push(n); Ok(()) } }
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let mut scripts = scripts::start(runtime.handle(), Host(recorded.clone())).unwrap();
+    scripts.ready_blocking(&runtime).unwrap();
+    for _ in 0..3 { scripts.tick_sync(&runtime, 0.016).unwrap(); }
+    scripts.tick_blocking(&runtime, 0.016).unwrap();
+    scripts.shutdown_blocking(&runtime).unwrap();
+    println!("{:?}", recorded.lock().unwrap());
+}
+"#);
+    assert_eq!(output.trim(), "[4]");
+}
+
 #[test]
 fn library_secret_and_drop_shutdown() {
     let root = root("secret");

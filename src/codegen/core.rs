@@ -1217,8 +1217,25 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
                 };
                 match &s.node {
                     StmtNode::Expr(expr) if is_last && !force_semicolons => {
+                        // The block's value, so it is not a statement — but it is still
+                        // one unit of work, and if it touches shared state it takes the
+                        // lock like any statement would. A `while` body, an `if` branch,
+                        // and a hook body all end here.
+                        let before = self.shared_touches.get();
+                        let awaits_before = self.awaits;
+                        let outer = std::mem::replace(&mut self.guard_held, true);
                         let compiled = self.compile_expr(expr);
-                        parts.push(format!("{}{}{}", src_comment, compiled, self.state_copy_suffix(expr)));
+                        self.guard_held = outer;
+                        if self.shared_touches.get() != before && self.awaits != awaits_before {
+                            self.errors.push(
+                                "a statement cannot both wait and touch shared state: the lock would be held across the wait, blocking every other reader. Split it into two statements.".to_string()
+                            );
+                        }
+                        let mut compiled = format!("{}{}", compiled, self.state_copy_suffix(expr));
+                        if self.shared_touches.get() != before && !outer {
+                            compiled = self.wrap_shared(compiled);
+                        }
+                        parts.push(format!("{}{}", src_comment, compiled));
                     }
                     _ => {
                         let compiled = self.compile_stmt(s);

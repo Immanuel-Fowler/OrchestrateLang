@@ -6,14 +6,15 @@ retype numbers: rerun the script and paste the Markdown it prints.
 ```sh
 cargo build --release
 ORCHESTRATE=target/release/orchestrate python3 benchmarks/landline_latency/run.py
+ORCHESTRATE=target/release/orchestrate python3 benchmarks/tick_cost/run.py
 ```
 
-The script writes CSV, JSON, and Markdown under `benchmarks/results/` (gitignored), and
+Each script writes CSV, JSON, and Markdown under `benchmarks/results/` (gitignored), and
 the JSON carries an environment header: CPU, OS, architecture, `orchestrate`, `rustc`,
 `cargo`, Python, the TypeScript toolchain and backend, the wasmtime version, the sample
 counts, the commit SHA, and whether the tree was dirty. Python 3.10+ is required.
 
-The benchmark does not run in CI, because shared runners are too noisy for timing. CI only
+Neither benchmark runs in CI, because shared runners are too noisy for timing. CI only
 checks that `landline_latency/main.orch` still typechecks.
 
 ## landline_latency — the boundary ladder
@@ -154,3 +155,34 @@ Nanoseconds per statement, each sample a batch of 1,000 statements; `loop-only` 
 | local-let | 2000 | 0 | 0 | 1 | 1 |
 | shared-let | 2000 | 9 | 10 | 11 | 25 |
 | loop-only | 2000 | 0 | 0 | 1 | 1 |
+
+## tick_cost — library mode
+
+Measures the glue around a synchronous library tick: `tick_sync` on a current-thread
+runtime, with an empty body, one host call, five host calls, an instance `let`
+increment, a `shared let` increment, and one host-fired event per tick, next to the
+`Host` trait method called through its vtable alone, which is the floor for a host call.
+Each case is its own program built with `build --lib` and driven by one Rust host in
+release mode: five warm-up rounds, then 21 rounds of 200,000 ticks; the number reported
+is the median round, with the fastest and the p90 round beside it. The fastest round is
+the figure to quote: the OS moves the thread between core types and clock states during
+a run, so medians overlap between cases within a few nanoseconds.
+
+### Sample results
+
+
+One run on Apple M2 (macOS-15.3.2-arm64-arm-64bit, arm64), 2026-09-21T03:17:52+00:00, commit `6d0686246e13` (dirty tree). rustc 1.98.1 (48a229cea 2026-09-01). Nanoseconds per `tick_sync` on a current-thread runtime: the median of 21 rounds of 200,000 ticks, after 5 warm-up rounds. Your numbers will differ.
+
+| Case | ns per tick (median) | fastest round | p90 round |
+|---|---:|---:|---:|
+| host_method_alone | 3.97 | 1.95 | 4.67 |
+| empty | 7.87 | 6.90 | 9.13 |
+| one_call | 7.47 | 7.11 | 7.68 |
+| five_calls | 14.26 | 12.90 | 14.57 |
+| instance_let | 6.41 | 6.24 | 7.56 |
+| shared_let | 11.91 | 10.94 | 12.43 |
+| event | 213.90 | 209.93 | 226.42 |
+
+Derived from the fastest rounds, which move least between runs: an empty tick costs 6.90 ns; each host call in a tick costs 1.45 ns (five calls minus one, over four), against 1.95 ns for the trait method called through its vtable alone. The empty tick and the one-call tick are within noise of each other at this resolution.
+
+Medians overlap between cases within a few nanoseconds: the OS moves the thread between core types and clock states during a run, which is why the fastest round is reported beside them. Run on an idle machine, and compare cases within one run.
