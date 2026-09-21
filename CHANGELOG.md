@@ -9,6 +9,10 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-09-21
+
+The sandbox catches up with the C ABI, and every claim is measured.
+
 ### Added
 - **Arrays and structs across the sandbox boundary.** A sandboxed serverlet carried `int`,
   `float`, `bool`, and `string`; it now carries `int[]`, `float[]`, `bool[]`, and structs
@@ -863,7 +867,8 @@ First tagged release.
   `option` / `result`, `try` / `catch`, supervision, `check`, the language server, or the
   standard library. See `examples/` for working code.
 
-[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.11.0...v0.12.0
