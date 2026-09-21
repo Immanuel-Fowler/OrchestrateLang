@@ -82,16 +82,19 @@ version of the claim.
   `python_landline_call_keeps_the_callers_arguments`,
   `typescript_landline_call_keeps_the_callers_arguments`.
 
+- **`closure_wrong_arity.orch` in the diagnostics corpus tested the parser, not arity.**
+  It used `(a: int) => a`, which is not closure syntax in this language, so it was
+  rejected as a syntax error before any arity check ran. Fixed on the diagnostics-corpus
+  branch: the case is `fn(x: int) -> int { x }` called with two arguments, and `check`
+  rejects it with "closure 'f' expects 1 arguments, got 2"; the arrow form is its own
+  case, `closure_arrow_syntax.orch`. Covered by `diagnostics_never_leak_rustc`.
+
 ## Found, not fixed
 
 - **Struct layout across the sandbox assumes a little-endian host.** Struct bytes are
   written field by field in little-endian order on both sides, so a big-endian host would
   still be correct; but no such host is tested, and the C ABI path (0.14.0) passes
   structs by value in native order, so the two would disagree there, not here.
-- **`closure_wrong_arity.orch` in the diagnostics corpus tests the parser, not arity.**
-  It uses `(a: int) => a`, which is not closure syntax in this language (`fn(a: int) ->
-  int { a }` is), so it is rejected as a syntax error before any arity check runs.
-  To be replaced in the diagnostics-corpus branch.
 - **The runtime tests keep their build scratch.** Each `runtime_tests` case builds its
   program in its own directory under the system temp dir and, except for the two sandbox
   cases, never removes it: about 140 MB per plain case and 400–600 MB per sandbox case
