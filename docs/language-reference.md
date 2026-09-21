@@ -833,7 +833,8 @@ refusing a sidecar that names an export the module lacks or types it differently
 runs the typechecker over the entry file. A program that passes is free of the errors the
 typechecker knows how to find: unknown names, mismatched types and arities in calls,
 handler calls a serverlet does not declare, `trigger` arguments that do not match the
-event, struct literals with missing or unknown fields, non-exhaustive matches, a `fn` that
+event, struct literals with missing or unknown fields, non-exhaustive matches, a body
+that declares a return type but can reach its end without returning, a `fn` that
 waits, a `task` that names top-level state, a handler type that cannot cross a secret,
 landline, or sandboxed boundary, and a sandboxed handler that calls a host function it
 was not granted. A name may be any Rust keyword that is not an OrchestrateLang keyword —

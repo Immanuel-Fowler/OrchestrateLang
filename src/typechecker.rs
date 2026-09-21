@@ -307,6 +307,42 @@ impl TypeChecker {
         }
     }
 
+    /// A body that declares a return type must end in a value or return on every path.
+    /// `fn f(n: int) -> int { if n > 0 { return 1 } }` reached rustc as E0317 before this;
+    /// a block whose tail is a statement types as void, so the check is on the tail's
+    /// type and on whether every path through the body returns.
+    fn check_body_returns(kind: &str, name: &str, return_type: &Type, body: &Expr, body_ty: Type, line: usize, col: usize) -> Result<(), String> {
+        if *return_type != Type::Void && body_ty == Type::Void && !Self::always_returns(body) {
+            return Err(format!(
+                "line {}, col {}: {} '{}' returns {} but can reach the end of its body without returning a value; return on every path, or end the body with a value",
+                line, col, kind, name, return_type.display_name()
+            ));
+        }
+        Ok(())
+    }
+
+    /// Every path through `expr` ends in a `return`. A loop is not counted: it may run
+    /// zero times, and rustc types `while` the same way.
+    fn always_returns(expr: &Expr) -> bool {
+        match &expr.node {
+            ExprNode::Block(stmts) => stmts.iter().any(Self::stmt_always_returns),
+            ExprNode::If { then_branch, else_branch: Some(else_branch), .. } => {
+                Self::always_returns(then_branch) && Self::always_returns(else_branch)
+            }
+            ExprNode::Match { arms, .. } => !arms.is_empty() && arms.iter().all(|arm| Self::always_returns(&arm.body)),
+            ExprNode::TryCatch { body, handler, .. } => Self::always_returns(body) && Self::always_returns(handler),
+            _ => false,
+        }
+    }
+
+    fn stmt_always_returns(stmt: &Stmt) -> bool {
+        match &stmt.node {
+            StmtNode::Return(_) => true,
+            StmtNode::Expr(expr) => Self::always_returns(expr),
+            _ => false,
+        }
+    }
+
     fn check_stmt(&mut self, stmt: &Stmt) -> Result<(), String> {
         match &stmt.node {
             StmtNode::Let { name, ty, value, .. } => {
@@ -352,7 +388,7 @@ impl TypeChecker {
                     }
                 }
             }
-            StmtNode::FnDecl { params, body, return_type, type_params, .. } => {
+            StmtNode::FnDecl { name, params, body, return_type, type_params, .. } => {
                 let prev_return = self.current_return_type.clone();
                 self.current_return_type = Some(return_type.clone());
                 self.push_env();
@@ -362,12 +398,13 @@ impl TypeChecker {
                 for p in params {
                     self.define_var(p.name.clone(), p.ty.clone());
                 }
-                self.infer_expr(body)?;
+                let body_ty = self.infer_expr(body)?;
                 self.pop_env();
                 self.current_return_type = prev_return;
+                Self::check_body_returns("function", name, return_type, body, body_ty, stmt.span.line, stmt.span.col)?;
             }
-            StmtNode::TaskDecl { params, body, return_type, type_params, .. } |
-            StmtNode::ProcessDecl { params, body, return_type, type_params, .. } => {
+            StmtNode::TaskDecl { name, params, body, return_type, type_params, .. } |
+            StmtNode::ProcessDecl { name, params, body, return_type, type_params, .. } => {
                 let prev_return = self.current_return_type.clone();
                 self.current_return_type = Some(return_type.clone());
                 self.push_env();
@@ -377,9 +414,10 @@ impl TypeChecker {
                 for p in params {
                     self.define_var(p.name.clone(), p.ty.clone());
                 }
-                self.infer_expr(body)?;
+                let body_ty = self.infer_expr(body)?;
                 self.pop_env();
                 self.current_return_type = prev_return;
+                Self::check_body_returns("task", name, return_type, body, body_ty, stmt.span.line, stmt.span.col)?;
             }
             StmtNode::OrchestratorDecl { params, body, return_type, .. } => {
                 let prev_return = self.current_return_type.clone();
@@ -542,7 +580,12 @@ impl TypeChecker {
                     for p in &h.params {
                         self.define_var(p.name.clone(), p.ty.clone());
                     }
-                    let checked = self.infer_expr(&h.body);
+                    // A landline handler is a declaration; its body is in Python or
+                    // TypeScript, so there is nothing here to fall off the end of.
+                    let checked = self.infer_expr(&h.body).and_then(|body_ty| {
+                        if landline.is_some() { return Ok(()); }
+                        Self::check_body_returns("handler", &h.name, &h.return_type, &h.body, body_ty, stmt.span.line, stmt.span.col)
+                    });
                     self.pop_env();
                     self.current_return_type = prev_return;
                     if let Err(error) = checked {

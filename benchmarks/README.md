@@ -221,18 +221,18 @@ code, by rustc against generated code (a leak, held to `KNOWN_LEAKS.txt` by the 
 ### Sample results
 
 
-88 deliberately invalid programs in `tests/error_cases/diagnostics/`, run on 2026-09-21T15:31:21+00:00 at commit `97fc4b8ab097` with OrchestrateLang compiler v0.14.0.
+88 deliberately invalid programs in `tests/error_cases/diagnostics/`, run on 2026-09-21T16:31:31+00:00 at commit `ac1dea3039fc` with OrchestrateLang compiler v0.14.0.
 
 | Rejected by | Programs | Meaning |
 |---|---:|---|
-| `orchestrate check` | 80 | the typechecker's own error, before any code is generated |
+| `orchestrate check` | 81 | the typechecker's own error, before any code is generated |
 | build, before Cargo | 6 | codegen or the driver, still the compiler's own error |
 | Cargo, no rustc code | 0 | a `compile_error!` the generator planted, reported through Cargo |
-| rustc | 2 | leaked: a rustc error against generated code |
+| rustc | 1 | leaked: a rustc error against generated code |
 | nothing | 0 | wrongly accepted |
 
-**80 of 88 invalid programs are rejected by `orchestrate check`.**
-86 of 88 are rejected as the compiler's own error before Cargo runs; 0 more are rejected through Cargo without a rustc error code; 2 leak a rustc error; 0 are wrongly accepted.
+**81 of 88 invalid programs are rejected by `orchestrate check`.**
+87 of 88 are rejected as the compiler's own error before Cargo runs; 0 more are rejected through Cargo without a rustc error code; 1 leak a rustc error; 0 are wrongly accepted.
 
 The per-case rows are in `benchmarks/results/diagnostics_coverage.md` after a run.
 

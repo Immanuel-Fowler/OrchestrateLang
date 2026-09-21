@@ -118,6 +118,15 @@ version of the claim.
   `library_keyword_names`; corpus cases `name_self`, `name_upper_self`, `name_super`,
   `name_crate`.
 
+- **`fn_missing_return` reached rustc.** `fn f(n: int) -> int { if n > 0 { return 1 } }`
+  reached rustc as E0317, because the typechecker typed a bare `if` as `void` and never
+  compared a body that ends in a statement with its declared return type. Fixed after the
+  paper branches landed: a body with a return type must end in a value or return on every
+  path (both branches of an `if`/`else`, every arm of a `match`, both sides of a
+  `try`/`catch`; a loop never counts, as in rustc), for functions, tasks, processes, and
+  handlers alike. Every example, benchmark program, and test program still checks.
+  Covered by `diagnostics_never_leak_rustc`, which now holds the corpus to one leak.
+
 ## Found, not fixed
 
 - **Struct layout across the sandbox assumes a little-endian host.** Struct bytes are
@@ -174,19 +183,14 @@ version of the claim.
 
 ## Diagnostics corpus: what still reaches rustc
 
-88 invalid programs; 80 rejected by `orchestrate check`, 6 by the build before Cargo,
-2 by rustc, 0 accepted (`benchmarks/results/diagnostics_coverage.md`). The build-time six
+88 invalid programs; 81 rejected by `orchestrate check`, 6 by the build before Cargo,
+1 by rustc, 0 accepted (`benchmarks/results/diagnostics_coverage.md`). The build-time six
 are compiler errors too, they just live in the driver or the generator: a `load_foreign`
 language the compiler does not know, `host` in a module or outside a library build, a
 `fn` that calls a task through a module, a sandboxed handler that waits, a `shared let`
 of an unshareable type, and a statement that both waits and touches shared state. The
-two leaks, listed in `tests/error_cases/diagnostics/KNOWN_LEAKS.txt`:
+one leak, listed in `tests/error_cases/diagnostics/KNOWN_LEAKS.txt`:
 
-- **`fn_missing_return`**: `fn f(n: int) -> int { if n > 0 { return 1 } }` reaches rustc
-  as E0317 ("`if` may be missing an `else` clause"). Catching it needs a definite-return
-  analysis over blocks, which the typechecker does not have; its block typing treats a
-  bare `if` as `void` and does not compare that with the declared return type when the
-  body ends in a statement.
 - **`generic_arg_conflict`**: `same(1, "x")` against `fn same<T>(a: T, b: T)` reaches
   rustc as E0308. `unify_type_param` records the first binding of `T` and does not
   refuse a second, incompatible one.

@@ -74,8 +74,8 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   from 30 to 88 deliberately invalid programs, across types, events, serverlets of every
   kind, processes, C, Rust, and WebAssembly sidecars, and module boundaries, with the
   module fixtures they import beside them. `diagnostics_never_leak_rustc` now runs each
-  through `orchestrate check` first and reports the count — 80 of 88 are rejected by
-  `check`, 6 more by the build before Cargo, 2 reach rustc — and holds the leaks to
+  through `orchestrate check` first and reports the count — 81 of 88 are rejected by
+  `check`, 6 more by the build before Cargo, 1 reaches rustc — and holds the leaks to
   `KNOWN_LEAKS.txt`, so a leak that appears or disappears fails the test until the list
   says so. `benchmarks/diagnostics_coverage.py` writes the same classification as CSV,
   JSON, and Markdown.
@@ -115,6 +115,15 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   in `docs/language-reference.md`, where it was already documented.
 
 ### Fixed
+- **A function that can fall off its end without returning is refused by `check`.**
+  `fn f(n: int) -> int { if n > 0 { return 1 } }` reached rustc as E0317 ("`if` may be
+  missing an `else` clause"). `orchestrate check` now requires a body that declares a
+  return type to end in a value or to return on every path — through both branches of an
+  `if`/`else`, every arm of a `match`, both sides of a `try`/`catch` — and says which
+  function, task, or handler can reach its end without one. `fn_missing_return` leaves
+  `KNOWN_LEAKS.txt`; of the 88 corpus programs, 81 are rejected by `check` and one still
+  reaches rustc. Patch-level: an invalid program is refused earlier, and no valid program
+  changes — every example, benchmark program, and test program still checks.
 - **A name that is a Rust keyword no longer breaks the generated Rust.** A handler
   named `move`, a `fn type()`, a `let mut`, a struct field `ref`, a module called `impl`,
   a C sidecar function `move` — any of the fifty-odd Rust keywords that are not
@@ -127,8 +136,7 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   `#[export_name = "move"]`, a landline handler is `move` on the wire and in Python or
   TypeScript, a C symbol is `move` for the linker. `self`, `Self`, `super`, and `crate`
   cannot be raw identifiers at all, so `orchestrate check` refuses them as names with an
-  error that says so; four corpus cases hold that, taking the corpus to 88 programs, 80
-  rejected by `check`. Regression tests use keyword names on every boundary, on a C
+  error that says so; four corpus cases hold that, taking the corpus to 88 programs. Regression tests use keyword names on every boundary, on a C
   sidecar and module, and in a library build. Patch-level: valid programs that were
   rejected now compile, and nothing that compiled before changes.
 - **The runtime tests clean up after themselves.** Each `runtime_tests` case built its
