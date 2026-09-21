@@ -293,3 +293,48 @@ fn main() {
         .unwrap();
     assert_eq!(success(&o), "");
 }
+
+#[test]
+fn typescript_landline_call_keeps_the_callers_arguments() {
+    // A string, an array, and a struct are each used again after the call that
+    // carried them; the call copies, it does not move.
+    if !available() {
+        return;
+    }
+    let root = root("keeps_arguments");
+    fs::write(
+        root.join("echo.ts"),
+        r#"
+export default class Echo {
+    shout(text: string): string { return text + "!"; }
+    total(xs: bigint[]): bigint { let t = 0n; for (const x of xs) t += x; return t; }
+    sum(p: {x: bigint; y: bigint}): bigint { return p.x + p.y; }
+}
+"#,
+    )
+    .unwrap();
+    let src = r#"
+struct Point { x: int, y: int }
+serverlet Echo via typescript(source: "echo.ts") {
+    on shout(text: string) -> string
+    on total(xs: int[]) -> int
+    on sum(p: Point) -> int
+}
+orchestrator main() {
+    let e = start Echo()
+    let payload = "hi"
+    let nums = [1, 2, 3]
+    let pt = Point { x: 4, y: 5 }
+    let a = e.shout(payload)
+    let b = e.total(nums)
+    let c = e.sum(pt)
+    print(a + " " + payload)
+    print(to_string(b) + " " + to_string(length(nums)))
+    print(to_string(c) + " " + to_string(pt.x))
+    stop_orch()
+}
+"#;
+    let stdout = success(&compile(&root, src, false, "bun"));
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.starts_with("[orchestrate]")).collect();
+    assert_eq!(lines, vec!["hi! hi", "6 3", "9 4"], "stdout: {stdout}");
+}

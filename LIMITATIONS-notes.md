@@ -70,13 +70,20 @@ version of the claim.
   Regression tests: `runtime_shared_state_in_a_block_tail_takes_the_lock`,
   `library_shared_state_in_hooks`.
 
+- **A value passed to a serverlet call was moved.** `let n = s.shout(payload)` followed
+  by any later use of `payload` reached rustc as E0382 ("borrow of moved value"), because
+  call arguments were moved into the message; the same for an array or a struct, on
+  every boundary. Fixed after the paper branches landed: a binding or a field in argument
+  position is copied at the call site, which is one place in codegen for all five
+  boundaries, so neither the message nor a wire protocol changed. Regression tests, one
+  per boundary: `runtime_serverlet_call_keeps_the_callers_arguments`,
+  `runtime_secret_serverlet_call_keeps_the_callers_arguments`,
+  `runtime_sandbox_serverlet_call_keeps_the_callers_arguments`,
+  `python_landline_call_keeps_the_callers_arguments`,
+  `typescript_landline_call_keeps_the_callers_arguments`.
+
 ## Found, not fixed
 
-- **A string passed to a serverlet call is moved.** `let n = s.shout(payload)` followed
-  by any later use of `payload` fails in rustc with E0382 ("borrow of moved value"),
-  because call arguments are moved into the message. A valid program is rejected by the
-  wrong compiler. Workaround: index a one-element array (`texts[0]`) to get a copy at
-  each use. Not fixed here because the fix touches every call path, not the sandbox.
 - **Struct layout across the sandbox assumes a little-endian host.** Struct bytes are
   written field by field in little-endian order on both sides, so a big-endian host would
   still be correct; but no such host is tested, and the C ABI path (0.14.0) passes
@@ -172,7 +179,7 @@ corpus, because the corpus is invalid programs:
 
 - a name that is a Rust keyword (`on move(...)`, see above);
 - a string passed to a serverlet call and used again (`let a = c.shout(text)  print(text)`),
-  E0382, see above;
+  E0382, since fixed, see above;
 - a `task` that touches `shared let` — this one compiles and is correct; it was
   a wrong candidate, listed here so nobody adds it back.
 

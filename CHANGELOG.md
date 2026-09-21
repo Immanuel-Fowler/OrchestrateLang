@@ -111,6 +111,15 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   in `docs/language-reference.md`, where it was already documented.
 
 ### Fixed
+- **A serverlet call no longer consumes the caller's argument.** `let n = s.shout(payload)`
+  followed by any later use of `payload` failed in rustc with E0382, because the call
+  moved its arguments into the message; the same for an array or a struct, on every
+  boundary. A binding or a field passed to a handler is now copied at the call site, so
+  the caller keeps it; a temporary is still moved, and neither the message nor any wire
+  protocol changed. Regression tests reuse a string, an array, and a struct after a call
+  in-process, on a secret serverlet, in a sandbox, and over the Python and TypeScript
+  landlines. Patch-level: a valid program that was rejected now compiles, and nothing
+  that compiled before behaves differently.
 - **Sixteen wrong programs are told so by `orchestrate check` instead of rustc.** The
   corpus found them: a call into a module or a foreign function with the wrong argument
   types, or to a function the module does not have (which now lists what it has); a

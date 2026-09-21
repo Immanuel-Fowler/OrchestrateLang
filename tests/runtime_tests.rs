@@ -1243,3 +1243,52 @@ orchestrator main() {
     // 5 from the loop's tail statement and 4 from the if branch: both took the lock.
     assert_eq!(out.trim(), "9,odd");
 }
+
+/// A serverlet with one handler per value kind a call can carry, under `header`, and a
+/// caller that uses each argument again after the call. The call owns its message, so
+/// the caller's binding has to be copied, not moved — on every boundary.
+fn arguments_survive_program(header: &str) -> String {
+    format!(r#"
+struct Point {{ x: int, y: int }}
+{header}
+    on shout(text: string) -> string {{ return text + "!" }}
+    on total(xs: int[]) -> int {{ let t = 0  for x in xs {{ t = t + x }}  return t }}
+    on sum(p: Point) -> int {{ return p.x + p.y }}
+}}
+orchestrator main() {{
+    let e = start Echo()
+    let payload = "hi"
+    let nums = [1, 2, 3]
+    let pt = Point {{ x: 4, y: 5 }}
+    let a = e.shout(payload)
+    let b = e.total(nums)
+    let c = e.sum(pt)
+    print(a + " " + payload)
+    print(to_string(b) + " " + to_string(length(nums)))
+    print(to_string(c) + " " + to_string(pt.x))
+    stop_orch()
+}}
+"#)
+}
+const ARGUMENTS_SURVIVE: &str = "hi! hi\n6 3\n9 4";
+
+#[test]
+fn runtime_serverlet_call_keeps_the_callers_arguments() {
+    let out = run_orch("call_keeps_arguments", &arguments_survive_program("serverlet Echo {"));
+    assert_eq!(out.trim(), ARGUMENTS_SURVIVE);
+}
+
+#[test]
+fn runtime_secret_serverlet_call_keeps_the_callers_arguments() {
+    let out = run_orch("secret_call_keeps_arguments", &arguments_survive_program("serverlet Echo secret {"));
+    assert_eq!(out.trim(), ARGUMENTS_SURVIVE);
+}
+
+#[test]
+fn runtime_sandbox_serverlet_call_keeps_the_callers_arguments() {
+    let out = run_orch(
+        "sandbox_call_keeps_arguments",
+        &arguments_survive_program(r#"serverlet Echo sandbox(memory_limit: "16mb", timeout: "5s") {"#),
+    );
+    assert_eq!(out.trim(), ARGUMENTS_SURVIVE);
+}

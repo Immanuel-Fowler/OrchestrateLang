@@ -300,3 +300,47 @@ orchestrator main() {
     );
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "12");
 }
+
+#[test]
+fn python_landline_call_keeps_the_callers_arguments() {
+    // A string, an array, and a struct are each used again after the call that
+    // carried them; the call copies, it does not move.
+    let (stdout, stderr) = run(
+        &directory("keeps_arguments"),
+        r#"
+struct Point { x: int, y: int }
+serverlet Echo via python(source: "impl.py") {
+    on shout(text: string) -> string
+    on total(xs: int[]) -> int
+    on sum(p: Point) -> int
+}
+orchestrator main() {
+    let e = start Echo()
+    let payload = "hi"
+    let nums = [1, 2, 3]
+    let pt = Point { x: 4, y: 5 }
+    let a = e.shout(payload)
+    let b = e.total(nums)
+    let c = e.sum(pt)
+    print(a + " " + payload)
+    print(to_string(b) + " " + to_string(length(nums)))
+    print(to_string(c) + " " + to_string(pt.x))
+    stop_orch()
+}
+"#,
+        r#"
+from dataclasses import dataclass
+from orchestratelang import landline
+@dataclass
+class Point:
+    x: int
+    y: int
+class Echo(landline.Serverlet):
+    def shout(self, text: str) -> str: return text + "!"
+    def total(self, xs: list[int]) -> int: return sum(xs)
+    def sum(self, p: Point) -> int: return p.x + p.y
+landline.serve(Echo)
+"#,
+    );
+    assert_eq!(stdout, "hi! hi\n6 3\n9 4", "{}", stderr);
+}

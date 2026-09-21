@@ -797,6 +797,19 @@ impl Codegen {
         }).collect::<Vec<_>>().join(", ")
     }
 
+    /// An argument the callee takes by value. A place — a binding or a field — is
+    /// copied so the caller keeps it; an index already reads as a copy, and a
+    /// temporary is moved as it is.
+    pub(super) fn compile_owned_arg(&mut self, arg: &Expr) -> String {
+        let compiled = self.compile_expr(arg);
+        match &arg.node {
+            ExprNode::Identifier(_) | ExprNode::FieldAccess { .. } if !compiled.ends_with(".clone()") => {
+                format!("{compiled}.clone()")
+            }
+            _ => compiled,
+        }
+    }
+
     /// A name in call position; a program field needs parentheses to be called.
     pub(super) fn call_name(&self, name: &str) -> String {
         if self.is_shared(name) {

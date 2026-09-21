@@ -214,7 +214,11 @@ impl Codegen {
                     }
                 } else {
                     self.require_async(&format!("calls '{}.{}', which waits for the serverlet to reply", module_local_name, function));
-                    format!("{}.{}({}).await", self.read_name(module_local_name), function, args_str)
+                    // The client method owns its arguments, since they become the
+                    // message; a caller's binding is copied so it is still there after
+                    // the call, on every boundary, without the message changing.
+                    let owned_args = args.iter().map(|a| self.compile_owned_arg(a)).collect::<Vec<String>>().join(", ");
+                    format!("{}.{}({}).await", self.read_name(module_local_name), function, owned_args)
                 }
             }
             ExprNode::StartServerlet { name, args } => {
