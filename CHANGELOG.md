@@ -10,6 +10,11 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 ## [Unreleased]
 
 ### Fixed
+- **Calling another orchestrator type-checks again.** 0.15.0's check for a second
+  `orchestrator main` sat in front of the arm that registers each orchestrator's
+  signature, so that arm never ran and `helper()` on an `orchestrator helper()` was
+  "unknown function 'helper'" in `check`, where 0.14.0 accepted it. Both now run in one
+  arm. Patch-level: it restores what 0.14.0 did.
 - **A deterministic-mode refusal tells the host why.** A worker, serverlet, or landline
   started in deterministic mode, or a `sleep` in a tick, stops the library with a panic
   naming deterministic mode, but the host saw only "library startup task failed" or

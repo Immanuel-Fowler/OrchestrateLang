@@ -100,10 +100,12 @@ impl TypeChecker {
         let mut orchestrators = HashSet::new();
         for stmt in stmts {
             match &stmt.node {
-                StmtNode::OrchestratorDecl { name, .. } => {
+                StmtNode::OrchestratorDecl { name, params, return_type, .. } => {
                     if !orchestrators.insert(name.clone()) {
                         return Err(format!("orchestrator '{}' is declared more than once", name));
                     }
+                    let param_types: Vec<Type> = params.iter().map(|p| p.ty.clone()).collect();
+                    self.functions.insert(name.clone(), (param_types, return_type.clone()));
                 }
                 StmtNode::FnDecl { name, params, return_type, type_params, .. } => {
                     let param_types: Vec<Type> = params.iter().map(|p| p.ty.clone()).collect();
@@ -131,10 +133,6 @@ impl TypeChecker {
                     if !type_params.is_empty() {
                         self.generic_functions.insert(name.clone(), type_params.clone());
                     }
-                }
-                StmtNode::OrchestratorDecl { name, params, return_type, .. } => {
-                    let param_types: Vec<Type> = params.iter().map(|p| p.ty.clone()).collect();
-                    self.functions.insert(name.clone(), (param_types, return_type.clone()));
                 }
                 StmtNode::StructDef { name, fields } => {
                     self.struct_defs.insert(name.clone(), fields.clone());
@@ -1667,6 +1665,14 @@ mod tests {
     #[test]
     fn test_for_range_ok() {
         assert!(check("for i in range(10) { print(to_string(i)) }").is_ok());
+    }
+
+    #[test]
+    fn test_orchestrator_is_callable_and_not_declared_twice() {
+        // 0.15.0's duplicate check shadowed the arm that registers an orchestrator's
+        // signature, so calling a second orchestrator was "unknown function".
+        assert!(check("orchestrator helper() -> int { return 41 } orchestrator main() { let x = helper() }").is_ok());
+        assert!(check("orchestrator main() { } orchestrator main() { }").is_err());
     }
 
     #[test]
