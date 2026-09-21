@@ -10,11 +10,41 @@ fn orchestrate_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_orchestrate"))
 }
 
-/// Write source to a temp dir, compile+run it, return stdout.
+/// A test's build directory under the system temp dir. A plain case leaves about
+/// 140 MB behind and a sandbox case 400–600 MB, so it is removed when the test passes;
+/// a failing test keeps it for inspection, and `ORCH_KEEP_TEST_BUILDS=1` keeps every
+/// one, which makes a rerun fast.
+struct Scratch(PathBuf);
+impl Scratch {
+    fn new(test_name: &str) -> Scratch {
+        let path = std::env::temp_dir().join(format!("orch_runtime_{}", test_name));
+        fs::create_dir_all(&path).unwrap();
+        Scratch(path)
+    }
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let keep = std::env::var_os("ORCH_KEEP_TEST_BUILDS").is_some_and(|v| v == "1");
+        if !std::thread::panicking() && !keep {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+}
+
+/// Write source to a temp dir, compile+run it, return stdout. The build directory is
+/// gone when this returns; a test that needs it afterwards uses `run_orch_keeping`.
 fn run_orch(test_name: &str, source: &str) -> String {
-    let tmp = std::env::temp_dir().join(format!("orch_runtime_{}", test_name));
-    fs::create_dir_all(&tmp).unwrap();
-    let src_file = tmp.join("test.orch");
+    run_orch_keeping(test_name, source).0
+}
+
+/// `run_orch`, handing back the build directory's guard so the test can use what the
+/// build left there; it is removed when the guard drops.
+fn run_orch_keeping(test_name: &str, source: &str) -> (String, Scratch) {
+    let scratch = Scratch::new(test_name);
+    let src_file = scratch.path().join("test.orch");
     fs::write(&src_file, source).unwrap();
 
     let out = Command::new(orchestrate_bin())
@@ -27,10 +57,11 @@ fn run_orch(test_name: &str, source: &str) -> String {
     assert!(out.status.success(),
         "Program '{}' failed:\nstdout: {}\nstderr: {}", test_name, raw_stdout, stderr);
     // Filter out orchestrate's own progress lines so we only see program output.
-    raw_stdout.lines()
+    let stdout = raw_stdout.lines()
         .filter(|l| !l.starts_with("[orchestrate]"))
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    (stdout, scratch)
 }
 
 /// True when `program` runs; FFI tests for optional toolchains skip otherwise.
@@ -479,9 +510,9 @@ fn runtime_sandbox_serverlet_runs_in_wasm_with_state() {
     // does it from inside the guest: the artifact must exist and the answers must be the
     // ones the handlers compute.
     let test_name = "sandbox_wasm";
-    let tmp = std::env::temp_dir().join(format!("orch_runtime_{}", test_name));
-    let _ = fs::remove_dir_all(&tmp);
-    fs::create_dir_all(&tmp).unwrap();
+    let _ = fs::remove_dir_all(std::env::temp_dir().join(format!("orch_runtime_{}", test_name)));
+    let scratch = Scratch::new(test_name);
+    let tmp = scratch.path();
     let src_file = tmp.join("test.orch");
     fs::write(&src_file, r#"
 serverlet Plugin sandbox(memory_limit: "64mb", timeout: "5s") {
@@ -517,7 +548,6 @@ orchestrator main() {
     assert_eq!(lines, vec!["7", "12", "quiet!"], "stdout: {}", stdout);
     // Containment is real now, so nothing should claim otherwise.
     assert!(!stderr.contains("WITHOUT ISOLATION"), "stale no-isolation warning: {}", stderr);
-    let _ = fs::remove_dir_all(&tmp);
 }
 
 #[test]
@@ -526,9 +556,9 @@ fn runtime_sandbox_contains_a_runaway_guest() {
     // a guest that allocates without bound is stopped. Both leave the host running and
     // the serverlet usable, because a trapped guest is replaced rather than kept.
     let test_name = "sandbox_limits";
-    let tmp = std::env::temp_dir().join(format!("orch_runtime_{}", test_name));
-    let _ = fs::remove_dir_all(&tmp);
-    fs::create_dir_all(&tmp).unwrap();
+    let _ = fs::remove_dir_all(std::env::temp_dir().join(format!("orch_runtime_{}", test_name)));
+    let scratch = Scratch::new(test_name);
+    let tmp = scratch.path();
     let src_file = tmp.join("test.orch");
     fs::write(&src_file, r#"
 serverlet Hostile sandbox(memory_limit: "16mb", timeout: "300ms") {
@@ -574,7 +604,6 @@ orchestrator main() {
         "expected the guest's own failure reported: {}", stderr);
     // An unbounded loop that was actually stopped cannot have taken long.
     assert!(started.elapsed() < std::time::Duration::from_secs(300), "the run did not finish promptly");
-    let _ = fs::remove_dir_all(&tmp);
 }
 
 #[test]
@@ -682,8 +711,8 @@ orchestrator main() {
     stop_orch()
 }
 "#;
-    run_orch("protocol_frames", source);
-    let binary = std::env::temp_dir().join("orch_runtime_protocol_frames/.orch_cache/target/debug")
+    let (_, scratch) = run_orch_keeping("protocol_frames", source);
+    let binary = scratch.path().join(".orch_cache/target/debug")
         .join(format!("secret_Protocol{}", std::env::consts::EXE_SUFFIX));
     let mut child = Command::new(&binary).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     let mut input = child.stdin.take().unwrap();
@@ -722,7 +751,7 @@ orchestrator main() {
     assert!(child.wait().unwrap().success());
 
     // Replace the child with a stale interface and verify the actual parent rejects it.
-    let cache = std::env::temp_dir().join("orch_runtime_protocol_frames/.orch_cache");
+    let cache = scratch.path().join(".orch_cache");
     let child_source = cache.join("src/bin/secret_Protocol.rs");
     let generated = fs::read_to_string(&child_source).unwrap();
     for (old, new) in [("echo(int)->int", "renamed(int)->int"),
@@ -744,8 +773,9 @@ fn runtime_wasm_foreign_module_is_called_and_checked() {
     // A module someone else compiled, loaded by `load_foreign "wasm"`: every declared
     // type crosses, and a sidecar that disagrees with the module's export table is a
     // build error rather than a surprise at run time.
-    let tmp = std::env::temp_dir().join("orch_runtime_wasm_foreign");
-    let _ = fs::remove_dir_all(&tmp);
+    let _ = fs::remove_dir_all(std::env::temp_dir().join("orch_runtime_wasm_foreign"));
+    let scratch = Scratch::new("wasm_foreign");
+    let tmp = scratch.path();
     fs::create_dir_all(tmp.join("mathmod")).unwrap();
 
     let guest = tmp.join("math.rs");
@@ -819,7 +849,6 @@ orchestrator main() {
     assert!(!checked.status.success(), "a mismatched sidecar must not check clean: {}", report);
     assert!(report.contains("declared to take (f64)") && report.contains("exports it taking (i64)"),
         "the error should name both sides: {}", report);
-    let _ = fs::remove_dir_all(&tmp);
 }
 
 /// The .NET SDK, as the compiler and the generated build.rs both resolve it.

@@ -89,19 +89,22 @@ version of the claim.
   rejects it with "closure 'f' expects 1 arguments, got 2"; the arrow form is its own
   case, `closure_arrow_syntax.orch`. Covered by `diagnostics_never_leak_rustc`.
 
+- **The runtime tests kept their build scratch.** Each `runtime_tests` case built its
+  program in its own directory under the system temp dir and, except for the two sandbox
+  cases, never removed it: about 140 MB per plain case and 400–600 MB per sandbox case
+  (wasmtime), roughly 7 GB a full run, and a nearly full disk saw the linker fail with
+  "no space left on device" mid-run, which looks like a test failure. Fixed after the
+  paper branches landed: a `Scratch` guard removes the directory when the case passes,
+  keeps it when the case fails, and keeps every one under `ORCH_KEEP_TEST_BUILDS=1`
+  (documented in CONTRIBUTING.md section 6). Covered by every `runtime_tests` case; the
+  guard is the same shape `library_tests` and `typescript_tests` already used.
+
 ## Found, not fixed
 
 - **Struct layout across the sandbox assumes a little-endian host.** Struct bytes are
   written field by field in little-endian order on both sides, so a big-endian host would
   still be correct; but no such host is tested, and the C ABI path (0.14.0) passes
   structs by value in native order, so the two would disagree there, not here.
-- **The runtime tests keep their build scratch.** Each `runtime_tests` case builds its
-  program in its own directory under the system temp dir and, except for the two sandbox
-  cases, never removes it: about 140 MB per plain case and 400–600 MB per sandbox case
-  (wasmtime). A full run leaves roughly 7 GB behind, and a second machine with a nearly
-  full disk saw the linker fail with "no space left on device" mid-run, which looks like
-  a test failure. Left as is, because a kept directory makes a rerun fast; clean with
-  `rm -rf "$TMPDIR"/orch_*` when space matters.
 - **A name that is a Rust keyword reaches rustc.** `on move(p: Point)` generated
   `pub extern "C" fn move(...)` in the sandbox guest and would generate
   `pub async fn move(...)` on the in-process client; either is a rustc syntax error in

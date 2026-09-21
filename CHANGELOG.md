@@ -115,6 +115,13 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   in `docs/language-reference.md`, where it was already documented.
 
 ### Fixed
+- **The runtime tests clean up after themselves.** Each `runtime_tests` case built its
+  program in its own directory under the system temp dir and left it there, about 140 MB
+  a plain case and 400–600 MB a sandbox case, so a full run left roughly 7 GB behind
+  and a nearly full disk saw the linker fail mid-run in what looked like a test failure.
+  A case now removes its build directory when it passes and keeps it when it fails;
+  `ORCH_KEEP_TEST_BUILDS=1` keeps every one for a fast rerun. Documented in
+  CONTRIBUTING.md. Patch-level: the tests changed, the compiler did not.
 - **A serverlet call no longer consumes the caller's argument.** `let n = s.shout(payload)`
   followed by any later use of `payload` failed in rustc with E0382, because the call
   moved its arguments into the message; the same for an array or a struct, on every
