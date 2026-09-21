@@ -41,6 +41,18 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   state, which is inside the instance being thrown away; a handler that names a state
   binding is a compile error saying so.
 
+- **The boundary ladder benchmark covers every rung.** `benchmarks/landline_latency`
+  measures the same echo handlers on the in-process, sandboxed, secret, Python, and
+  TypeScript boundaries, and the two rungs below a serverlet call, `shared let` and a
+  plain `let`, timed per batch of a thousand statements. Beside the payload sweep there
+  is a call-rate sweep — the `int` payload paced at 100 Hz and 1 kHz with the caller
+  asleep between calls, and at 10 kHz spinning — and a concurrent-callers sweep with 2, 4,
+  and 8 callers sharing one serverlet. `run.py` writes CSV, JSON, and Markdown under
+  `benchmarks/results/` with an environment header (CPU, OS, `rustc`, Python, the
+  TypeScript toolchain, wasmtime, sample counts, commit SHA), and the README's tables are
+  pasted from that output rather than typed. The TypeScript rung is skipped, and said to
+  be, when Bun or TypeScript 7 is missing.
+
 ### Fixed
 - **A sandboxed serverlet no longer leaks guest memory on every string argument.** The
   host allocated each string in guest memory and never freed it, so a serverlet that took

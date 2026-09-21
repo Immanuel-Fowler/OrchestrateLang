@@ -1,11 +1,33 @@
-// Round-trip latency for the same echo handlers in three kinds of serverlet.
-// Prints one `kind,payload,micros` line per measured call; run.py computes percentiles.
+// Round-trip latency for the same echo handlers on every serverlet boundary, plus the two
+// rungs below a serverlet call. Prints one `kind,payload,rate,micros` line per measured
+// sample; run.py computes percentiles and writes CSV, JSON, and Markdown.
+//
+// Four sweeps, all with warm-up calls first and the tail (p90, p99, max) reported:
+//   payload  — int, a 1,024-character string, and a 1,000-element int[], calls back to back
+//   rate     — the int payload paced at 100 Hz and 1 kHz (the caller sleeps between calls,
+//              as a host would) and at 10 kHz (the caller spins), against unpaced
+//   callers  — the int payload with 2, 4, and 8 concurrent callers on one serverlet
+//   state    — `shared let` and a plain `let`, timed per batch of 1,000 statements, so
+//              the elapsed microseconds of a batch are nanoseconds per statement
+//
+// The loops are unrolled on purpose: a serverlet client has no type a task parameter can
+// name, and a task cannot reach a top-level binding, so every timed loop lives here.
+// The blocks between `@typescript-start` and `@typescript-end` are removed by run.py
+// when Bun or TypeScript 7 is not installed.
 
 serverlet PyEcho via python(source: "echo.py") {
     on number(n: int) -> int
     on text(s: string) -> string
     on numbers(items: int[]) -> int[]
 }
+
+// @typescript-start
+serverlet TsEcho via typescript(source: "echo.ts") {
+    on number(n: int) -> int
+    on text(s: string) -> string
+    on numbers(items: int[]) -> int[]
+}
+// @typescript-end
 
 serverlet SecretEcho secret {
     on number(n: int) -> int { return n }
@@ -19,10 +41,23 @@ serverlet LocalEcho {
     on numbers(items: int[]) -> int[] { return items }
 }
 
+serverlet GuestEcho sandbox(memory_limit: "64mb", timeout: "5s") {
+    on number(n: int) -> int { return n }
+    on text(s: string) -> string { return s }
+    on numbers(items: int[]) -> int[] { return items }
+}
+
+// The rung between a plain `let` and a serverlet: one mutex, taken once per statement.
+shared let hits = 0
+
 orchestrator main() {
     let python = start PyEcho()
+    // @typescript-start
+    let ts = start TsEcho()
+    // @typescript-end
     let child = start SecretEcho()
     let local = start LocalEcho()
+    let guest = start GuestEcho()
     // Give the child processes time to finish their startup handshakes.
     sleep(1500)
 
@@ -42,68 +77,373 @@ orchestrator main() {
     let warmup = 200
     let total = 2200
 
+    // ---- payload sweep: calls back to back ----
     for i in range(total) {
         let began = clock_micros()
         let r = local.number(i)
         let elapsed = clock_micros() - began
-        if i >= warmup { print("in-process,int,{elapsed}") }
+        if i >= warmup { print("in-process,int,unpaced,{elapsed}") }
     }
     for i in range(total) {
         let payload = texts[0]
         let began = clock_micros()
         let r = local.text(payload)
         let elapsed = clock_micros() - began
-        if i >= warmup { print("in-process,string-1KB,{elapsed}") }
+        if i >= warmup { print("in-process,string-1KB,unpaced,{elapsed}") }
     }
     for i in range(total) {
         let payload = arrays[0]
         let began = clock_micros()
         let r = local.numbers(payload)
         let elapsed = clock_micros() - began
-        if i >= warmup { print("in-process,int[1000],{elapsed}") }
+        if i >= warmup { print("in-process,int[1000],unpaced,{elapsed}") }
     }
-
+    for i in range(total) {
+        let began = clock_micros()
+        let r = guest.number(i)
+        let elapsed = clock_micros() - began
+        if i >= warmup { print("sandbox,int,unpaced,{elapsed}") }
+    }
+    for i in range(total) {
+        let payload = texts[0]
+        let began = clock_micros()
+        let r = guest.text(payload)
+        let elapsed = clock_micros() - began
+        if i >= warmup { print("sandbox,string-1KB,unpaced,{elapsed}") }
+    }
+    for i in range(total) {
+        let payload = arrays[0]
+        let began = clock_micros()
+        let r = guest.numbers(payload)
+        let elapsed = clock_micros() - began
+        if i >= warmup { print("sandbox,int[1000],unpaced,{elapsed}") }
+    }
     for i in range(total) {
         let began = clock_micros()
         let r = child.number(i)
         let elapsed = clock_micros() - began
-        if i >= warmup { print("secret,int,{elapsed}") }
+        if i >= warmup { print("secret,int,unpaced,{elapsed}") }
     }
     for i in range(total) {
         let payload = texts[0]
         let began = clock_micros()
         let r = child.text(payload)
         let elapsed = clock_micros() - began
-        if i >= warmup { print("secret,string-1KB,{elapsed}") }
+        if i >= warmup { print("secret,string-1KB,unpaced,{elapsed}") }
     }
     for i in range(total) {
         let payload = arrays[0]
         let began = clock_micros()
         let r = child.numbers(payload)
         let elapsed = clock_micros() - began
-        if i >= warmup { print("secret,int[1000],{elapsed}") }
+        if i >= warmup { print("secret,int[1000],unpaced,{elapsed}") }
     }
-
     for i in range(total) {
         let began = clock_micros()
         let r = python.number(i)
         let elapsed = clock_micros() - began
-        if i >= warmup { print("python,int,{elapsed}") }
+        if i >= warmup { print("python,int,unpaced,{elapsed}") }
     }
     for i in range(total) {
         let payload = texts[0]
         let began = clock_micros()
         let r = python.text(payload)
         let elapsed = clock_micros() - began
-        if i >= warmup { print("python,string-1KB,{elapsed}") }
+        if i >= warmup { print("python,string-1KB,unpaced,{elapsed}") }
     }
     for i in range(total) {
         let payload = arrays[0]
         let began = clock_micros()
         let r = python.numbers(payload)
         let elapsed = clock_micros() - began
-        if i >= warmup { print("python,int[1000],{elapsed}") }
+        if i >= warmup { print("python,int[1000],unpaced,{elapsed}") }
     }
+    // @typescript-start
+    for i in range(total) {
+        let began = clock_micros()
+        let r = ts.number(i)
+        let elapsed = clock_micros() - began
+        if i >= warmup { print("typescript,int,unpaced,{elapsed}") }
+    }
+    for i in range(total) {
+        let payload = texts[0]
+        let began = clock_micros()
+        let r = ts.text(payload)
+        let elapsed = clock_micros() - began
+        if i >= warmup { print("typescript,string-1KB,unpaced,{elapsed}") }
+    }
+    for i in range(total) {
+        let payload = arrays[0]
+        let began = clock_micros()
+        let r = ts.numbers(payload)
+        let elapsed = clock_micros() - began
+        if i >= warmup { print("typescript,int[1000],unpaced,{elapsed}") }
+    }
+    // @typescript-end
+
+    // ---- rate sweep: the int payload, paced ----
+    // At 100 Hz and 1 kHz the caller sleeps between calls, so the child and the actor
+    // really go idle, as they would under a host that ticks; at 10 kHz the caller spins,
+    // because sleep has millisecond resolution. Fewer samples at the slow rates keep
+    // the run short.
+    let slow_warmup = 100
+    let slow_total = 400
+    let mid_warmup = 200
+    let mid_total = 1200
+    for i in range(slow_total) {
+        sleep(10)
+        let began = clock_micros()
+        let r = local.number(i)
+        let elapsed = clock_micros() - began
+        if i >= slow_warmup { print("in-process,int,100hz,{elapsed}") }
+    }
+    for i in range(mid_total) {
+        sleep(1)
+        let began = clock_micros()
+        let r = local.number(i)
+        let elapsed = clock_micros() - began
+        if i >= mid_warmup { print("in-process,int,1khz,{elapsed}") }
+    }
+    let next = clock_micros()
+    for i in range(total) {
+        next = next + 100
+        while clock_micros() < next { }
+        let began = clock_micros()
+        let r = local.number(i)
+        let elapsed = clock_micros() - began
+        if i >= warmup { print("in-process,int,10khz,{elapsed}") }
+    }
+    for i in range(slow_total) {
+        sleep(10)
+        let began = clock_micros()
+        let r = guest.number(i)
+        let elapsed = clock_micros() - began
+        if i >= slow_warmup { print("sandbox,int,100hz,{elapsed}") }
+    }
+    for i in range(mid_total) {
+        sleep(1)
+        let began = clock_micros()
+        let r = guest.number(i)
+        let elapsed = clock_micros() - began
+        if i >= mid_warmup { print("sandbox,int,1khz,{elapsed}") }
+    }
+    let next = clock_micros()
+    for i in range(total) {
+        next = next + 100
+        while clock_micros() < next { }
+        let began = clock_micros()
+        let r = guest.number(i)
+        let elapsed = clock_micros() - began
+        if i >= warmup { print("sandbox,int,10khz,{elapsed}") }
+    }
+    for i in range(slow_total) {
+        sleep(10)
+        let began = clock_micros()
+        let r = child.number(i)
+        let elapsed = clock_micros() - began
+        if i >= slow_warmup { print("secret,int,100hz,{elapsed}") }
+    }
+    for i in range(mid_total) {
+        sleep(1)
+        let began = clock_micros()
+        let r = child.number(i)
+        let elapsed = clock_micros() - began
+        if i >= mid_warmup { print("secret,int,1khz,{elapsed}") }
+    }
+    let next = clock_micros()
+    for i in range(total) {
+        next = next + 100
+        while clock_micros() < next { }
+        let began = clock_micros()
+        let r = child.number(i)
+        let elapsed = clock_micros() - began
+        if i >= warmup { print("secret,int,10khz,{elapsed}") }
+    }
+    for i in range(slow_total) {
+        sleep(10)
+        let began = clock_micros()
+        let r = python.number(i)
+        let elapsed = clock_micros() - began
+        if i >= slow_warmup { print("python,int,100hz,{elapsed}") }
+    }
+    for i in range(mid_total) {
+        sleep(1)
+        let began = clock_micros()
+        let r = python.number(i)
+        let elapsed = clock_micros() - began
+        if i >= mid_warmup { print("python,int,1khz,{elapsed}") }
+    }
+    let next = clock_micros()
+    for i in range(total) {
+        next = next + 100
+        while clock_micros() < next { }
+        let began = clock_micros()
+        let r = python.number(i)
+        let elapsed = clock_micros() - began
+        if i >= warmup { print("python,int,10khz,{elapsed}") }
+    }
+    // @typescript-start
+    for i in range(slow_total) {
+        sleep(10)
+        let began = clock_micros()
+        let r = ts.number(i)
+        let elapsed = clock_micros() - began
+        if i >= slow_warmup { print("typescript,int,100hz,{elapsed}") }
+    }
+    for i in range(mid_total) {
+        sleep(1)
+        let began = clock_micros()
+        let r = ts.number(i)
+        let elapsed = clock_micros() - began
+        if i >= mid_warmup { print("typescript,int,1khz,{elapsed}") }
+    }
+    let next = clock_micros()
+    for i in range(total) {
+        next = next + 100
+        while clock_micros() < next { }
+        let began = clock_micros()
+        let r = ts.number(i)
+        let elapsed = clock_micros() - began
+        if i >= warmup { print("typescript,int,10khz,{elapsed}") }
+    }
+    // @typescript-end
+
+    // ---- callers sweep: the int payload with 2, 4, and 8 concurrent callers ----
+    // Each branch of a `parallel` block is a caller; they share one serverlet, so a call
+    // waits behind the others in the actor's queue. The 1-caller row is the payload
+    // sweep's `int` row.
+    let callers_warmup = 200
+    let callers_total = 1200
+    parallel {
+        { for i in range(callers_total) { let began = clock_micros()  let r = local.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("in-process,int,callers-2,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = local.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("in-process,int,callers-2,{elapsed}") } } }
+    }
+    parallel {
+        { for i in range(callers_total) { let began = clock_micros()  let r = local.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("in-process,int,callers-4,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = local.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("in-process,int,callers-4,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = local.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("in-process,int,callers-4,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = local.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("in-process,int,callers-4,{elapsed}") } } }
+    }
+    parallel {
+        { for i in range(callers_total) { let began = clock_micros()  let r = local.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("in-process,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = local.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("in-process,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = local.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("in-process,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = local.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("in-process,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = local.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("in-process,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = local.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("in-process,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = local.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("in-process,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = local.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("in-process,int,callers-8,{elapsed}") } } }
+    }
+    parallel {
+        { for i in range(callers_total) { let began = clock_micros()  let r = guest.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("sandbox,int,callers-2,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = guest.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("sandbox,int,callers-2,{elapsed}") } } }
+    }
+    parallel {
+        { for i in range(callers_total) { let began = clock_micros()  let r = guest.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("sandbox,int,callers-4,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = guest.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("sandbox,int,callers-4,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = guest.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("sandbox,int,callers-4,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = guest.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("sandbox,int,callers-4,{elapsed}") } } }
+    }
+    parallel {
+        { for i in range(callers_total) { let began = clock_micros()  let r = guest.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("sandbox,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = guest.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("sandbox,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = guest.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("sandbox,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = guest.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("sandbox,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = guest.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("sandbox,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = guest.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("sandbox,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = guest.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("sandbox,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = guest.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("sandbox,int,callers-8,{elapsed}") } } }
+    }
+    parallel {
+        { for i in range(callers_total) { let began = clock_micros()  let r = child.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("secret,int,callers-2,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = child.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("secret,int,callers-2,{elapsed}") } } }
+    }
+    parallel {
+        { for i in range(callers_total) { let began = clock_micros()  let r = child.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("secret,int,callers-4,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = child.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("secret,int,callers-4,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = child.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("secret,int,callers-4,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = child.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("secret,int,callers-4,{elapsed}") } } }
+    }
+    parallel {
+        { for i in range(callers_total) { let began = clock_micros()  let r = child.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("secret,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = child.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("secret,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = child.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("secret,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = child.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("secret,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = child.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("secret,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = child.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("secret,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = child.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("secret,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = child.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("secret,int,callers-8,{elapsed}") } } }
+    }
+    parallel {
+        { for i in range(callers_total) { let began = clock_micros()  let r = python.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("python,int,callers-2,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = python.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("python,int,callers-2,{elapsed}") } } }
+    }
+    parallel {
+        { for i in range(callers_total) { let began = clock_micros()  let r = python.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("python,int,callers-4,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = python.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("python,int,callers-4,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = python.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("python,int,callers-4,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = python.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("python,int,callers-4,{elapsed}") } } }
+    }
+    parallel {
+        { for i in range(callers_total) { let began = clock_micros()  let r = python.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("python,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = python.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("python,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = python.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("python,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = python.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("python,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = python.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("python,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = python.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("python,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = python.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("python,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = python.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("python,int,callers-8,{elapsed}") } } }
+    }
+    // @typescript-start
+    parallel {
+        { for i in range(callers_total) { let began = clock_micros()  let r = ts.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("typescript,int,callers-2,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = ts.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("typescript,int,callers-2,{elapsed}") } } }
+    }
+    parallel {
+        { for i in range(callers_total) { let began = clock_micros()  let r = ts.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("typescript,int,callers-4,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = ts.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("typescript,int,callers-4,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = ts.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("typescript,int,callers-4,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = ts.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("typescript,int,callers-4,{elapsed}") } } }
+    }
+    parallel {
+        { for i in range(callers_total) { let began = clock_micros()  let r = ts.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("typescript,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = ts.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("typescript,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = ts.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("typescript,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = ts.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("typescript,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = ts.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("typescript,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = ts.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("typescript,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = ts.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("typescript,int,callers-8,{elapsed}") } } }
+        { for i in range(callers_total) { let began = clock_micros()  let r = ts.number(i)  let elapsed = clock_micros() - began  if i >= callers_warmup { print("typescript,int,callers-8,{elapsed}") } } }
+    }
+    // @typescript-end
+
+    // ---- state rungs: a plain `let`, `shared let`, and the loop alone ----
+    // clock_micros has microsecond resolution, so each sample is a batch of 1,000
+    // statements: the elapsed microseconds of a batch are nanoseconds per statement.
+    // The loop-only row is the cost of the counting loop itself, to subtract by eye.
+    let count = 0
+    for b in range(total) {
+        let began = clock_micros()
+        let k = 0
+        while k < 1000 { count = count + 1  k = k + 1 }
+        let elapsed = clock_micros() - began
+        if b >= warmup { print("local-let,statement,batch-1000,{elapsed}") }
+    }
+    for b in range(total) {
+        let began = clock_micros()
+        let k = 0
+        while k < 1000 { hits = hits + 1  k = k + 1 }
+        let elapsed = clock_micros() - began
+        if b >= warmup { print("shared-let,statement,batch-1000,{elapsed}") }
+    }
+    for b in range(total) {
+        let began = clock_micros()
+        let k = 0
+        while k < 1000 { k = k + 1 }
+        let elapsed = clock_micros() - began
+        if b >= warmup { print("loop-only,statement,batch-1000,{elapsed}") }
+    }
+    if count + hits < 0 { print("unreachable") }
 
     stop_orch()
 }

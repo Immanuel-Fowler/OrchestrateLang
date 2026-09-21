@@ -7,3 +7,5 @@ notes.txt
 python_tools
 ShipBuilder
 .claude
+benchmarks/results/
+benchmarks/landline_latency/main_no_typescript.orch

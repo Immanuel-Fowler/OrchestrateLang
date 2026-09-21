@@ -90,3 +90,25 @@ version of the claim.
   Only `gen` is escaped today (for edition 2024 library crates). Found by naming a
   handler `move` in the grants test; not fixed here, since the fix is a systematic
   `r#` escape across codegen. Candidate for the diagnostics corpus as a leak.
+
+## Benchmark caveats (boundary ladder)
+
+- **The plain `let` rung reads as 0 ns.** `count = count + 1` a thousand times is folded
+  by LLVM into one addition, so the row shows the floor of the batch method rather than
+  the cost of a field write. The honest statement is "below the resolution of this
+  method"; the `shared let` row (one uncontended mutex per statement, about 9 ns on an
+  Apple M2) is the real number the ladder needs.
+- **`clock_micros` has microsecond resolution.** The state rungs are batched to get
+  nanoseconds; every other row is a single round trip, so a 1 µs quantisation sits under
+  every p50 in the low tens of microseconds. Adding a nanosecond clock would be new
+  language surface, which this work does not add.
+- **The first sweep pays for being first.** The in-process `int` row runs first and shows
+  a higher median than the same kind's string row; the actor and the allocator are still
+  warming even after 200 warm-up calls. Read the payload sweep as rows within a kind
+  rather than across the first row.
+- **TypeScript maxima.** The TypeScript landline shows maxima of 0.6–1.6 ms on every
+  payload; the median is steady. The executable is Bun's (or scriptc's), and its
+  garbage collector is inside the boundary that chose it.
+- **Concurrent callers are branches of one `parallel` block**, so they are concurrent
+  futures on the runtime, not OS threads. That measures callers queueing on one
+  serverlet, which is the question; it does not measure two cores hammering one actor.
