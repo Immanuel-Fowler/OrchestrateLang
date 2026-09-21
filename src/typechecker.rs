@@ -28,6 +28,9 @@ pub struct TypeChecker {
     /// functions it was granted. A guest reaches nothing else, so a call to an
     /// ungranted host function is an error here rather than a trap at run time.
     sandbox_grants: Option<(String, HashSet<String>)>,
+    /// Module aliases whose declarations were registered, so `m.nope()` on a known
+    /// module is an error naming what the module does have.
+    module_aliases: HashSet<String>,
 }
 
 impl TypeChecker {
@@ -48,6 +51,7 @@ impl TypeChecker {
             var_serverlet: HashMap::new(),
             declared_events: HashMap::new(),
             sandbox_grants: None,
+            module_aliases: HashSet::new(),
         };
 
         // `print` is generic over anything displayable in the generated code, so its
@@ -93,8 +97,14 @@ impl TypeChecker {
             }
         }
         // First pass: register all top-level declarations for forward references
+        let mut orchestrators = HashSet::new();
         for stmt in stmts {
             match &stmt.node {
+                StmtNode::OrchestratorDecl { name, .. } => {
+                    if !orchestrators.insert(name.clone()) {
+                        return Err(format!("orchestrator '{}' is declared more than once", name));
+                    }
+                }
                 StmtNode::FnDecl { name, params, return_type, type_params, .. } => {
                     let param_types: Vec<Type> = params.iter().map(|p| p.ty.clone()).collect();
                     if self.functions.insert(name.clone(), (param_types, return_type.clone())).is_some() {
@@ -164,6 +174,7 @@ impl TypeChecker {
     }
 
     pub fn register_module_functions(&mut self, alias: &str, stmts: &[Stmt]) {
+        self.module_aliases.insert(alias.to_string());
         for stmt in stmts {
             match &stmt.node {
                 StmtNode::FnDecl { name, params, return_type, type_params, .. } => {
@@ -402,6 +413,12 @@ impl TypeChecker {
                 let iter_ty = self.infer_expr(iter)?;
                 let elem_ty = match &iter_ty {
                     Type::Array(inner, _) => *inner.clone(),
+                    Type::Int | Type::Float | Type::Bool | Type::Str => {
+                        return Err(format!(
+                            "line {}, col {}: for loops over an array, got {}; use range(n) to count",
+                            stmt.span.line, stmt.span.col, iter_ty.display_name()
+                        ));
+                    }
                     _ => {
                         // Allow unknown types (e.g. from range()) to produce Int
                         Type::Int
@@ -462,11 +479,25 @@ impl TypeChecker {
             StmtNode::Break | StmtNode::Continue => {}
             StmtNode::UseModule { .. } | StmtNode::Load { .. } | StmtNode::LoadForeign { .. } |
             StmtNode::StructDef { .. } | StmtNode::EnumDef { .. } => {}
-            StmtNode::Serverlet { name: serverlet, state, handlers, crash_handler, landline, grants, sandbox, .. } => {
+            StmtNode::Serverlet { name: serverlet, state, handlers, crash_handler, landline, grants, sandbox, secret } => {
                 let mut seen = HashSet::new();
                 for grant in grants {
                     if !seen.insert(grant) || !self.functions.contains_key(&grant.replace(".", "::")) || !self.host_groups.contains(grant.split('.').next().unwrap()) {
                         return Err(format!("Unknown or duplicate host grant '{}'", grant));
+                    }
+                }
+                // Two handlers with one name would be two variants of one enum in the
+                // generated actor, which rustc would refuse in code the user never wrote.
+                let mut names = HashSet::new();
+                for h in handlers {
+                    if !names.insert(&h.name) {
+                        return Err(format!("serverlet '{}' declares handler '{}' more than once", serverlet, h.name));
+                    }
+                }
+                if *secret {
+                    let structs = self.struct_defs.iter().map(|(n, f)| (n.clone(), f.clone())).collect::<Vec<_>>();
+                    if let Some(reason) = crate::codegen::stmt::wire_unsupported_reason(handlers, &structs) {
+                        return Err(format!("secret serverlet '{}': {}", serverlet, reason));
                     }
                 }
                 if sandbox.is_some() {
@@ -481,10 +512,6 @@ impl TypeChecker {
                     let structs = self.struct_defs.iter().map(|(n, f)| (n.clone(), f.clone())).collect::<Vec<_>>();
                     if let Some(reason) = crate::codegen::stmt::wire_unsupported_reason(handlers, &structs) {
                         return Err(reason.replace("secret serverlets", "landline serverlets"));
-                    }
-                    let mut names = std::collections::HashSet::new();
-                    for h in handlers {
-                        if !names.insert(&h.name) { return Err(format!("Duplicate landline handler '{}'", h.name)); }
                     }
                 }
                 self.push_env();
@@ -860,7 +887,7 @@ impl TypeChecker {
                 Ok(Type::Str)
             }
             ExprNode::Pipeline { value, function } => {
-                let _val_ty = self.infer_expr(value)?;
+                let val_ty = self.infer_expr(value)?;
                 match &function.node {
                     ExprNode::Call { callee, args } => {
                         for a in args {
@@ -874,6 +901,12 @@ impl TypeChecker {
                                     expr.span.line, expr.span.col, callee, expected_args.len(), effective_arg_count
                                 ));
                             }
+                            if !self.generic_functions.contains_key(callee) && !self.types_compatible(&expected_args[0], &val_ty) {
+                                return Err(format!(
+                                    "line {}, col {}: {} expects {} as its piped first argument, got {}",
+                                    expr.span.line, expr.span.col, callee, expected_args[0].display_name(), val_ty.display_name()
+                                ));
+                            }
                             Ok(ret_ty)
                         } else {
                             Ok(Type::Void)
@@ -885,6 +918,12 @@ impl TypeChecker {
                                 return Err(format!(
                                     "line {}, col {}: {} expects {} arguments, got 1 (piped value)",
                                     expr.span.line, expr.span.col, name, expected_args.len()
+                                ));
+                            }
+                            if !self.generic_functions.contains_key(name) && !self.types_compatible(&expected_args[0], &val_ty) {
+                                return Err(format!(
+                                    "line {}, col {}: {} expects {} as its piped argument, got {}",
+                                    expr.span.line, expr.span.col, name, expected_args[0].display_name(), val_ty.display_name()
                                 ));
                             }
                             Ok(ret_ty)
@@ -942,7 +981,7 @@ impl TypeChecker {
                         candidates.push(format!("{}::{}", alias, function));
                         candidates.push(format!("{}::{}", bare, function));
                     }
-                    if !candidates.iter().any(|key| self.functions.contains_key(key)) {
+                    let Some(key) = candidates.iter().find(|key| self.functions.contains_key(*key)).cloned() else {
                         let prefix = format!("{}::", serverlet.rsplit_once("::").map_or(serverlet.as_str(), |(_, bare)| bare));
                         let mut handlers: Vec<String> = self
                             .functions
@@ -955,7 +994,24 @@ impl TypeChecker {
                             expr.span.line, expr.span.col, serverlet, function,
                             if handlers.is_empty() { String::new() } else { format!(". It has: {}.", handlers.join(", ")) }
                         ));
+                    };
+                    let (expected_args, ret_ty) = self.functions.get(&key).cloned().unwrap();
+                    if expected_args.len() != args.len() {
+                        return Err(format!(
+                            "line {}, col {}: {}.{}() expects {} arguments, got {}",
+                            expr.span.line, expr.span.col, module_local_name, function, expected_args.len(), args.len()
+                        ));
                     }
+                    for (i, (expected, actual)) in expected_args.iter().zip(&arg_types).enumerate() {
+                        if !self.types_compatible(expected, actual) {
+                            return Err(format!(
+                                "line {}, col {}: {}.{}() argument {} expects {}, got {}",
+                                expr.span.line, expr.span.col, module_local_name, function, i + 1,
+                                expected.display_name(), actual.display_name()
+                            ));
+                        }
+                    }
+                    return Ok(ret_ty);
                 }
 
                 let alias_key = format!("{}::{}", module_local_name, function);
@@ -966,10 +1022,19 @@ impl TypeChecker {
                             expr.span.line, expr.span.col, module_local_name, function, expected_args.len(), args.len()
                         ));
                     }
-                    if self.host_groups.contains(module_local_name) {
-                        for (expected, actual) in expected_args.iter().zip(&arg_types) {
-                            if !self.types_compatible(expected, actual) { return Err(format!("Host argument type mismatch for {}.{}", module_local_name, function)); }
+                    for (i, (expected, actual)) in expected_args.iter().zip(&arg_types).enumerate() {
+                        if !self.types_compatible(expected, actual) {
+                            if self.host_groups.contains(module_local_name) {
+                                return Err(format!("Host argument type mismatch for {}.{}", module_local_name, function));
+                            }
+                            return Err(format!(
+                                "line {}, col {}: {}.{}() argument {} expects {}, got {}",
+                                expr.span.line, expr.span.col, module_local_name, function, i + 1,
+                                expected.display_name(), actual.display_name()
+                            ));
                         }
+                    }
+                    if self.host_groups.contains(module_local_name) {
                         if let Some((serverlet, granted)) = &self.sandbox_grants {
                             let call = format!("{}.{}", module_local_name, function);
                             if !granted.contains(&call) {
@@ -990,6 +1055,16 @@ impl TypeChecker {
                     return Ok(ret_ty);
                 }
                 if self.host_groups.contains(module_local_name) { return Err(format!("Unknown host function {}.{}", module_local_name, function)); }
+                if self.module_aliases.contains(module_local_name) {
+                    let prefix = format!("{}::", module_local_name);
+                    let mut known: Vec<String> = self.functions.keys().filter_map(|key| key.strip_prefix(&prefix).map(str::to_string)).collect();
+                    known.sort();
+                    return Err(format!(
+                        "line {}, col {}: module '{}' has no function '{}'{}",
+                        expr.span.line, expr.span.col, module_local_name, function,
+                        if known.is_empty() { String::new() } else { format!(". It has: {}.", known.join(", ")) }
+                    ));
+                }
 
                 let suffix = format!("::{}", function);
                 let mut found_ret = None;
@@ -1011,6 +1086,12 @@ impl TypeChecker {
             ExprNode::StartServerlet { name, args } => {
                 for arg in args {
                     self.infer_expr(arg)?;
+                }
+                if !args.is_empty() {
+                    return Err(format!(
+                        "line {}, col {}: start {}() takes no arguments; a serverlet's state is declared inside it, not passed in",
+                        expr.span.line, expr.span.col, name
+                    ));
                 }
                 // A name with `::` came from a module, whose declarations are registered
                 // under an alias rather than here.
@@ -1045,7 +1126,13 @@ impl TypeChecker {
                 Ok(Type::Process)
             }
             ExprNode::StartProcess { target } => {
-                self.infer_expr(target)?;
+                let target_ty = self.infer_expr(target)?;
+                if !matches!(target_ty, Type::Process | Type::TypeParam(_) | Type::Void) {
+                    return Err(format!(
+                        "line {}, col {}: start expects a process, got {}",
+                        expr.span.line, expr.span.col, target_ty.display_name()
+                    ));
+                }
                 Ok(Type::Process)
             }
             ExprNode::ArrayLiteral(elements) => {
@@ -1127,6 +1214,16 @@ impl TypeChecker {
             }
             ExprNode::Propagate(inner) => {
                 let inner_ty = self.infer_expr(inner)?;
+                if self.try_errors.is_empty() {
+                    if let Some(returns) = &self.current_return_type {
+                        if !matches!(returns, Type::Result(_, _) | Type::Option(_) | Type::TypeParam(_)) {
+                            return Err(format!(
+                                "line {}, col {}: '?' needs a function that returns result or option, or a try block; this one returns {}",
+                                expr.span.line, expr.span.col, returns.display_name()
+                            ));
+                        }
+                    }
+                }
                 match &inner_ty {
                     Type::Result(ok_ty, err_ty) => {
                         if let Some(collector) = self.try_errors.last_mut() {

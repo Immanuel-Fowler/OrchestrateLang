@@ -1161,8 +1161,17 @@ impl Codegen {
                 scopes: vec![scope],
                 receiver: "__state",
             });
+            let awaits_before = self.awaits;
             let body = self.compile_expr(&h.body);
             self.state_rewrite = None;
+            // A guest handler is an exported function that runs to completion inside
+            // the guest: there is no runtime in there to wait on.
+            if self.awaits != awaits_before {
+                self.errors.push(format!(
+                    "sandboxed serverlet '{name}': handler '{}' waits — it calls a serverlet, a task, or sleep — and a guest handler cannot wait; it runs to completion inside the guest, which has no runtime and reaches nothing but its grants",
+                    h.name
+                ));
+            }
 
             let mut params = Vec::new();
             let mut unpack = String::new();

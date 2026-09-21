@@ -987,7 +987,17 @@ pub fn run_check(input_file: &str) -> Result<(), String> {
             type_checker.register_module_functions(local_name, &module_stmts);
             for stmt in &module_stmts {
                 if let ast::StmtNode::LoadForeign { language, path, .. } = &stmt.node {
-                    if language == "typescript" {
+                    if language == "rust" {
+                        // As the build does, so a call into a Rust foreign module — the
+                        // standard library included — is typed here rather than unknown.
+                        let sidecar_path = module_path.join(path).with_extension("orch_ffi");
+                        if let Ok(content) = fs::read_to_string(&sidecar_path) {
+                            let sidecar_name = sidecar_path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown.orch_ffi");
+                            let (signatures, _) = crate::dependencies::split_sidecar(&content);
+                            register_rust_ffi_from_sidecar(&signatures, local_name, sidecar_name, &mut type_checker)
+                                .map_err(|e| format!("Rust FFI sidecar error: {}", e))?;
+                        }
+                    } else if language == "typescript" {
                         let content = fs::read_to_string(module_path.join(path).with_extension("orch_ffi")).map_err(|e| e.to_string())?;
                         for h in crate::typescript::sidecar(&content)? {
                             type_checker.register_foreign_function(local_name, &h.name, h.params.into_iter().map(|p| p.ty).collect(), h.return_type);
