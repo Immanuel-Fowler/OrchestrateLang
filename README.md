@@ -787,10 +787,11 @@ generated crate lives wherever the host project expects path dependencies.
 The most important limitations are behavioral, not cosmetic:
 
 - A sandboxed serverlet contains its guest's compute, memory, and reach, as well as
-  wasmtime does. `grant` and `on_crash` are not supported on one yet. It carries what
-  the C ABI carries: numbers, booleans, strings, arrays of numbers or booleans, and
-  structs of those; an array of strings or structs, or a struct holding one, does not
-  cross it, though the other three boundaries carry them.
+  wasmtime does. It carries what the C ABI carries: numbers, booleans, strings, arrays
+  of numbers or booleans, and structs of those; an array of strings or structs, or a
+  struct holding one, does not cross it, though the other three boundaries carry them.
+  Its `grant call` lines are the only way it reaches the host, and only in a library
+  build, where host functions exist.
 - A separate process provides lifecycle and crash separation, not a security boundary.
 - Python and TypeScript are the supported landline runtimes today.
 - Cross-process serverlet and TypeScript values use an explicit protocol and therefore

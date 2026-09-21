@@ -1580,11 +1580,50 @@ holding one of those, an `option`, a `result`, or a closure. `orchestrate check`
 such a handler by name; the in-process, secret, and landline boundaries do carry nested
 arrays and structs with string fields.
 
+**Grants: the only holes in the wall.** In a library build, a sandboxed serverlet may be
+granted host functions exactly as a landline is:
+
+```orchestrate
+host world {
+    fn record(n: int) -> int
+    fn reset()
+}
+
+serverlet Plugin sandbox(memory_limit: "16mb", timeout: "2s") {
+    grant call world.record
+    on bump(n: int) -> int { return world.record(n) }
+}
+```
+
+Each `grant call` becomes exactly one import in the guest's wasmtime linker, behind
+which the host's `world_record` runs on the host. Nothing else is defined, so the guest
+has no way to name any other host function: a handler that calls `world.reset()` above
+is refused by `orchestrate check`, naming the serverlet, the call, and the grant that
+would allow it. This is where containment and consent are one mechanism: the grant
+declares what the guest may reach, and the linker is what makes everything else
+unreachable. Arguments and results cross in the same wire encoding landline grants use,
+so a host function may take and return numbers, booleans, strings, arrays, and structs.
+A host function that returns an error, or panics, fails that one call: the guest logs it
+and gets the return type's default, and the guest keeps running. A host call counts
+against the call's `timeout`, since the guest is still inside its call while the host
+runs. Grants require `build --lib`, because host functions only exist there.
+
+**`on_crash`.** A sandboxed serverlet's `on_crash` runs on the host, after a call trapped
+and was reported and before the guest is replaced, with the trap's message bound:
+
+```orchestrate
+serverlet Plugin sandbox(memory_limit: "16mb", timeout: "300ms") {
+    on spin() -> int { while true { }  return 0 }
+    on_crash reason { print("plugin failed: " + reason) }
+}
+```
+
+It runs for a call that ran past its timeout, exhausted its memory, or stopped itself.
+It cannot reach the serverlet's state, which is inside the instance being thrown away;
+a handler that names a state binding is a compile error saying so.
+
 **v1 limitations:**
 
-- `grant` is not supported on a sandboxed serverlet, and neither is `on_crash`; both are
-  compile errors. A grant would be a deliberate hole in the wall and has to be built as
-  one.
 - State whose type cannot be inferred needs an annotation, which is always true for a
   serverlet declared inside an imported module.
 - Building one needs the `wasm32-wasip1` target (`rustup target add wasm32-wasip1`), and

@@ -28,6 +28,22 @@ version of the claim.
 - A `check` names the offending handler and type for the sandbox; for a secret or landline
   serverlet the same class of error is also the compiler's own.
 
+**Host reach per boundary**, after the grants branch:
+
+| Boundary | `grant call` | `on_crash` | Ungranted host call |
+|---|---|---|---|
+| In-process | not needed: trusted code, calls the host directly | on a handler panic | n/a |
+| Secret | no host functions (a child process has no `Host`) | no | n/a |
+| Landline | yes | on transport failure | rejected by the mirror at run time |
+| Sandboxed | yes, library builds only | on a trap (timeout, memory, self-stop) | refused by `orchestrate check`, and undefined in the linker |
+
+- A grant on a sandboxed serverlet counts the host method's time against the call's
+  `timeout`, because the guest is still inside its call while the host runs. A landline
+  grant has no such coupling. Documented; not a defect.
+- `on_crash` for the sandbox cannot touch the serverlet's state (it is inside the
+  instance being replaced), where an in-process `on_crash` can. Refused at compile time
+  with the binding named.
+
 ## Found and fixed on this branch
 
 - **Sandbox string arguments leaked guest memory.** Every string the host wrote into the
@@ -66,3 +82,11 @@ version of the claim.
   full disk saw the linker fail with "no space left on device" mid-run, which looks like
   a test failure. Left as is, because a kept directory makes a rerun fast; clean with
   `rm -rf "$TMPDIR"/orch_*` when space matters.
+- **A name that is a Rust keyword reaches rustc.** `on move(p: Point)` generated
+  `pub extern "C" fn move(...)` in the sandbox guest and would generate
+  `pub async fn move(...)` on the in-process client; either is a rustc syntax error in
+  generated code. The same holds for a `fn type()`, a `let match = 1`, a struct field
+  named `ref`, and every other Rust keyword that is not an OrchestrateLang keyword.
+  Only `gen` is escaped today (for edition 2024 library crates). Found by naming a
+  handler `move` in the grants test; not fixed here, since the fix is a systematic
+  `r#` escape across codegen. Candidate for the diagnostics corpus as a leak.

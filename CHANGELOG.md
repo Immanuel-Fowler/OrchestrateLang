@@ -23,6 +23,23 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   An array of strings or structs, or a struct holding one, does not cross the sandbox,
   though the in-process, secret, and landline boundaries carry them. That gap is written
   down in `LIMITATIONS-notes.md`.
+- **`grant call` on a sandboxed serverlet.** In a library build, a sandboxed serverlet
+  takes the same grant lines a landline does, and there they are the only way the guest
+  reaches the host at all: each grant is exactly one import defined in the guest's
+  wasmtime linker, behind which the `Host` trait method runs; nothing is defined for
+  anything ungranted, so it does not exist inside the guest. A handler that calls an
+  ungranted host function is refused by `orchestrate check`, which names the call and the
+  grant that would allow it. Arguments and results cross in the wire encoding landline
+  grants use — numbers, booleans, strings, arrays, and structs. A host error or panic
+  fails that one call inside the guest, which logs it and continues with the default. A
+  host call counts against the serverlet's `timeout`, since the guest is still inside its
+  call while the host runs. Step 7 of `docs/design/sandboxed-serverlets.md`, and the
+  point where containment and consent become one mechanism.
+- **`on_crash` on a sandboxed serverlet** runs on the host after a call ran past its
+  timeout, exhausted its memory, or stopped itself, with the trap's message bound, before
+  the guest is replaced and the caller gets the default. It cannot reach the guest's
+  state, which is inside the instance being thrown away; a handler that names a state
+  binding is a compile error saying so.
 
 ### Fixed
 - **A sandboxed serverlet no longer leaks guest memory on every string argument.** The

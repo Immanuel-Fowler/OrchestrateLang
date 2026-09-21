@@ -282,6 +282,14 @@ normal landline behavior: log the error, return a default value, and preserve pr
 Grants constrain the generated host-call interface. They do not sandbox Python or
 TypeScript or restrict their OS permissions.
 
+A **sandboxed serverlet** takes the same `grant call` lines, and there a grant is the
+only way the guest can reach the host at all: each one is a single import defined in the
+guest's wasmtime linker, and a handler that calls an ungranted host function is refused
+by `orchestrate check`. The host method runs on the host, synchronously, while the guest
+waits inside its call, so its time counts against the serverlet's `timeout`. A host error
+or panic fails that one call inside the guest, which logs it and continues with the
+return type's default.
+
 ## Logging
 
 `Host` has a `log` method whose default prints `Info` messages to stdout and other levels

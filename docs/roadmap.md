@@ -88,7 +88,7 @@ See `language-reference.md` §6.4 and §6.5 for full documentation.
 
 ---
 
-## 2. Sandboxed Serverlets (Wrap, Don't Build) — **[SHIPPED in 0.9.0, except grants]**
+## 2. Sandboxed Serverlets (Wrap, Don't Build) — **[SHIPPED]**
 
 **Problem it solves:** Running untrusted or semi-trusted code (plugins, user-submitted logic, downloaded modules) safely, without OrchestrateLang needing to invent its own sandboxing/security model.
 
@@ -114,7 +114,10 @@ serverlet UntrustedPlugin sandbox(memory_limit: "64mb", timeout: "5s") {
   side writes for the other it frees after the call.
 - Only a program that uses the feature gains the `wasmtime` dependency.
 
-**Still open:** `grant` on a sandboxed serverlet. Each grant has to become one narrow, mediated host function in the wasmtime linker — the point where sandboxing and the consent model become the same mechanism. Until that exists, a grant on a sandboxed serverlet is a compile error rather than a hole that opens quietly. `on_crash` is likewise a compile error. Arrays of strings or structs, structs holding them, and non-WASM isolation backends remain out of scope.
+- `grant call` on a sandboxed serverlet: each grant is one narrow, mediated host function in the wasmtime linker, and nothing else is defined — the point where sandboxing and the consent model become the same mechanism. A handler that calls an ungranted host function is refused by `orchestrate check`. Library builds only, as for landlines.
+- `on_crash` runs on the host after a trapped call, with the trap's message, before the guest is replaced.
+
+**Still open:** arrays of strings or structs, structs holding them, and non-WASM isolation backends.
 
 **Connects to Feature 1:** Sandboxed serverlets, polyglot serverlets (1a), and loaded foreign modules (1b) are all variations on the same underlying theme — *handler/function bodies implemented by something other than native compiled OrchestrateLang code, with the compiler generating the integration glue.* `load_foreign "wasm"` (1b) and this feature share one wasmtime host.
 
@@ -196,8 +199,7 @@ is [plans/language-gaps.md](plans/language-gaps.md).
 - **Sandboxed serverlets contain their code — shipped in 0.9.0.** The guest runs under
   wasmtime with a memory cap, a per-call timeout, and no import it was not granted. Step 7
   of [design/sandboxed-serverlets.md](design/sandboxed-serverlets.md), turning a `grant`
-  into a mediated host function, is the one part still open; until it exists a `grant` on a
-  sandboxed serverlet is a compile error rather than a hole that opens quietly.
+  into a mediated host function, shipped after 0.14.0.
 - **Core defects found in the 2026-09-19 review — fixed in 0.11.0.** Four bugs that all
   leaked generated Rust to the user: string concatenation moved its operands, a match on a
   unit enum variant that bound a value reached rustc, a `try` block whose body waited would
@@ -234,7 +236,7 @@ Given the combined scope of these four features, recommend picking **one end-to-
    implemented. Still open: a web-compatible library subset. This supersedes the
    subprocess+JSON sketch.
 5. **OPM (git-based, no hosted index)** — builds on PROM's name→location mapping.
-6. ~~**Sandboxed serverlets (wasmtime)** — largest single feature; benefits from #4's pattern and gives OPM a security story.~~ **[SHIPPED in 0.9.0, except grants]**
+6. ~~**Sandboxed serverlets (wasmtime)** — largest single feature; benefits from #4's pattern and gives OPM a security story.~~ **[SHIPPED: 0.9.0, grants and `on_crash` after 0.14.0]**
 
 A smaller set of fully-working, well-documented features is a stronger result (and more likely to see real use) than a sprawling set of partially-built ones.
 

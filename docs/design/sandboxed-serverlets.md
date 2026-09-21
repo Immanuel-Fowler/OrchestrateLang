@@ -1,15 +1,14 @@
 # Sandboxed Serverlets — Design & Build Plan
 
-> Status: **✅ SHIPPED in 0.9.0, except grants (step 7).** `sandbox(...)` parses and
+> Status: **✅ SHIPPED.** `sandbox(...)` parses and
 > validates (step 1), the handlers are codegen'd into a WASM guest crate compiled to
 > `wasm32-wasip1` (step 2), and the orchestrator loads that guest under `wasmtime` and
 > calls it (step 3), with the memory cap (step 4), the per-call timeout via epoch
 > interruption (step 5), and `string` marshaling (step 6) all enforced. State lives in
 > the guest and persists between calls. Arrays of numbers and booleans, and structs of
 > those, cross as of the branch after 0.14.0, under the C ABI's ownership and layout
-> rules. What remains is step 7: turning a `grant` into a narrow, mediated host
-> function. Until that exists, a `grant` on a sandboxed serverlet is a compile error
-> rather than a hole that opens quietly.
+> rules. Step 7, a `grant` as a narrow, mediated host function, shipped after 0.14.0
+> too, along with `on_crash` on the host side of a trap.
 
 ---
 
@@ -238,12 +237,17 @@ two sides: the grant declares intent; the wasmtime linker enforces it.
    ptr+len protocol into guest linear memory. *Test: `string -> string` handler
    round-trips correctly.*
 
-7. **Grants as narrow host functions.**
-   `grant read/write "<path>"` → exactly one mediated host function per grant in
-   the wasmtime linker; ungranted capabilities are absent from the guest. This is
-   the shared mechanism with `serverlet-files.md` grant enforcement. *Test: a guest
-   can read a granted path and CANNOT read a non-granted one (the host fn doesn't
-   exist for it).*
+7. ✅ **Grants as narrow host functions. (DONE)**
+   `grant call group.function` → exactly one linker definition per grant, in the
+   `orch_host` import module, behind which the `Host` trait method runs; nothing is
+   defined for anything ungranted, so it does not exist inside the guest. The guest
+   carries the call through a generated stub over the landline wire codec, so host
+   functions take and return the same values landline grants do. The typechecker
+   refuses a handler that calls an ungranted host function, naming the grant that
+   would allow it. Library builds only, where host functions exist. *Tests:*
+   `library_sandbox_grants_are_mediated_host_functions` and the error case
+   `sandbox_ungranted_host_call.orch`. The `grant read "<path>"` form sketched
+   above was never built; `grant call` is the shipped shape.
 
 8. ✅ **Docs. (DONE)** Update `../language-reference.md` with the sandboxed serverlet section
    and the precise, honest security statement from §2. Flip the
