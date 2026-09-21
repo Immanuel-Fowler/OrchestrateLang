@@ -10,6 +10,13 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 ## [Unreleased]
 
 ### Fixed
+- **The embedded standard library no longer leaves a temp folder per run.** An installed
+  `orchestrate` with no `stdlib/` beside it unpacked `lists` and `strings` into a fresh
+  `orchestrate_stdlib_<pid>_<n>` folder in every process and never removed it; 38 had
+  piled up on one machine. It now unpacks one copy per compiler build, named by the
+  version and a hash of the embedded sources, shared by every process and renamed into
+  place whole, so a racing process never reads a half-written copy. Patch-level: how a
+  module resolves and compiles is unchanged.
 - **Conflicting generic arguments are refused by `orchestrate check`.** `same(1, "x")`
   against `fn same<T>(a: T, b: T)` passed `check` and reached rustc as E0308 against
   generated code, the last program in the diagnostics corpus that did. The typechecker

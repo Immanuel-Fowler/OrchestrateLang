@@ -147,28 +147,46 @@ fn resolve_stdlib_module(name: &str) -> Result<Option<PathBuf>, String> {
             return Ok(Some(candidate));
         }
     }
-    let files: &[(&str, &str)] = match name {
-        "lists" => &[("module.orch", include_str!("../stdlib/lists/module.orch")), ("impl.rs", include_str!("../stdlib/lists/impl.rs")), ("impl.orch_ffi", include_str!("../stdlib/lists/impl.orch_ffi"))],
-        "strings" => &[("module.orch", include_str!("../stdlib/strings/module.orch")), ("impl.rs", include_str!("../stdlib/strings/impl.rs")), ("impl.orch_ffi", include_str!("../stdlib/strings/impl.orch_ffi"))],
-        _ => return Ok(None),
+    let Some((_, files)) = EMBEDDED_STDLIB.iter().find(|(module, _)| *module == name) else {
+        return Ok(None);
     };
+    // One copy per compiler build, shared by every process that needs it. The name
+    // carries the version and a hash of the embedded sources, so a copy is never stale
+    // and there is nothing to clean up; each process used to write its own copy and
+    // leave it behind. A copy appears whole or not at all: it is written beside its
+    // final name and renamed into place, and a process that loses that race uses the
+    // winner's copy, which is the same bytes.
     static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     let root = ROOT.get_or_init(|| {
-        let mut index = 0;
-        loop {
-            let path = std::env::temp_dir().join(format!("orchestrate_stdlib_{}_{}", std::process::id(), index));
-            match std::fs::create_dir(&path) {
-                Ok(()) => break path,
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => index += 1,
-                Err(_) => break path,
-            }
-        }
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        EMBEDDED_STDLIB.hash(&mut hasher);
+        std::env::temp_dir().join(format!("orchestrate_stdlib_{}_{:016x}", env!("CARGO_PKG_VERSION"), hasher.finish()))
     });
     let directory = root.join(name);
-    std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-    for (file, source) in files { std::fs::write(directory.join(file), source).map_err(|e| e.to_string())?; }
+    if !directory.is_dir() {
+        let staging = root.join(format!(".{}-{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&staging);
+        std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+        for (file, source) in *files {
+            std::fs::write(staging.join(file), source).map_err(|e| e.to_string())?;
+        }
+        if std::fs::rename(&staging, &directory).is_err() {
+            let _ = std::fs::remove_dir_all(&staging);
+            if !directory.is_dir() {
+                return Err(format!("could not unpack the embedded stdlib module '{}' into {}", name, root.display()));
+            }
+        }
+    }
     Ok(Some(directory))
 }
+
+/// The standard library compiled into the binary, for an install that has no `stdlib/`
+/// directory beside it.
+const EMBEDDED_STDLIB: &[(&str, &[(&str, &str)])] = &[
+    ("lists", &[("module.orch", include_str!("../stdlib/lists/module.orch")), ("impl.rs", include_str!("../stdlib/lists/impl.rs")), ("impl.orch_ffi", include_str!("../stdlib/lists/impl.orch_ffi"))]),
+    ("strings", &[("module.orch", include_str!("../stdlib/strings/module.orch")), ("impl.rs", include_str!("../stdlib/strings/impl.rs")), ("impl.orch_ffi", include_str!("../stdlib/strings/impl.orch_ffi"))]),
+];
 
 #[cfg(test)]
 mod tests {
