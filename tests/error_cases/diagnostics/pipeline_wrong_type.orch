@@ -1,0 +1,2 @@
+fn twice(n: int) -> int { return n * 2 }
+orchestrator main() { let v = "x" |> twice  print(to_string(v))  stop_orch() }

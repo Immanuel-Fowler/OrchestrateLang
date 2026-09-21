@@ -1,0 +1,2 @@
+use module b: "./modules/bad_sidecar_c"
+orchestrator main() { print(to_string(b.one()))  stop_orch() }

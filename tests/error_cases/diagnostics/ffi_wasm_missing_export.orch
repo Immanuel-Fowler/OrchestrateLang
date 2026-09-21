@@ -1,0 +1,2 @@
+use module m: "./modules/wasm_math"
+orchestrator main() { print(to_string(m.triple(1)))  stop_orch() }

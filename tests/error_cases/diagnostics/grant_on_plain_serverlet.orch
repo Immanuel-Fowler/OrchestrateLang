@@ -1,0 +1,3 @@
+host world { fn record(n: int) }
+serverlet C { grant call world.record  on add(n: int) -> int { return n } }
+orchestrator main() { let c = start C()  print(to_string(c.add(1)))  stop_orch() }

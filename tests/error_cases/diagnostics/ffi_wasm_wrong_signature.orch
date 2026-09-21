@@ -1,0 +1,2 @@
+use module m: "./modules/wasm_wrong_type"
+orchestrator main() { print(to_string(m.double(1.0)))  stop_orch() }

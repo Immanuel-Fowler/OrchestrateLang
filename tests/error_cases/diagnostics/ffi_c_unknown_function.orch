@@ -1,0 +1,2 @@
+use module cmath: "./modules/typed_c"
+orchestrator main() { print(to_string(cmath.average([1])))  stop_orch() }

@@ -1,0 +1,2 @@
+serverlet P sandbox(memory_limit: "lots", timeout: "5s") { on ping() -> int { return 1 } }
+orchestrator main() { let p = start P()  print(to_string(p.ping()))  stop_orch() }

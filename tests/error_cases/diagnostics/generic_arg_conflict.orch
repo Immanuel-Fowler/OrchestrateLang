@@ -1,0 +1,2 @@
+fn same<T>(a: T, b: T) -> T { return a }
+orchestrator main() { print(to_string(same(1, "x")))  stop_orch() }

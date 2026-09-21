@@ -1,0 +1,2 @@
+let worker = automatic { stop_orch() } on_crash { print("down") }
+orchestrator main(procs: process[worker]) { }

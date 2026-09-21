@@ -1,0 +1,2 @@
+fn f() -> option<int> { return some("x") }
+orchestrator main() { print(to_string(f()))  stop_orch() }

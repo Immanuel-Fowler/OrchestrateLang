@@ -1,0 +1,2 @@
+let worker = automatic(restart: "many") { stop_orch() }
+orchestrator main(procs: process[worker]) { }

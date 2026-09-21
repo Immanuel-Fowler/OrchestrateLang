@@ -1,0 +1,2 @@
+serverlet C { on add(n: int) -> int { return n } }
+orchestrator main() { let c = start C()  print(to_string(c.add("x")))  stop_orch() }

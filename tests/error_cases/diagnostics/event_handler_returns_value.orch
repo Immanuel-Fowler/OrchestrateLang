@@ -1,0 +1,2 @@
+let a = on ping(n: int) -> int { return n }
+orchestrator main() { trigger ping(1)  stop_orch() }

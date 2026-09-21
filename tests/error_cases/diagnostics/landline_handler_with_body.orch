@@ -1,0 +1,2 @@
+serverlet P via python(source: "impl.py") { on ping() -> int { return 1 } }
+orchestrator main() { let p = start P()  print(to_string(p.ping()))  stop_orch() }

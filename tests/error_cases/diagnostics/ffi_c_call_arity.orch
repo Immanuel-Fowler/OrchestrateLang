@@ -1,0 +1,2 @@
+use module cmath: "./modules/typed_c"
+orchestrator main() { print(to_string(cmath.total([1], 2)))  stop_orch() }

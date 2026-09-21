@@ -1,0 +1,2 @@
+use module s: "./modules/string_array_c"
+orchestrator main() { print(to_string(s.count(["a"])))  stop_orch() }

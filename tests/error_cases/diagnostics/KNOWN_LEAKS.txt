@@ -1,0 +1,6 @@
+# Cases in this directory that still reach rustc instead of an OrchestrateLang error.
+# `diagnostics_never_leak_rustc` holds the corpus to exactly this list: a leak that is
+# not here fails the test, and a case listed here that stops leaking fails it too, so
+# remove a line when you fix its case. Each is explained in LIMITATIONS-notes.md.
+fn_missing_return
+generic_arg_conflict

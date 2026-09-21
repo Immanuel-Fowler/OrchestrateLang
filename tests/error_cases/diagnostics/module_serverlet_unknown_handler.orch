@@ -1,0 +1,2 @@
+use module m: "./modules/plain"
+orchestrator main() { let s = start m.Store()  print(to_string(s.get(1)))  stop_orch() }

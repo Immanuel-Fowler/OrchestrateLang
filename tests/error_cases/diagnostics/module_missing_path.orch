@@ -1,0 +1,2 @@
+use module m: "./modules/does_not_exist"
+orchestrator main() { stop_orch() }

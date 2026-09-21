@@ -1,0 +1,3 @@
+fn twice(n: int) -> int { return n * 2 }
+let worker = automatic { print(to_string(twice("x")))  stop_orch() }
+orchestrator main(procs: process[worker]) { }

@@ -1,0 +1,3 @@
+use module m: "./modules/host_module"
+on_tick(dt: float) { }
+orchestrator main() {}

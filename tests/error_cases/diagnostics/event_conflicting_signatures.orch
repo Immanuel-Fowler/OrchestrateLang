@@ -1,0 +1,3 @@
+let a = on ping(n: int) { print(to_string(n)) }
+let b = on ping(s: string) { print(s) }
+orchestrator main() { trigger ping(1)  stop_orch() }

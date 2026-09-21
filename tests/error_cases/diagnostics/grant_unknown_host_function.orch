@@ -1,0 +1,4 @@
+host world { fn record(n: int) }
+serverlet P via python(source: "impl.py") { grant call world.missing  on ping() -> int }
+on_tick(dt: float) { }
+orchestrator main() {}

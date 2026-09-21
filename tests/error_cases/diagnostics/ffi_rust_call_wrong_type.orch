@@ -1,0 +1,2 @@
+use module r: "./modules/rust_math"
+orchestrator main() { print(to_string(r.triple("x")))  stop_orch() }

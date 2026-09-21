@@ -1,0 +1,2 @@
+double(n: int) -> int
+triple(n: int) -> int

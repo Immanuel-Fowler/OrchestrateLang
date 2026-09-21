@@ -1,0 +1,3 @@
+fn twice(n: int) -> int { return n * 2 }
+task slow(n: int) -> int { sleep(1)  return n }
+serverlet Store { on put(n: int) -> int { return n } }

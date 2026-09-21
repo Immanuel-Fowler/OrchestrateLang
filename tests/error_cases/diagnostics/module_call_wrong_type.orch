@@ -1,0 +1,2 @@
+use module m: "./modules/plain"
+orchestrator main() { print(to_string(m.twice("x")))  stop_orch() }

@@ -1,0 +1,2 @@
+let audit = on user_created(id: int) { print(to_string(id)) }
+orchestrator main() { trigger user_created("x")  stop_orch() }

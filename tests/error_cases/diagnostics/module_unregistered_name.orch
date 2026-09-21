@@ -1,0 +1,2 @@
+use module m: "no_such_prom_entry"
+orchestrator main() { stop_orch() }

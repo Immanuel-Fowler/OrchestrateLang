@@ -1,0 +1,2 @@
+use module x: "./modules/cobol"
+orchestrator main() { stop_orch() }

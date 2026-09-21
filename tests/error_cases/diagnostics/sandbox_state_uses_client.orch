@@ -1,0 +1,3 @@
+serverlet A { on ping() -> int { return 1 } }
+serverlet P sandbox(memory_limit: "16mb", timeout: "5s") { on relay() -> int { let a = start A()  return a.ping() } }
+orchestrator main() { let p = start P()  print(to_string(p.relay()))  stop_orch() }

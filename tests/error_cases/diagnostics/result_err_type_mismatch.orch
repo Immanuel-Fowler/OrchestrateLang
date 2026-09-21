@@ -1,0 +1,3 @@
+struct Failure { code: int }
+fn f() -> result<int, Failure> { return err("no") }
+orchestrator main() { print("x")  stop_orch() }
