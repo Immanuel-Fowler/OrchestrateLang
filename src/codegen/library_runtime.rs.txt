@@ -77,6 +77,7 @@ struct OrchContext {
     program: OrchSlot<__OrchProgram>,
     /// Set whenever an event is queued, so an idle tick skips the queues without locking.
     has_events: std::sync::atomic::AtomicBool,
+@SHARED_FIELD@
 @EVENT_FIELDS@
 }
 tokio::task_local! { static ORCH_CONTEXT: std::sync::Arc<OrchContext>; }
@@ -317,6 +318,7 @@ impl OrchContext {
             self.has_events.store(true, std::sync::atomic::Ordering::Release);
         }
     }
+@SHARED_METHOD@
     async fn cleanup(&self) {
         self.closing.send_replace(true);
         for (task, line) in self.tasks.lock().unwrap().iter() { if !line { task.abort(); } }
@@ -480,6 +482,7 @@ pub fn start_with_options(runtime: &tokio::runtime::Handle, host: impl Host, opt
         host: std::sync::Arc::new(host), options, events: Default::default(), batch: Default::default(), clock_nanos: 0.into(), frame: 0.into(), dt_bits: 0.into(), stop_requested: false.into(), closing, shutdown,
         tasks: Default::default(), active: 0.into(), idle: tokio::sync::Notify::new(), assets, runtime: runtime.clone(),
         program: OrchSlot::new(), has_events: false.into(),
+@SHARED_INIT@
 @EVENT_INIT@
     });
     let (commands, rx) = tokio::sync::mpsc::unbounded_channel();

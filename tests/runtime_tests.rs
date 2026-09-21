@@ -928,3 +928,52 @@ orchestrator main() {
 "#);
     assert_eq!(out.trim(), "42\n7");
 }
+
+/// `shared let` is reachable from a synchronous `fn` and from concurrent workers, and the
+/// lock makes read-modify-write exact: every increment lands.
+#[test]
+fn runtime_shared_state_survives_concurrent_workers() {
+    let out = run_orch("shared_concurrent", r#"
+shared let total = 0
+shared let done = 0
+
+// Synchronous, because taking the lock does not wait.
+fn add_one() {
+    total = total + 1
+}
+
+let a = automatic { add_one()  done = done + 1  sleep(1) }
+let b = automatic { add_one()  done = done + 1  sleep(1) }
+let c = automatic { add_one()  done = done + 1  sleep(1) }
+
+let reporter = automatic {
+    sleep(400)
+    if total == done { print("exact") } else { print("lost updates") }
+    if total > 10 { print("ran") } else { print("too slow") }
+    stop_orch()
+}
+
+orchestrator main(procs: process[a, b, c, reporter]) { }
+"#);
+    let lines: Vec<&str> = out.lines().filter(|l| !l.starts_with("[orchestrate]")).collect();
+    assert_eq!(lines, vec!["exact", "ran"], "{out}");
+}
+
+/// A shared binding is not captured by a worker: it is reached through the lock wherever
+/// it is used, so a worker sees what another worker wrote.
+#[test]
+fn runtime_shared_state_is_not_copied_into_workers() {
+    let out = run_orch("shared_not_captured", r#"
+shared let ledger = "start"
+
+let writer = automatic { ledger = "written"  sleep(5000) }
+let reader = automatic {
+    sleep(120)
+    print(ledger)
+    stop_orch()
+}
+
+orchestrator main(procs: process[writer, reader]) { }
+"#);
+    assert_eq!(out.trim(), "written");
+}

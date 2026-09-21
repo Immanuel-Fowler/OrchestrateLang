@@ -130,6 +130,13 @@ impl Parser {
             self.parse_load_foreign_statement()?
         } else if self.match_token(TokenKind::Serverlet) {
             self.parse_serverlet_statement()?
+        } else if matches!(&self.peek().kind, TokenKind::Identifier(word) if word == "shared")
+            && matches!(&self.peek_at(1).kind, TokenKind::Let)
+        {
+            // `shared` is contextual, so a variable may still be called shared.
+            self.advance();
+            self.advance();
+            self.parse_let_statement_with(true)?
         } else if self.match_token(TokenKind::Let) {
             self.parse_let_statement()?
         } else if self.match_token(TokenKind::Return) {
@@ -433,6 +440,10 @@ impl Parser {
     }
 
     fn parse_let_statement(&mut self) -> Result<StmtNode, String> {
+        self.parse_let_statement_with(false)
+    }
+
+    fn parse_let_statement_with(&mut self, shared: bool) -> Result<StmtNode, String> {
         let tok = self.advance().clone();
         let name = match &tok.kind {
             TokenKind::Identifier(s) => s.clone(),
@@ -442,7 +453,7 @@ impl Parser {
         if self.match_token(TokenKind::Colon) { ty = Some(self.parse_type()?); }
         self.consume(TokenKind::Eq, "Expected '=' in variable declaration")?;
         let value = self.parse_expression(Precedence::Lowest)?;
-        Ok(StmtNode::Let { name, ty, value })
+        Ok(StmtNode::Let { name, ty, value, shared })
     }
 
     fn parse_return_statement(&mut self) -> Result<StmtNode, String> {

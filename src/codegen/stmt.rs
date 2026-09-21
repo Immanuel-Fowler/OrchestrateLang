@@ -16,10 +16,24 @@ fn type_params_str(type_params: &[String]) -> String {
 impl Codegen {
     pub fn compile_stmt(&mut self, stmt: &Stmt) -> String {
         match &stmt.node {
-            StmtNode::Let { name, ty, value } => {
+            StmtNode::Let { name, ty, value, shared } => {
+                if *shared {
+                    // The binding lives in the shared struct, initialised there; nothing
+                    // is declared at the point it was written.
+                    return String::new();
+                }
+                let before = self.shared_touches.get();
+                let awaits_before = self.awaits;
+                let outer = std::mem::replace(&mut self.guard_held, true);
                 let val_str = self.compile_expr(value);
+                self.guard_held = outer;
+                if self.shared_touches.get() != before && self.awaits != awaits_before {
+                    self.errors.push(
+                        "a statement cannot both wait and touch shared state: the lock would be held across the wait, blocking every other reader. Split it into two statements.".to_string()
+                    );
+                }
                 self.define_local(name);
-                if let Some(t) = ty {
+                let declared = if let Some(t) = ty {
                     // Closure types can't be annotated directly — let Rust infer
                     if matches!(t, Type::Fn(_, _)) {
                         format!("let mut {} = {};", name, val_str)
@@ -28,11 +42,31 @@ impl Codegen {
                     }
                 } else {
                     format!("let mut {} = {};", name, val_str)
+                };
+                // A `let` that reads shared state takes the lock around its initialiser.
+                if self.shared_touches.get() != before && !outer {
+                    return self.wrap_shared(declared);
                 }
+                declared
             }
             StmtNode::Break => "break".to_string(),
             StmtNode::Continue => "continue".to_string(),
-            StmtNode::Expr(expr) => self.compile_expr(expr),
+            StmtNode::Expr(expr) => {
+                let before = self.shared_touches.get();
+                let awaits_before = self.awaits;
+                let outer = std::mem::replace(&mut self.guard_held, true);
+                let compiled = self.compile_expr(expr);
+                self.guard_held = outer;
+                if self.shared_touches.get() != before && self.awaits != awaits_before {
+                    self.errors.push(
+                        "a statement cannot both wait and touch shared state: the lock would be held across the wait, blocking every other reader. Split it into two statements.".to_string()
+                    );
+                }
+                if self.shared_touches.get() != before && !outer {
+                    return self.wrap_shared(format!("{};", compiled));
+                }
+                compiled
+            }
             StmtNode::Host { .. } | StmtNode::OnTick { .. } | StmtNode::OnFixedTick { .. } => String::new(),
             StmtNode::OnStart(expr) => {
                 let inner = self.compile_expr(expr);
@@ -44,7 +78,22 @@ impl Codegen {
             }
             StmtNode::Return(val) => {
                 if let Some(expr) = val {
-                    format!("return {}", self.compile_expr(expr))
+                    let before = self.shared_touches.get();
+                    let awaits_before = self.awaits;
+                    let outer = std::mem::replace(&mut self.guard_held, true);
+                    let compiled = self.compile_expr(expr);
+                    self.guard_held = outer;
+                    if self.shared_touches.get() != before && self.awaits != awaits_before {
+                        self.errors.push(
+                            "a statement cannot both wait and touch shared state: the lock would be held across the wait, blocking every other reader. Split it into two statements.".to_string()
+                        );
+                    }
+                    if self.shared_touches.get() != before && !outer {
+                        // The value is read out before the guard drops, so the lock is not
+                        // held across the return.
+                        return self.wrap_shared(format!("let __returned = {compiled}; return __returned;"));
+                    }
+                    format!("return {}", compiled)
                 } else {
                     "return".to_string()
                 }
@@ -574,7 +623,7 @@ impl Codegen {
 
                 let mut state_vars = Vec::new();
                 for s in state {
-                    if let StmtNode::Let { name: vname, ty, value } = &s.node {
+                    if let StmtNode::Let { name: vname, ty, value, .. } = &s.node {
                         let val_str = self.compile_expr(value);
                         if let Some(t) = ty {
                             state_vars.push(format!("            let mut {}: {} = {};", vname, self.compile_type(t), val_str));
@@ -698,7 +747,7 @@ impl Codegen {
 
         let mut state_vars = Vec::new();
         for s in state {
-            if let StmtNode::Let { name: vname, ty, value } = &s.node {
+            if let StmtNode::Let { name: vname, ty, value, .. } = &s.node {
                 let val_str = self.compile_expr(value);
                 if let Some(t) = ty {
                     state_vars.push(format!("    let mut {}: {} = {};", vname, self.compile_type(t), val_str));
@@ -899,7 +948,7 @@ impl Codegen {
         let mut initializers = Vec::new();
         let mut names = Vec::new();
         for s in state {
-            let StmtNode::Let { name: field, ty, value } = &s.node else { continue };
+            let StmtNode::Let { name: field, ty, value, .. } = &s.node else { continue };
             let resolved = ty
                 .clone()
                 .or_else(|| declared.iter().find(|(n, _)| n == field).map(|(_, t)| t.clone()))
@@ -1016,7 +1065,7 @@ unsafe {{ std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer as *mut u8, byte
 
 /// The type of a literal initializer, for state whose type nothing else supplies — a
 /// serverlet inside an imported module, whose body the typechecker does not walk.
-fn literal_type(value: &crate::ast::Expr) -> Option<Type> {
+pub(super) fn literal_type(value: &crate::ast::Expr) -> Option<Type> {
     match &value.node {
         ExprNode::Literal(crate::ast::Literal::Int(_)) => Some(Type::Int),
         ExprNode::Literal(crate::ast::Literal::Float(_)) => Some(Type::Float),

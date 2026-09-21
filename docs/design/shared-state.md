@@ -1,10 +1,8 @@
 # Shared state — declared, not implied
 
-> Status: **proposed, not built.** The philosophy is settled; the semantics below are the
-> proposal, and the open questions at the end need answers before anyone writes code. The
-> costs marked *(estimate)* have not been measured on this machine yet, and per
-> [design philosophy](../design-philosophy.md) §10 nothing here should be promised until
-> they are.
+> Status: **shipped in 0.13.0.** The open questions at the end were answered as this
+> document recommended, and §2 records where the built semantics differ from the original
+> proposal.
 
 ## 1. The philosophy: more control for no cost
 
@@ -53,8 +51,8 @@ So the language today offers two rungs and nothing between them:
 | a serverlet | **~7.5 µs** (measured) | anything, one call at a time |
 
 Seven and a half microseconds to increment a counter that a worker and a hook share is not
-a trade-off, it is a missing rung. `shared let` is that rung, at an estimated ~15–20 ns —
-roughly 400× cheaper than a serverlet and still exact.
+a trade-off, it is a missing rung. `shared let` is that rung: one uncontended mutex instead
+of a channel round trip, and still exact.
 
 ## 2. The design
 
@@ -67,8 +65,10 @@ shared let hits = 0      // opt-in: any task, any fn, synchronised
 changes where the backend puts it:
 
 - A plain `let` that a hook reaches stays a field of `__OrchProgram`, exactly as now.
-- A `shared let` becomes a field of a separate `__OrchShared` struct, held once in
-  `Arc<Mutex<__OrchShared>>` on the context and reachable from anywhere in the program.
+- A `shared let` becomes a field of a separate `__OrchShared` struct behind one mutex,
+  reachable from anywhere in the program. A standalone program keeps it in a `static`; a
+  library keeps it on the instance's context, so two libraries started in one process do
+  not share it.
 
 Nothing about the existing path changes. A program with no `shared` bindings generates
 byte-identical code to today, which the existing determinism test already guards.
@@ -94,8 +94,11 @@ The guard is taken once at the start of such a statement and dropped at its end.
 updates silently, and a design with no guarantee at all would be a footgun wearing a
 capability marker.
 
-Because the guard spans the statement, reads **borrow** rather than clone. Reading a
-`shared` string or array does not copy it.
+**Reads clone.** The original proposal said a read would borrow, because the guard spans
+the statement. It cannot: a read produces a value, and a value cannot be moved out of a
+mutex guard. For a number the clone is a copy and costs nothing; for a string or an array
+it is the copy the reader was going to get anyway. Writes are still places, so
+`hits = hits + 1` reads a copy, adds, and writes back under one lock.
 
 ### Waiting and holding are separate
 
@@ -122,23 +125,26 @@ from a Rust host, from a hook, and from a worker can all see the same counter.
 | Access | Cost | Measured? |
 |---|---|---|
 | plain `let` from a hook | ~0, a field offset | yes, implied by the 9 ns tick |
-| `shared let`, uncontended | ~15–20 ns | **no — estimate** |
+| `shared let`, uncontended | one uncontended mutex per statement | not measured in isolation |
 | a serverlet call | ~7.5 µs | yes |
 
 A program with no `shared` bindings pays nothing: no mutex, no `Arc`, no field, no code.
 This is the same rule as `wasmtime` for programs without a sandbox and `.NET` for programs
 without C#.
 
-Per design philosophy §10, the estimate must become a measurement before the feature ships,
-and the changelog should quote the measurement, not the estimate.
+Per design philosophy §10 the changelog quotes no per-access figure, because none was
+measured in isolation. What was measured is the behaviour that matters: three workers and a
+synchronous `fn` incrementing one binding, with every increment landing — covered by
+`runtime_shared_state_survives_concurrent_workers`.
 
 ## 4. How it interacts with what exists
 
 - **Determinism.** Deterministic mode already asserts that no workers or serverlets are
   spawned, so in that mode nothing runs concurrently with a tick and shared state cannot be
   raced. Replays stay reproducible. Shared state is *not* a way around that assert.
-- **Startup order.** Top-level `let`s run during startup, before workers are spawned and
-  before `ready` returns, so a `shared` binding is initialised before anything can reach it.
+- **Startup order.** The shared struct is built the first time anything reaches it, from
+  the initialisers written on the declarations, so there is no window in which a worker can
+  see it half-built.
 - **`on_stop`.** Shutdown unpacks `__OrchProgram` into locals today. Shared bindings are not
   in that struct, so `on_stop` reads them through the same lock as everything else.
 - **Library mode.** The host never sees shared state directly. If a host should read it,
@@ -147,29 +153,30 @@ and the changelog should quote the measurement, not the estimate.
 - **The existing `fn` diagnostic** (shipped in 0.10.1) stays exactly as it is: `fn` still
   cannot wait. This feature narrows what that error has to cover, it does not remove it.
 
-## 5. Open questions
+## 5. The open questions, as answered
 
-These need answers before implementation, and each one changes the code:
+Each was decided as this document recommended:
 
-1. **Which types may be shared?** Scalars, `string`, arrays, and structs are straightforward.
-   A serverlet client is already cheap to clone and its calls are async, so sharing one is
-   probably pointless — reject it, or allow it and say nothing? A closure or a `process`
-   reference is almost certainly a mistake.
-2. **Is `shared` the right word?** It is accurate and greppable. `atomic` would overpromise
-   (this is a mutex, not an atomic). `global` would describe scope rather than the capability.
-3. **Should a `shared` binding be readable without the lock when the program provably has no
-   workers?** It could be, but the analysis is whole-program and fragile, and the win is
-   ~15 ns. Recommended: no. Keep one behaviour.
-4. **Does a statement that touches shared state inside a `parallel` block make sense?** The
-   branches run concurrently; each branch's statements would serialise on the one lock. It
-   works, but it deserves a sentence in the reference so nobody expects parallel speedup.
-5. **Read-only sharing.** Is there a case for a binding that is written once at startup and
-   only read afterwards? That needs no lock at all and could be a separate marker later.
-   Out of scope here; note it so the syntax leaves room.
+1. **Which types may be shared?** Data: `int`, `float`, `bool`, `string`, arrays, options,
+   and structs. A serverlet client, a `process`, or a closure is rejected by name — the
+   first two are already safe to use concurrently and the third is not data.
+2. **Is `shared` the right word?** Kept. It is accurate and greppable, and it is
+   contextual, so a binding may still be called `shared`.
+3. **A lock-free path when a program provably has no workers?** No. One behaviour.
+4. **`parallel` and shared state.** A `parallel` block waits for its branches, so a
+   statement inside one that touches shared state hits the "wait or share" rule and is
+   refused, as any other waiting statement is.
+5. **Read-only sharing.** Still out of scope, and the syntax leaves room for a separate
+   marker later.
 
-## 6. Build steps
+### One thing the build added
 
-Each is independently shippable and testable.
+A `shared let` is **never captured** by a worker or an event handler. Those bodies clone the
+free variables they close over; cloning a shared binding would copy the value and quietly
+undo the sharing, so shared names are excluded from capture and reached through the lock
+wherever they are used. `runtime_shared_state_is_not_copied_into_workers` covers it.
+
+## 6. Build steps, as built
 
 1. **Parse `shared let`** — a prefix on a top-level `let`, recorded on the AST. No behaviour
    change; a snapshot test proves the generated code is unchanged when the prefix is absent.

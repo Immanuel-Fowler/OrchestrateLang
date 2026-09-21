@@ -5,6 +5,7 @@
 #![allow(unused_parens)]
 #![allow(unused_mut)]
 #![allow(unreachable_code)]
+#![allow(redundant_semicolons)]
 
 fn get_registry_update_orchestrator() -> std::sync::Arc<std::sync::Mutex<Vec<tokio::sync::mpsc::Sender<std::sync::Arc<Vec<ProcessRef>>>>>> { crate::__orch_context().event_update_orchestrator.clone() }
 macro_rules! println { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::Info, format!($($args)*)) }; }
@@ -328,6 +329,7 @@ struct OrchContext {
     program: OrchSlot<__OrchProgram>,
     /// Set whenever an event is queued, so an idle tick skips the queues without locking.
     has_events: std::sync::atomic::AtomicBool,
+
     event_update_orchestrator: std::sync::Arc<std::sync::Mutex<Vec<tokio::sync::mpsc::Sender<std::sync::Arc<Vec<ProcessRef>>>>>>,
 
 }
@@ -569,6 +571,7 @@ impl OrchContext {
             self.has_events.store(true, std::sync::atomic::Ordering::Release);
         }
     }
+
     async fn cleanup(&self) {
         self.closing.send_replace(true);
         for (task, line) in self.tasks.lock().unwrap().iter() { if !line { task.abort(); } }
@@ -732,6 +735,7 @@ pub fn start_with_options(runtime: &tokio::runtime::Handle, host: impl Host, opt
         host: std::sync::Arc::new(host), options, events: Default::default(), batch: Default::default(), clock_nanos: 0.into(), frame: 0.into(), dt_bits: 0.into(), stop_requested: false.into(), closing, shutdown,
         tasks: Default::default(), active: 0.into(), idle: tokio::sync::Notify::new(), assets, runtime: runtime.clone(),
         program: OrchSlot::new(), has_events: false.into(),
+
     event_update_orchestrator: Default::default(),
 
     });

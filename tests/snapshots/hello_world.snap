@@ -5,6 +5,7 @@
 #![allow(unused_parens)]
 #![allow(unused_mut)]
 #![allow(unreachable_code)]
+#![allow(redundant_semicolons)]
 
 static REGISTRY_UPDATE_ORCHESTRATOR: std::sync::OnceLock<std::sync::Mutex<Vec<tokio::sync::mpsc::Sender<std::sync::Arc<Vec<ProcessRef>>>>>> = std::sync::OnceLock::new();
 fn get_registry_update_orchestrator() -> &'static std::sync::Mutex<Vec<tokio::sync::mpsc::Sender<std::sync::Arc<Vec<ProcessRef>>>>> {

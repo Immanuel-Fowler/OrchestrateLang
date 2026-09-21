@@ -1,0 +1,11 @@
+// A serverlet client is already safe to call concurrently, and is not data to share.
+serverlet Counter {
+    on add(n: int) -> int { return n }
+}
+
+shared let counter = start Counter()
+
+orchestrator main() {
+    print(to_string(counter.add(1)))
+    stop_orch()
+}

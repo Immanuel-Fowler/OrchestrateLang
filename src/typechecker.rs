@@ -293,7 +293,7 @@ impl TypeChecker {
 
     fn check_stmt(&mut self, stmt: &Stmt) -> Result<(), String> {
         match &stmt.node {
-            StmtNode::Let { name, ty, value } => {
+            StmtNode::Let { name, ty, value, .. } => {
                 if let ExprNode::StartServerlet { name: serverlet, .. } = &value.node {
                     self.var_serverlet.insert(name.clone(), serverlet.clone());
                 }

@@ -1,0 +1,10 @@
+// The lock cannot be held across a wait, or one worker would block every other reader.
+shared let total = 0
+
+task fetch() -> int { return 5 }
+
+orchestrator main() {
+    total = total + fetch()
+    print(to_string(total))
+    stop_orch()
+}

@@ -317,6 +317,9 @@ pub enum StmtNode {
         name: String,
         ty: Option<Type>,
         value: Expr,
+        /// `shared let`: the binding lives behind the program's one shared-state mutex,
+        /// so any task or function can reach it, not only hooks.
+        shared: bool,
     },
     Expr(Expr),
     Return(Option<Expr>),

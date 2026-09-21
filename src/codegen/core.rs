@@ -303,6 +303,15 @@ pub struct Codegen {
     /// anything inside it that would have to wait is an error rather than generated code
     /// that will not compile.
     pub(super) sync_fn: Option<String>,
+    /// `shared let` bindings and their types, in declaration order. They live behind the
+    /// program's one shared-state mutex rather than in the program struct.
+    pub(super) shared_fields: Vec<(String, String)>,
+    /// Counted while an expression is compiled, so a statement knows whether it touched
+    /// shared state and therefore needs to take the lock.
+    pub(super) shared_touches: std::cell::Cell<usize>,
+    /// True while emitting inside a statement that already holds the lock, so a nested
+    /// statement does not take it again — the mutex is not reentrant.
+    pub(super) guard_held: bool,
     /// How many awaits have been emitted so far; compared before and after an expression
     /// to ask whether that expression waits.
     pub(super) awaits: usize,
@@ -342,6 +351,9 @@ impl Codegen {
             state_rewrite: None,
             context_bound: false,
             sync_fn: None,
+            shared_fields: Vec::new(),
+            shared_touches: std::cell::Cell::new(0),
+            guard_held: false,
             awaits: 0,
             errors: Vec::new(),
             needs_wasm: false,
@@ -628,6 +640,45 @@ impl Codegen {
                             | "range" | "map" | "filter" | "reduce" | "find" | "any" | "all")
     }
 
+    /// A closure body runs later and on its own, so it is its own statement context: it
+    /// takes the lock itself, and what it touches does not belong to the statement the
+    /// closure was written inside.
+    pub(super) fn enter_deferred_body(&mut self) -> (bool, usize, usize) {
+        let saved = (self.guard_held, self.shared_touches.get(), self.awaits);
+        self.guard_held = false;
+        saved
+    }
+
+    pub(super) fn leave_deferred_body(&mut self, saved: (bool, usize, usize)) {
+        self.guard_held = saved.0;
+        self.shared_touches.set(saved.1);
+        self.awaits = saved.2;
+    }
+
+    /// Whether a name is a `shared let`, unless a local of the same name shadows it.
+    pub(super) fn is_shared(&self, name: &str) -> bool {
+        if !self.shared_fields.iter().any(|(field, _)| field == name) {
+            return false;
+        }
+        match &self.state_rewrite {
+            Some(rewrite) => !rewrite.scopes.iter().any(|scope| scope.contains(name)),
+            None => true,
+        }
+    }
+
+    /// The statement `body` needs the lock if it read or wrote shared state while being
+    /// compiled. `before` is the touch count from before it was compiled.
+    pub(super) fn wrap_shared(&mut self, body: String) -> String {
+        let prelude = if !self.library {
+            "let mut __shared = __orch_shared().lock().unwrap();".to_string()
+        } else if self.context_bound {
+            "let mut __shared = __context.shared_state().lock().unwrap();".to_string()
+        } else {
+            "let __orch_ctx = crate::__orch_context(); let mut __shared = __orch_ctx.shared_state().lock().unwrap();".to_string()
+        };
+        format!("{{ {prelude} {body} }}")
+    }
+
     /// Refuse something that has to wait inside a `fn`.
     ///
     /// `fn` compiles to a synchronous Rust function and `task` to an async one, so a
@@ -671,6 +722,13 @@ impl Codegen {
 
     /// A name read as a value: a local, a program field, or a boxed closure by reference.
     pub(super) fn read_name(&self, name: &str) -> String {
+        if self.is_shared(name) {
+            self.shared_touches.set(self.shared_touches.get() + 1);
+            // A read produces a value, and the value cannot be moved out of the guard, so
+            // it is cloned. For a number that is a copy; for a string or an array it is
+            // the copy the reader was going to get anyway.
+            return format!("__shared.{name}.clone()");
+        }
         let receiver = self.state_rewrite.as_ref().map_or("", |rewrite| rewrite.receiver);
         match self.state_field(name) {
             Some(true) => format!("(&{receiver}.{name})"),
@@ -690,11 +748,91 @@ impl Codegen {
 
     /// A name in call position; a program field needs parentheses to be called.
     pub(super) fn call_name(&self, name: &str) -> String {
+        if self.is_shared(name) {
+            self.shared_touches.set(self.shared_touches.get() + 1);
+            return format!("(__shared.{name})");
+        }
         let receiver = self.state_rewrite.as_ref().map_or("", |rewrite| rewrite.receiver);
         match self.state_field(name) {
             Some(_) => format!("({receiver}.{name})"),
             None => name.to_string(),
         }
+    }
+
+    /// The `shared let` bindings, with a Rust type for each. A field needs a type the
+    /// generator can name, so an annotation or the typechecker has to supply one.
+    fn collect_shared_fields(&mut self, stmts: &[Stmt]) {
+        for stmt in stmts {
+            let StmtNode::Let { name, ty, value, shared: true } = &stmt.node else { continue };
+            let resolved = ty
+                .clone()
+                .or_else(|| self.state_types.get(name).cloned())
+                .or_else(|| super::stmt::literal_type(value));
+            match resolved {
+                Some(resolved) if Self::shareable(&resolved) => {
+                    let rust = self.compile_type(&resolved);
+                    if !self.shared_fields.iter().any(|(field, _)| field == name) {
+                        self.shared_fields.push((name.clone(), rust));
+                    }
+                }
+                Some(other) => self.errors.push(format!(
+                    "shared let '{}' has type {}, which cannot be shared. A shared binding holds data: int, float, bool, string, an array, or a struct.",
+                    name, other.display_name()
+                )),
+                None => self.errors.push(format!(
+                    "shared let '{}' has no type the compiler can name; add a type annotation",
+                    name
+                )),
+            }
+        }
+    }
+
+    /// Data can be shared. A serverlet client, a process, or a closure cannot: the first
+    /// two are already safe to call concurrently and the third is not data.
+    fn shareable(ty: &Type) -> bool {
+        match ty {
+            Type::Int | Type::Float | Type::Bool | Type::Str => true,
+            Type::Array(inner, _) => Self::shareable(inner),
+            Type::Option(inner) => Self::shareable(inner),
+            Type::Named(_) => true,
+            _ => false,
+        }
+    }
+
+    /// The shared-state struct, its constructor, and where it lives. Emitted only when the
+    /// program declares `shared let`, so nothing else carries a mutex it never locks.
+    pub(super) fn shared_state_code(&mut self, stmts: &[Stmt]) -> String {
+        if self.shared_fields.is_empty() {
+            return String::new();
+        }
+        let fields = self
+            .shared_fields
+            .iter()
+            .map(|(name, ty)| format!("    {name}: {ty},"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut initialisers = Vec::new();
+        let stmts = stmts.to_vec();
+        for stmt in &stmts {
+            let StmtNode::Let { name, value, shared: true, .. } = &stmt.node else { continue };
+            let rust_ty = self.shared_fields.iter().find(|(field, _)| field == name).map(|(_, ty)| ty.clone());
+            let Some(rust_ty) = rust_ty else { continue };
+            let value = self.compile_expr(value);
+            initialisers.push(format!("        let {name}: {rust_ty} = {value};"));
+        }
+        let names = self.shared_fields.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>().join(", ");
+        let mut code = format!(
+            "/// Every `shared let` in the program. One mutex guards all of them, so a\n             /// statement that touches shared state is atomic with respect to all of it,\n             /// and there is no lock order to get wrong.\n             struct __OrchShared {{\n{fields}\n}}\n             impl __OrchShared {{\n    fn new() -> __OrchShared {{\n{init}\n        __OrchShared {{ {names} }}\n    }}\n}}\n",
+            fields = fields,
+            init = initialisers.join("\n"),
+            names = names,
+        );
+        if !self.library {
+            code.push_str(
+                "static __ORCH_SHARED: std::sync::OnceLock<std::sync::Mutex<__OrchShared>> = std::sync::OnceLock::new();\n                 fn __orch_shared() -> &'static std::sync::Mutex<__OrchShared> {\n                         __ORCH_SHARED.get_or_init(|| std::sync::Mutex::new(__OrchShared::new()))\n}\n",
+            );
+        }
+        code
     }
 
     /// Receivers of method-call syntax, and every name the expression binds along the way.
@@ -798,10 +936,12 @@ impl Codegen {
     /// The restriction is deliberate — a spawned task can run while a tick holds that
     /// state — so this reports it rather than working around it.
     fn reject_state_in_free_functions(&mut self, stmts: &[Stmt]) {
+        // A `shared let` is reachable from anywhere on purpose; only instance-owned
+        // state is out of bounds here.
         let state: HashSet<String> = stmts
             .iter()
             .filter_map(|stmt| match &stmt.node {
-                StmtNode::Let { name, .. } => Some(name.clone()),
+                StmtNode::Let { name, shared: false, .. } => Some(name.clone()),
                 _ => None,
             })
             .collect();
@@ -853,6 +993,7 @@ impl Codegen {
         }
 
         if self.library { self.has_secret = true; }
+        self.collect_shared_fields(stmts);
         self.reject_state_in_free_functions(stmts);
         let mut code = String::new();
 
@@ -866,7 +1007,10 @@ impl Codegen {
             code.push_str("#![allow(unused_imports)]\n");
             code.push_str("#![allow(unused_parens)]\n");
             code.push_str("#![allow(unused_mut)]\n");
-            code.push_str("#![allow(unreachable_code)]\n\n");
+            code.push_str("#![allow(unreachable_code)]\n");
+            // A `shared let` declares nothing where it was written, which can leave a
+            // stray semicolon behind.
+            code.push_str("#![allow(redundant_semicolons)]\n\n");
 
             // In name order: a HashMap walks in a different order each run, and generated
             // code that moves between builds defeats every build cache above it.
@@ -919,6 +1063,10 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
         }
         if is_main && self.needs_wasm {
             code.push_str(include_str!("wasm_host.rs.txt"));
+        }
+        if is_main {
+            let shared = self.shared_state_code(stmts);
+            code.push_str(&shared);
         }
 
         if self.has_secret {

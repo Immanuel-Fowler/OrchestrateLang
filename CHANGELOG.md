@@ -9,6 +9,41 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-20
+
+State a worker can touch, declared rather than assumed.
+
+### Added
+- **`shared let`.** A top-level `let` belongs to the instance and only hooks reach it,
+  because a spawned worker can run while a tick holds it. The existing answer for state
+  several concurrent things touch is a serverlet, at about 7.5 µs a call. `shared let` is
+  the rung between: one mutex instead of a channel round trip.
+
+  ```orchestrate
+  let counter = 0          // unchanged: instance-owned, hooks only, free
+  shared let hits = 0      // any task, any fn, synchronised
+  ```
+
+  **The guarantee is one sentence:** a statement that touches shared state is atomic with
+  respect to all shared state. All shared bindings live behind a single mutex, taken once
+  per statement, so `hits = hits + 1` is correct without anyone thinking about it and there
+  is no lock order to get wrong. Reads clone, because a value cannot be moved out of a
+  guard; for a number that is a copy.
+
+  **A statement may wait, or touch shared state — not both.** Holding the lock across a
+  wait would block every other reader, so it is a compile error saying to split the
+  statement. Because the lock is synchronous, **a plain `fn` can touch shared state**, which
+  a `fn` could never do with instance state.
+
+  A shared binding is never captured by a worker or an event handler: capturing would copy
+  the value and quietly undo the sharing, so it is reached through the lock wherever it is
+  used. In library mode it lives on the instance, so two libraries started in one process
+  do not share it. Data can be shared — `int`, `float`, `bool`, `string`, arrays, options
+  and structs; a serverlet client, a process, or a closure is refused by name.
+
+  A program without `shared let` gains no mutex, no field, and no code. The design, and the
+  five questions it opened and how each was answered, are in `docs/design/shared-state.md`.
+
 ## [0.12.0] - 2026-09-20
 
 Wrong programs are told so in OrchestrateLang.
@@ -615,7 +650,8 @@ First tagged release.
   `option` / `result`, `try` / `catch`, supervision, `check`, the language server, or the
   standard library. See `examples/` for working code.
 
-[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.10.0...v0.10.1

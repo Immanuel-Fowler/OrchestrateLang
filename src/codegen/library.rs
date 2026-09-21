@@ -122,8 +122,8 @@ impl Codegen {
         }
         let mut fields: Vec<StateField> = Vec::new();
         for stmt in &self.local_stmts {
-            let StmtNode::Let { name, ty, value } = &stmt.node else { continue };
-            if !referenced.contains(name) { continue; }
+            let StmtNode::Let { name, ty, value, shared } = &stmt.node else { continue };
+            if *shared || !referenced.contains(name) { continue; }
             let (rust_type, boxed, error) = match &value.node {
                 ExprNode::StartServerlet { name: serverlet, .. } => (Self::client_type(serverlet), false, None),
                 ExprNode::AutomaticBlock { .. } | ExprNode::TriggeredBlock { .. } => ("ProcessRef".to_string(), false, None),
@@ -216,7 +216,21 @@ impl Codegen {
         let input_param = input.as_ref().map(|ty| format!(", input: {}", ty)).unwrap_or_default();
         let input_arg = if input.is_some() { ", input" } else { "" };
         let input_field = input.as_ref().map(|ty| format!(", {}", ty)).unwrap_or_default();
+        // Shared state is per instance, so it lives on the context rather than in a
+        // static: two libraries started in one process do not share it.
+        let (shared_field, shared_method, shared_init) = if self.shared_fields.is_empty() {
+            (String::new(), String::new(), String::new())
+        } else {
+            (
+                "    shared: std::sync::OnceLock<std::sync::Mutex<__OrchShared>>,".to_string(),
+                "    /// This instance's `shared let` bindings, created the first time they\n    /// are reached.\n    fn shared_state(&self) -> &std::sync::Mutex<__OrchShared> {\n        self.shared.get_or_init(|| std::sync::Mutex::new(__OrchShared::new()))\n    }".to_string(),
+                "        shared: std::sync::OnceLock::new(),".to_string(),
+            )
+        };
         let mut runtime = include_str!("library_runtime.rs.txt")
+            .replace("@SHARED_FIELD@", &shared_field)
+            .replace("@SHARED_METHOD@", &shared_method)
+            .replace("@SHARED_INIT@", &shared_init)
             .replace("@NEEDS_IO_DRIVER@", if self.io_driver_users.is_empty() { "false" } else { "true" })
             .replace("@IO_DRIVER_USERS@", &format!("{:?}", self.io_driver_users.join(", ")))
             .replace("@HOST_METHODS@", &methods)

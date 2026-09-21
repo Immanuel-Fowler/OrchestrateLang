@@ -73,6 +73,37 @@ Variables are mutable by default. Reassign with `=`:
 count = count + 1
 ```
 
+#### `shared let`
+
+A top-level `let` belongs to the instance, and only hooks — `on_tick`, `on_start`,
+`on_stop`, and event handlers — can reach it. That is deliberate: a spawned worker can run
+while a tick holds that state, so letting both touch it would be a data race. A `fn`,
+`task`, or `process` that names one is a compile error.
+
+When several concurrent things genuinely need the same value, mark it `shared`:
+
+```orchestrate
+let counter = 0          // instance-owned, hooks only, free
+shared let hits = 0      // any task, any fn, synchronised
+```
+
+Every `shared` binding lives behind one mutex, taken once per statement, so:
+
+> **A statement that touches shared state is atomic with respect to all shared state.**
+
+That makes `hits = hits + 1` correct without thinking about it, and there is no lock order
+to get wrong. A read produces a copy. Because taking the lock does not wait, **a plain `fn`
+may touch shared state** even though it may not call a serverlet.
+
+One rule follows from the lock: **a statement may wait, or touch shared state, not both.**
+Holding the lock across a wait would block every other reader, so
+`total = total + fetch()`, where `fetch` is a task, is refused and asks you to split it.
+
+`int`, `float`, `bool`, `string`, arrays, options and structs can be shared. A serverlet
+client, a process, or a closure cannot — the first two are already safe to use
+concurrently, and the third is not data. A program that never writes `shared` gains no
+mutex and no cost.
+
 ### 2.2 Types
 
 | Type | Description | Example |

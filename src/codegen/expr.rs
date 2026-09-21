@@ -28,9 +28,10 @@ impl Codegen {
                     // Both sides are borrowed: `a + b` must leave `a` and `b` usable.
                     format!("OrchAdd::orch_add(&({}), &({}))", lhs_str, rhs_str)
                 } else if *op == BinaryOp::Assign {
-                    // Assigning into an element needs a place expression, not a clone.
+                    // Assigning needs a place expression, not a clone of the value.
                     let place = match &lhs.node {
                         ExprNode::Index { object, index } => format!("{}[({}) as usize]", self.compile_expr(object), self.compile_expr(index)),
+                        ExprNode::Identifier(name) if self.is_shared(name) => format!("__shared.{name}"),
                         _ => lhs_str,
                     };
                     format!("{} = {}", place, rhs_str)
@@ -218,6 +219,9 @@ impl Codegen {
                 self.get_free_vars_expr(expr, &mut HashSet::new(), &mut free_vars);
                 // In name order: set order changes between runs, and so would the output.
                 let mut free_vars: Vec<String> = free_vars.into_iter().collect();
+                // A `shared let` is reached through the lock wherever it is used, so it is
+                // never captured — capturing it would copy the value and lose the sharing.
+                free_vars.retain(|name| !self.is_shared(name));
                 free_vars.sort();
 
                 let mut capture_code = String::new();
@@ -229,6 +233,7 @@ impl Codegen {
                 for var in &free_vars { self.define_local(var); }
                 // Each of the worker's tasks binds the instance once, at its top.
                 let bound = std::mem::replace(&mut self.context_bound, self.library);
+                let deferred = self.enter_deferred_body();
                 let bind = if self.library { "let __context = crate::__orch_context(); let __host = &*__context.host;\n            " } else { "" };
 
                 let crash_handler_code = if let Some((err_name, handler)) = crash_handler {
@@ -268,6 +273,7 @@ impl Codegen {
                     (vec![], vec![self.compile_expr(body)])
                 };
                 self.pop_scope();
+                self.leave_deferred_body(deferred);
                 self.context_bound = bound;
 
                 let setup_inner = setup_code.join("\n                ");
@@ -321,6 +327,9 @@ impl Codegen {
                 let mut free_vars = HashSet::new();
                 self.get_free_vars_expr(expr, &mut HashSet::new(), &mut free_vars);
                 let mut free_vars: Vec<String> = free_vars.into_iter().collect();
+                // A `shared let` is reached through the lock wherever it is used, so it is
+                // never captured — capturing it would copy the value and lose the sharing.
+                free_vars.retain(|name| !self.is_shared(name));
                 free_vars.sort();
 
                 let mut capture_code = String::new();
@@ -354,7 +363,9 @@ impl Codegen {
                 // A library handler binds the instance once, at its top.
                 let handler = self.library && event_name != "update_orchestrator";
                 let bound = std::mem::replace(&mut self.context_bound, handler);
+                let deferred = self.enter_deferred_body();
                 let body_str = self.compile_expr(body);
+                self.leave_deferred_body(deferred);
                 self.context_bound = bound;
                 self.pop_scope();
                 if handler {
@@ -469,7 +480,9 @@ impl Codegen {
                 for p in params { self.define_local(&p.name); }
                 // A closure may outlive the tick, so it cannot borrow the tick's bindings.
                 let bound = std::mem::replace(&mut self.context_bound, false);
+                let deferred = self.enter_deferred_body();
                 let body_str = self.compile_expr(body);
+                self.leave_deferred_body(deferred);
                 self.context_bound = bound;
                 self.pop_scope();
                 format!("move |{}|{} {}", params_str, ret_str, body_str)
