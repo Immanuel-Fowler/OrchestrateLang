@@ -17,6 +17,13 @@ pub struct TypeChecker {
     /// or inferred. A sandboxed serverlet's state crosses into a WASM guest, where it
     /// becomes struct fields, and a field needs a type the generator can name.
     pub serverlet_state: HashMap<String, Vec<(String, Type)>>,
+    /// Serverlets declared in this file, so `start X()` can be checked.
+    serverlet_names: HashSet<String>,
+    /// A binding to the serverlet it was started from, so `c.add(1)` can be checked
+    /// against that serverlet's handlers.
+    var_serverlet: HashMap<String, String>,
+    /// Events declared by an `on name(...)` block, so `trigger` can be checked.
+    declared_events: HashMap<String, Vec<Type>>,
 }
 
 impl TypeChecker {
@@ -33,9 +40,14 @@ impl TypeChecker {
             type_map: HashMap::new(),
             try_errors: Vec::new(),
             serverlet_state: HashMap::new(),
+            serverlet_names: HashSet::new(),
+            var_serverlet: HashMap::new(),
+            declared_events: HashMap::new(),
         };
 
-        tc.functions.insert("print".to_string(), (vec![Type::Str], Type::Void));
+        // `print` is generic over anything displayable in the generated code, so its
+        // parameter is a type parameter rather than `string`.
+        tc.functions.insert("print".to_string(), (vec![Type::TypeParam("T".to_string())], Type::Void));
         tc.functions.insert("sleep".to_string(), (vec![Type::Int], Type::Void));
 
         let builtins = vec![
@@ -63,26 +75,44 @@ impl TypeChecker {
                 }
             }
         }
+        // Events come from `on name(...)` blocks, wherever they are written.
+        for stmt in stmts {
+            let declaration = match &stmt.node {
+                StmtNode::Expr(value) => Some(value),
+                StmtNode::Let { value, .. } => Some(value),
+                _ => None,
+            };
+            if let Some(crate::ast::Spanned { node: ExprNode::TriggeredBlock { event_name, params, .. }, .. }) = declaration {
+                self.declared_events
+                    .insert(event_name.clone(), params.iter().map(|p| p.ty.clone()).collect());
+            }
+        }
         // First pass: register all top-level declarations for forward references
         for stmt in stmts {
             match &stmt.node {
                 StmtNode::FnDecl { name, params, return_type, type_params, .. } => {
                     let param_types: Vec<Type> = params.iter().map(|p| p.ty.clone()).collect();
-                    self.functions.insert(name.clone(), (param_types, return_type.clone()));
+                    if self.functions.insert(name.clone(), (param_types, return_type.clone())).is_some() {
+                        return Err(format!("'{}' is declared more than once", name));
+                    }
                     if !type_params.is_empty() {
                         self.generic_functions.insert(name.clone(), type_params.clone());
                     }
                 }
                 StmtNode::TaskDecl { name, params, return_type, type_params, .. } => {
                     let param_types: Vec<Type> = params.iter().map(|p| p.ty.clone()).collect();
-                    self.functions.insert(name.clone(), (param_types, return_type.clone()));
+                    if self.functions.insert(name.clone(), (param_types, return_type.clone())).is_some() {
+                        return Err(format!("'{}' is declared more than once", name));
+                    }
                     if !type_params.is_empty() {
                         self.generic_functions.insert(name.clone(), type_params.clone());
                     }
                 }
                 StmtNode::ProcessDecl { name, params, return_type, type_params, .. } => {
                     let param_types: Vec<Type> = params.iter().map(|p| p.ty.clone()).collect();
-                    self.functions.insert(name.clone(), (param_types, return_type.clone()));
+                    if self.functions.insert(name.clone(), (param_types, return_type.clone())).is_some() {
+                        return Err(format!("'{}' is declared more than once", name));
+                    }
                     if !type_params.is_empty() {
                         self.generic_functions.insert(name.clone(), type_params.clone());
                     }
@@ -95,8 +125,15 @@ impl TypeChecker {
                     self.struct_defs.insert(name.clone(), fields.clone());
                 }
                 StmtNode::EnumDef { name, variants } => {
+                    let mut seen = HashSet::new();
+                    for v in variants {
+                        if !seen.insert(v.name.clone()) {
+                            return Err(format!("enum '{}' declares variant '{}' more than once", name, v.name));
+                        }
+                    }
                     self.enum_defs.insert(name.clone(), variants.clone());
                 }
+                StmtNode::Serverlet { name, handlers, .. } if { self.serverlet_names.insert(name.clone()); false } => { let _ = handlers; }
                 StmtNode::Serverlet { name, handlers, .. } => {
                     for h in handlers {
                         let param_types: Vec<Type> = h.params.iter().map(|p| p.ty.clone()).collect();
@@ -257,6 +294,9 @@ impl TypeChecker {
     fn check_stmt(&mut self, stmt: &Stmt) -> Result<(), String> {
         match &stmt.node {
             StmtNode::Let { name, ty, value } => {
+                if let ExprNode::StartServerlet { name: serverlet, .. } = &value.node {
+                    self.var_serverlet.insert(name.clone(), serverlet.clone());
+                }
                 let val_ty = self.infer_expr(value)?;
                 if let Some(expected_ty) = ty {
                     if !self.types_compatible(expected_ty, &val_ty) {
@@ -277,6 +317,14 @@ impl TypeChecker {
             StmtNode::Return(opt_expr) => {
                 if let Some(expr) = opt_expr {
                     let ret_ty = self.infer_expr(expr)?;
+                    if let Some(Type::Void) = &self.current_return_type {
+                        if ret_ty != Type::Void {
+                            return Err(format!(
+                                "line {}, col {}: this function returns nothing, so it cannot return {}",
+                                stmt.span.line, stmt.span.col, ret_ty.display_name()
+                            ));
+                        }
+                    }
                     if let Some(expected) = &self.current_return_type.clone() {
                         if !self.types_compatible(expected, &ret_ty) {
                             return Err(format!(
@@ -322,6 +370,23 @@ impl TypeChecker {
                 self.current_return_type = Some(return_type.clone());
                 self.push_env();
                 for p in params {
+                    if let Type::Array(inner, initial) = &p.ty {
+                        if **inner == Type::Process {
+                            for worker in initial {
+                                match self.lookup_var(worker) {
+                                    Some(Type::Process) => {}
+                                    Some(other) => return Err(format!(
+                                        "line {}, col {}: process[...] lists the workers to start, but '{}' is {}, not a process. A process comes from an `automatic` or `on` block.",
+                                        stmt.span.line, stmt.span.col, worker, other.display_name()
+                                    )),
+                                    None => return Err(format!(
+                                        "line {}, col {}: process[...] names '{}', which is not declared",
+                                        stmt.span.line, stmt.span.col, worker
+                                    )),
+                                }
+                            }
+                        }
+                    }
                     self.define_var(p.name.clone(), p.ty.clone());
                 }
                 self.infer_expr(body)?;
@@ -345,9 +410,36 @@ impl TypeChecker {
                 self.infer_expr(body)?;
                 self.pop_env();
             }
-            StmtNode::Trigger { args, .. } => {
+            StmtNode::Trigger { event_name, args } => {
+                let mut arg_types = Vec::new();
                 for arg in args {
-                    self.infer_expr(arg)?;
+                    arg_types.push(self.infer_expr(arg)?);
+                }
+                if let Some(expected) = self.declared_events.get(event_name).cloned() {
+                    if expected.len() != arg_types.len() {
+                        return Err(format!(
+                            "line {}, col {}: event '{}' takes {} argument{}, got {}",
+                            stmt.span.line, stmt.span.col, event_name, expected.len(),
+                            if expected.len() == 1 { "" } else { "s" }, arg_types.len()
+                        ));
+                    }
+                    for (index, (want, got)) in expected.iter().zip(&arg_types).enumerate() {
+                        if !self.types_compatible(want, got) {
+                            return Err(format!(
+                                "line {}, col {}: event '{}' argument {} expects {}, got {}",
+                                stmt.span.line, stmt.span.col, event_name, index + 1,
+                                want.display_name(), got.display_name()
+                            ));
+                        }
+                    }
+                } else if event_name != "update_orchestrator" {
+                    let mut known: Vec<&String> = self.declared_events.keys().collect();
+                    known.sort();
+                    return Err(format!(
+                        "line {}, col {}: no event '{}' is declared{}",
+                        stmt.span.line, stmt.span.col, event_name,
+                        if known.is_empty() { String::new() } else { format!(". Declared: {}.", known.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(", ")) }
+                    ));
                 }
             }
             StmtNode::Parallel(stmts) => {
@@ -557,6 +649,15 @@ impl TypeChecker {
                 }
 
                 if [BinaryOp::Eq, BinaryOp::Ne, BinaryOp::Lt, BinaryOp::Gt, BinaryOp::Le, BinaryOp::Ge].contains(op) {
+                    // Both sides have to be the same kind of thing, or rustc reports it as
+                    // a missing PartialOrd impl on generated code.
+                    if !self.types_compatible(&lhs_ty, &rhs_ty) && !self.types_compatible(&rhs_ty, &lhs_ty) {
+                        return Err(format!(
+                            "line {}, col {}: cannot compare {} with {}",
+                            expr.span.line, expr.span.col,
+                            lhs_ty.display_name(), rhs_ty.display_name()
+                        ));
+                    }
                     return Ok(Type::Bool);
                 }
                 if [BinaryOp::And, BinaryOp::Or].contains(op) {
@@ -697,12 +798,23 @@ impl TypeChecker {
                     if expected_args.len() != args.len() {
                         return Err(format!("line {}, col {}: {} expects {} arguments, got {}", expr.span.line, expr.span.col, callee, expected_args.len(), args.len()));
                     }
-                    Ok(ret_ty)
-                } else {
-                    if !self.exempt_functions.contains(callee) {
-                        eprintln!("[orchestrate] warning: unknown function '{}' — if foreign, this warning can be ignored", callee);
+                    for (index, (expected, actual)) in expected_args.iter().zip(&arg_types).enumerate() {
+                        if !self.types_compatible(expected, actual) {
+                            return Err(format!(
+                                "line {}, col {}: {} argument {} expects {}, got {}",
+                                expr.span.line, expr.span.col, callee, index + 1,
+                                expected.display_name(), actual.display_name()
+                            ));
+                        }
                     }
+                    Ok(ret_ty)
+                } else if self.exempt_functions.contains(callee) {
                     Ok(Type::Void)
+                } else {
+                    Err(format!(
+                        "line {}, col {}: unknown function '{}'",
+                        expr.span.line, expr.span.col, callee
+                    ))
                 }
             }
             ExprNode::Closure { params, return_type, body } => {
@@ -802,6 +914,29 @@ impl TypeChecker {
                     arg_types.push(self.infer_expr(arg)?);
                 }
 
+                // `c.add(1)` where `c` came from `start Counter()`: the handler has to exist.
+                if let Some(serverlet) = self.var_serverlet.get(module_local_name).cloned() {
+                    let mut candidates = vec![format!("{}::{}", serverlet, function)];
+                    if let Some((alias, bare)) = serverlet.rsplit_once("::") {
+                        candidates.push(format!("{}::{}", alias, function));
+                        candidates.push(format!("{}::{}", bare, function));
+                    }
+                    if !candidates.iter().any(|key| self.functions.contains_key(key)) {
+                        let prefix = format!("{}::", serverlet.rsplit_once("::").map_or(serverlet.as_str(), |(_, bare)| bare));
+                        let mut handlers: Vec<String> = self
+                            .functions
+                            .keys()
+                            .filter_map(|key| key.strip_prefix(&prefix).map(str::to_string))
+                            .collect();
+                        handlers.sort();
+                        return Err(format!(
+                            "line {}, col {}: serverlet '{}' has no handler '{}'{}",
+                            expr.span.line, expr.span.col, serverlet, function,
+                            if handlers.is_empty() { String::new() } else { format!(". It has: {}.", handlers.join(", ")) }
+                        ));
+                    }
+                }
+
                 let alias_key = format!("{}::{}", module_local_name, function);
                 if let Some((expected_args, ret_ty)) = self.functions.get(&alias_key).cloned() {
                     if expected_args.len() != args.len() {
@@ -843,9 +978,20 @@ impl TypeChecker {
                 }
                 Ok(Type::Void)
             }
-            ExprNode::StartServerlet { args, .. } => {
+            ExprNode::StartServerlet { name, args } => {
                 for arg in args {
                     self.infer_expr(arg)?;
+                }
+                // A name with `::` came from a module, whose declarations are registered
+                // under an alias rather than here.
+                if !name.contains("::") && !self.serverlet_names.contains(name) {
+                    let mut known: Vec<&String> = self.serverlet_names.iter().collect();
+                    known.sort();
+                    return Err(format!(
+                        "line {}, col {}: unknown serverlet '{}'{}",
+                        expr.span.line, expr.span.col, name,
+                        if known.is_empty() { String::new() } else { format!(". This file declares: {}.", known.iter().map(|n| n.as_str()).collect::<Vec<_>>().join(", ")) }
+                    ));
                 }
                 Ok(Type::Process)
             }
@@ -890,6 +1036,21 @@ impl TypeChecker {
                 Ok(Type::Array(Box::new(inner_ty.unwrap_or(Type::Int)), vec![]))
             }
             ExprNode::StructLiteral { name, fields } => {
+                if let Some(def) = self.struct_defs.get(name).cloned() {
+                    let missing: Vec<String> = def
+                        .iter()
+                        .filter(|(field, _)| !fields.iter().any(|(given, _)| given == field))
+                        .map(|(field, _)| field.clone())
+                        .collect();
+                    if !missing.is_empty() {
+                        return Err(format!(
+                            "line {}, col {}: struct '{}' is missing field{} {}",
+                            expr.span.line, expr.span.col, name,
+                            if missing.len() == 1 { "" } else { "s" },
+                            missing.join(", ")
+                        ));
+                    }
+                }
                 let def = self.struct_defs.get(name).cloned()
                     .ok_or_else(|| format!("line {}, col {}: unknown struct '{}'", expr.span.line, expr.span.col, name))?;
                 for (fname, fexpr) in fields {

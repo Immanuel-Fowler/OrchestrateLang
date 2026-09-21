@@ -1,0 +1,2 @@
+enum E { A, B }
+orchestrator main() { let e = E::A  let v = match e { E::A => 1, E::B => "s" }  print(to_string(v))  stop_orch() }

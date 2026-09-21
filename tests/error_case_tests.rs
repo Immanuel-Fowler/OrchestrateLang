@@ -52,3 +52,53 @@ fn test_error_cases() {
     assert_compilation_fails("task_uses_top_level_state.orch", "which is top-level state");
     assert_compilation_fails("task_uses_top_level_state.orch", "pass it in as a parameter");
 }
+
+/// Every wrong program must fail as OrchestrateLang, never as rustc.
+///
+/// The compiler generates Rust, so any check it does not make itself becomes a rustc error
+/// against code the user never wrote — with line numbers into generated source and advice
+/// about traits and moves that means nothing in this language. Each file in
+/// `tests/error_cases/diagnostics/` is a program that must be rejected, and this asserts
+/// the rejection is the compiler's own.
+#[test]
+fn diagnostics_never_leak_rustc() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/error_cases/diagnostics");
+    let mut cases: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .expect("diagnostics directory")
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|path| path.extension().is_some_and(|e| e == "orch"))
+        .collect();
+    cases.sort();
+    assert!(cases.len() >= 25, "expected the audit corpus, found {} files", cases.len());
+
+    let mut leaked = Vec::new();
+    let mut accepted = Vec::new();
+    for case in &cases {
+        let output = Command::new(get_orchestrate_bin())
+            .arg("build")
+            .arg(case)
+            .arg("-o")
+            .arg(std::env::temp_dir().join("orch_diagnostics_probe"))
+            .output()
+            .expect("failed to run orchestrate");
+        let name = case.file_stem().unwrap().to_string_lossy().to_string();
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if output.status.success() {
+            accepted.push(name);
+        } else if combined.contains("error[E") || combined.contains("rustc --explain") {
+            let line = combined
+                .lines()
+                .find(|l| l.contains("error[E"))
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            leaked.push(format!("{name}: {line}"));
+        }
+    }
+    assert!(accepted.is_empty(), "these wrong programs were accepted: {accepted:?}");
+    assert!(leaked.is_empty(), "these reached rustc instead of an OrchestrateLang error:\n  {}", leaked.join("\n  "));
+}

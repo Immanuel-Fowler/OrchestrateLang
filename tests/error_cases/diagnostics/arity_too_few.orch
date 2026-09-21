@@ -1,0 +1,2 @@
+fn f(a: int, b: int) -> int { return a + b }
+orchestrator main() { print(to_string(f(1)))  stop_orch() }

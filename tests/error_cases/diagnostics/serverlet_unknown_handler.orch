@@ -1,0 +1,2 @@
+serverlet C { on p() -> int { return 1 } }
+orchestrator main() { let c = start C()  print(to_string(c.q()))  stop_orch() }

@@ -1,0 +1,2 @@
+struct P { x: int }
+orchestrator main() { let p = P { x: 1, z: 2 }  print(to_string(p.x))  stop_orch() }

@@ -1,0 +1,2 @@
+enum E { A, A }
+orchestrator main() { let e = E::A  stop_orch() }

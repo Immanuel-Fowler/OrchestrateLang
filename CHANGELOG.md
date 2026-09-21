@@ -9,6 +9,34 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-20
+
+Wrong programs are told so in OrchestrateLang.
+
+### Fixed
+An audit wrote twenty-eight deliberately wrong programs across the language and checked how
+each one failed. Eleven reached rustc, reporting on generated code the user never wrote,
+with advice about traits and moves that means nothing here. All eleven are now the
+compiler's own errors, and the corpus is a test so they stay that way.
+
+- **Calls check argument types**, not just how many there are.
+- **An unknown function is an error**, not a warning followed by a rustc failure. `print`
+  is generic over anything displayable, as the generated code always was.
+- **A serverlet client only answers handlers its serverlet declares**, and the error lists
+  the ones it has. Handlers reached through a module alias resolve correctly.
+- **`start X()` must name a serverlet that exists.**
+- **`trigger` must name a declared event**, with the right number and types of arguments.
+- **A struct literal must fill every field.**
+- **Comparing two unrelated types is an error**, rather than a missing `PartialOrd`.
+- **A function declared to return nothing cannot return a value.**
+- **`fn`, `task`, and `process` names must be unique**, and an enum cannot repeat a variant.
+- **`process[...]` must name processes**, and each name must be declared.
+
+### Added
+- `tests/error_cases/diagnostics/` holds the audit corpus, and `diagnostics_never_leak_rustc`
+  asserts that every file there is rejected by the compiler rather than by Cargo, and that
+  none is accepted.
+
 ## [0.11.0] - 2026-09-20
 
 The language owns its own errors.
@@ -587,7 +615,8 @@ First tagged release.
   `option` / `result`, `try` / `catch`, supervision, `check`, the language server, or the
   standard library. See `examples/` for working code.
 
-[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/Immanuel-Fowler/OrchestrateLang/compare/v0.9.0...v0.10.0

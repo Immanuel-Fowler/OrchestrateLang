@@ -1,0 +1,2 @@
+fn f() { return 1 }
+orchestrator main() { f()  stop_orch() }
