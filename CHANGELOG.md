@@ -10,6 +10,16 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 ## [Unreleased]
 
 ### Fixed
+- **`orchestrate check` refuses a wait where the compiler cannot put one.** Four
+  mistakes that only the build caught are `check` errors now: a `fn` that calls a task
+  (a module's too), `sleep`, a serverlet, or a `parallel` block anywhere in its body; a
+  sandboxed handler that waits; a statement that both waits and touches shared state,
+  which would hold the lock across the wait; and a `shared let` of a type that cannot be
+  shared, such as a serverlet client. What counts as a wait is codegen's own rule, except
+  that a call through a receiver not known to hold a serverlet client never counts, so
+  the language server, which registers no modules, never mistakes a module call for one.
+  Patch-level: wrong programs are refused earlier, and every valid program in the
+  repository still checks.
 - **The whole test suite cleans up after itself.** 0.15.0 did it for `runtime_tests`;
   the rest still left their builds: about 4 GB in `tests/programs/.orch_cache` and
   more in `tests/error_cases/`, both inside the source tree, a folder per landline test

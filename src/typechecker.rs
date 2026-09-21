@@ -31,6 +31,22 @@ pub struct TypeChecker {
     /// Module aliases whose declarations were registered, so `m.nope()` on a known
     /// module is an error naming what the module does have.
     module_aliases: HashSet<String>,
+    /// Names whose call waits, as codegen decides it: every task, process, and
+    /// orchestrator, and a registered module's as `alias::name`.
+    tasks: HashSet<String>,
+    /// The `shared let` bindings, so a statement that both waits and touches one is
+    /// refused here rather than by codegen.
+    shared_names: HashSet<String>,
+    /// Every `use module` alias in the file, registered or not (the language server
+    /// registers none), so a call through one is never taken for a serverlet call.
+    use_aliases: HashSet<String>,
+}
+
+/// What the wait and shared-state searches visit.
+#[derive(Clone, Copy)]
+enum Node<'a> {
+    Expr(&'a Expr),
+    Stmt(&'a Stmt),
 }
 
 impl TypeChecker {
@@ -52,6 +68,9 @@ impl TypeChecker {
             declared_events: HashMap::new(),
             sandbox_grants: None,
             module_aliases: HashSet::new(),
+            tasks: HashSet::new(),
+            shared_names: HashSet::new(),
+            use_aliases: HashSet::new(),
         };
 
         // `print` is generic over anything displayable in the generated code, so its
@@ -94,6 +113,27 @@ impl TypeChecker {
             if let Some(crate::ast::Spanned { node: ExprNode::TriggeredBlock { event_name, params, .. }, .. }) = declaration {
                 self.declared_events
                     .insert(event_name.clone(), params.iter().map(|p| p.ty.clone()).collect());
+            }
+        }
+        // What waits, what is shared, what is a module, and which bindings hold serverlet
+        // clients, before any body is checked, so a body can refer to one declared after it.
+        for stmt in stmts {
+            match &stmt.node {
+                StmtNode::TaskDecl { name, .. } | StmtNode::ProcessDecl { name, .. } | StmtNode::OrchestratorDecl { name, .. } => {
+                    self.tasks.insert(name.clone());
+                }
+                StmtNode::Let { name, shared, value, .. } => {
+                    if *shared {
+                        self.shared_names.insert(name.clone());
+                    }
+                    if let ExprNode::StartServerlet { name: serverlet, .. } = &value.node {
+                        self.var_serverlet.insert(name.clone(), serverlet.clone());
+                    }
+                }
+                StmtNode::UseModule { local_name, .. } => {
+                    self.use_aliases.insert(local_name.clone());
+                }
+                _ => {}
             }
         }
         // First pass: register all top-level declarations for forward references
@@ -164,6 +204,11 @@ impl TypeChecker {
                 errors.push(e);
             }
         }
+        if errors.is_empty() && !self.shared_names.is_empty() {
+            if let Err(e) = self.check_shared_waits_program(stmts) {
+                errors.push(e);
+            }
+        }
         if errors.is_empty() {
             Ok(())
         } else {
@@ -188,6 +233,7 @@ impl TypeChecker {
                 StmtNode::OrchestratorDecl { name, params, return_type, .. } => {
                     let param_types: Vec<Type> = params.iter().map(|p| p.ty.clone()).collect();
                     let full_name = format!("{}::{}", alias, name);
+                    self.tasks.insert(full_name.clone());
                     self.functions.insert(full_name, (param_types, return_type.clone()));
                 }
                 StmtNode::Serverlet { name: serverlet_name, handlers, .. } => {
@@ -332,6 +378,304 @@ impl TypeChecker {
         }
     }
 
+    /// Data can be shared; a serverlet client, a process, or a closure cannot. The rule
+    /// codegen applies to a `shared let`.
+    fn shareable(ty: &Type) -> bool {
+        match ty {
+            Type::Int | Type::Float | Type::Bool | Type::Str | Type::Named(_) => true,
+            Type::Array(inner, _) | Type::Option(inner) => Self::shareable(inner),
+            _ => false,
+        }
+    }
+
+    /// Visits `expr` and everything inside it, statements included, and returns the first
+    /// thing `found` reports. `into_deferred` says whether to enter closure, `automatic`,
+    /// and event-handler bodies, which run later and on their own.
+    fn search_expr<'a, T>(expr: &'a Expr, into_deferred: bool, found: &mut dyn FnMut(Node<'a>) -> Option<T>) -> Option<T> {
+        if let Some(hit) = found(Node::Expr(expr)) {
+            return Some(hit);
+        }
+        let mut inner: Vec<&'a Expr> = Vec::new();
+        match &expr.node {
+            ExprNode::Unary { operand, .. } => inner.push(operand),
+            ExprNode::Binary { lhs, rhs, .. } => inner.extend([&**lhs, &**rhs]),
+            ExprNode::Call { args, .. } | ExprNode::ModuleCall { args, .. } | ExprNode::StartServerlet { args, .. } | ExprNode::ArrayLiteral(args) => {
+                inner.extend(args.iter());
+            }
+            ExprNode::Pipeline { value, function } => inner.extend([&**value, &**function]),
+            ExprNode::Block(stmts) => {
+                for stmt in stmts {
+                    if let Some(hit) = Self::search_stmt(stmt, into_deferred, found) {
+                        return Some(hit);
+                    }
+                }
+            }
+            ExprNode::If { cond, then_branch, else_branch } => {
+                inner.extend([&**cond, &**then_branch]);
+                inner.extend(else_branch.as_deref());
+            }
+            ExprNode::StartProcess { target } => inner.push(target),
+            ExprNode::StructLiteral { fields, .. } => inner.extend(fields.iter().map(|(_, value)| &**value)),
+            ExprNode::FieldAccess { object, .. } => inner.push(object),
+            ExprNode::Index { object, index } => inner.extend([&**object, &**index]),
+            ExprNode::SomeLiteral(value) | ExprNode::OkLiteral(value) | ExprNode::ErrLiteral(value) | ExprNode::Propagate(value) => {
+                inner.push(value);
+            }
+            ExprNode::TryCatch { body, handler, .. } => inner.extend([&**body, &**handler]),
+            ExprNode::EnumVariantLiteral { payload, .. } => inner.extend(payload.as_deref()),
+            ExprNode::Match { value, arms } => {
+                inner.push(value);
+                for arm in arms {
+                    if let MatchPattern::Guard { condition, .. } = &arm.pattern {
+                        inner.push(condition);
+                    }
+                    inner.push(&arm.body);
+                }
+            }
+            ExprNode::StringInterp { parts } => {
+                for part in parts {
+                    if let StringPart::Expr(value) = part {
+                        inner.push(value);
+                    }
+                }
+            }
+            ExprNode::Closure { body, .. } | ExprNode::TriggeredBlock { body, .. } if into_deferred => inner.push(body),
+            ExprNode::AutomaticBlock { body, crash_handler, .. } if into_deferred => {
+                inner.push(body);
+                inner.extend(crash_handler.as_ref().map(|(_, handler)| &**handler));
+            }
+            _ => {}
+        }
+        for value in inner {
+            if let Some(hit) = Self::search_expr(value, into_deferred, found) {
+                return Some(hit);
+            }
+        }
+        None
+    }
+
+    fn search_stmt<'a, T>(stmt: &'a Stmt, into_deferred: bool, found: &mut dyn FnMut(Node<'a>) -> Option<T>) -> Option<T> {
+        if let Some(hit) = found(Node::Stmt(stmt)) {
+            return Some(hit);
+        }
+        match &stmt.node {
+            StmtNode::Let { value, .. } | StmtNode::Expr(value) | StmtNode::Return(Some(value)) => {
+                Self::search_expr(value, into_deferred, found)
+            }
+            StmtNode::While { cond: first, body } | StmtNode::ForIn { iter: first, body, .. } => {
+                if let Some(hit) = Self::search_expr(first, into_deferred, found) {
+                    return Some(hit);
+                }
+                Self::search_expr(body, into_deferred, found)
+            }
+            StmtNode::Trigger { args, .. } => {
+                for arg in args {
+                    if let Some(hit) = Self::search_expr(arg, into_deferred, found) {
+                        return Some(hit);
+                    }
+                }
+                None
+            }
+            StmtNode::Parallel(stmts) => {
+                for inner in stmts {
+                    if let Some(hit) = Self::search_stmt(inner, into_deferred, found) {
+                        return Some(hit);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn search_node<'a, T>(node: Node<'a>, into_deferred: bool, found: &mut dyn FnMut(Node<'a>) -> Option<T>) -> Option<T> {
+        match node {
+            Node::Expr(expr) => Self::search_expr(expr, into_deferred, found),
+            Node::Stmt(stmt) => Self::search_stmt(stmt, into_deferred, found),
+        }
+    }
+
+    /// The first thing in `expr` that waits, in codegen's words, or `None`. The rule is
+    /// `Codegen::require_async`'s — a task, `sleep`, a serverlet or landline call, a
+    /// `parallel` block — except that a call counts as a serverlet call only when its
+    /// receiver is known to hold one, so an unregistered module never looks like one.
+    fn first_wait(&self, expr: &Expr, into_deferred: bool) -> Option<String> {
+        Self::search_expr(expr, into_deferred, &mut |node| self.wait_at(node))
+    }
+
+    fn wait_at(&self, node: Node) -> Option<String> {
+        match node {
+            Node::Stmt(stmt) => matches!(stmt.node, StmtNode::Parallel(_))
+                .then(|| "uses a parallel block, which waits for its branches".to_string()),
+            Node::Expr(expr) => match &expr.node {
+                ExprNode::Call { callee, .. } => self.call_waits(callee),
+                ExprNode::Pipeline { function, .. } => match &function.node {
+                    ExprNode::Identifier(name) => self.call_waits(name),
+                    _ => None,
+                },
+                ExprNode::ModuleCall { module_local_name, function, .. } => {
+                    let full = format!("{}::{}", module_local_name, function);
+                    if self.tasks.contains(&full) {
+                        Some(format!("calls the task '{}', which it would have to wait for", full))
+                    } else if self.var_serverlet.contains_key(module_local_name)
+                        && !self.use_aliases.contains(module_local_name)
+                        && !self.module_aliases.contains(module_local_name)
+                        && !self.host_groups.contains(module_local_name)
+                    {
+                        Some(format!("calls '{}.{}', which waits for the serverlet to reply", module_local_name, function))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            },
+        }
+    }
+
+    fn call_waits(&self, callee: &str) -> Option<String> {
+        if callee == "sleep" {
+            Some("calls sleep, which suspends until the timer fires".to_string())
+        } else if self.tasks.contains(callee) {
+            Some(format!("calls the task '{}', which it would have to wait for", callee))
+        } else {
+            None
+        }
+    }
+
+    /// A statement that both waits and touches shared state would hold the lock across
+    /// the wait, so codegen refuses it; this is the same rule before any code exists. Each
+    /// statement of a body is one unit, blocks nested in it included; closure, `automatic`,
+    /// and event-handler bodies are units of their own.
+    fn check_shared_waits_program(&self, stmts: &[Stmt]) -> Result<(), String> {
+        let none = HashSet::new();
+        for stmt in stmts {
+            match &stmt.node {
+                StmtNode::FnDecl { params, body, .. }
+                | StmtNode::TaskDecl { params, body, .. }
+                | StmtNode::ProcessDecl { params, body, .. }
+                | StmtNode::OrchestratorDecl { params, body, .. } => {
+                    self.check_shared_waits_body(body, &Self::declared_names(body, params))?;
+                }
+                StmtNode::Serverlet { handlers, crash_handler, .. } => {
+                    for h in handlers {
+                        self.check_shared_waits_body(&h.body, &Self::declared_names(&h.body, &h.params))?;
+                    }
+                    if let Some((_, body)) = crash_handler {
+                        self.check_shared_waits_body(body, &Self::declared_names(body, &[]))?;
+                    }
+                }
+                StmtNode::OnTick { body, .. } | StmtNode::OnFixedTick { body, .. } | StmtNode::OnStart(body) | StmtNode::OnStop(body) => {
+                    self.check_shared_waits_body(body, &Self::declared_names(body, &[]))?;
+                }
+                _ => self.check_shared_waits_unit(Node::Stmt(stmt), &none)?,
+            }
+        }
+        Ok(())
+    }
+
+    fn check_shared_waits_body(&self, body: &Expr, locals: &HashSet<String>) -> Result<(), String> {
+        match &body.node {
+            ExprNode::Block(stmts) => {
+                for stmt in stmts {
+                    self.check_shared_waits_unit(Node::Stmt(stmt), locals)?;
+                }
+                Ok(())
+            }
+            _ => self.check_shared_waits_unit(Node::Expr(body), locals),
+        }
+    }
+
+    fn check_shared_waits_unit(&self, unit: Node, locals: &HashSet<String>) -> Result<(), String> {
+        let touches = Self::search_node(unit, false, &mut |node| match node {
+            Node::Expr(expr) => match &expr.node {
+                ExprNode::Identifier(name) if self.shared_names.contains(name) && !locals.contains(name) => Some(()),
+                _ => None,
+            },
+            Node::Stmt(_) => None,
+        })
+        .is_some();
+        if touches && Self::search_node(unit, false, &mut |node| self.wait_at(node)).is_some() {
+            let span = match unit {
+                Node::Expr(expr) => &expr.span,
+                Node::Stmt(stmt) => &stmt.span,
+            };
+            return Err(format!(
+                "line {}, col {}: a statement cannot both wait and touch shared state: the lock would be held across the wait, blocking every other reader. Split it into two statements.",
+                span.line, span.col
+            ));
+        }
+        let mut deferred: Vec<&Expr> = Vec::new();
+        Self::search_node(unit, false, &mut |node| {
+            if let Node::Expr(expr) = node {
+                match &expr.node {
+                    ExprNode::Closure { body, .. } | ExprNode::TriggeredBlock { body, .. } => deferred.push(body),
+                    ExprNode::AutomaticBlock { body, crash_handler, .. } => {
+                        deferred.push(body);
+                        if let Some((_, handler)) = crash_handler {
+                            deferred.push(handler);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            None::<()>
+        });
+        for body in deferred {
+            let mut names = Self::declared_names(body, &[]);
+            names.extend(locals.iter().cloned());
+            self.check_shared_waits_body(body, &names)?;
+        }
+        Ok(())
+    }
+
+    /// Every name a body declares: parameters, `let`s, loop variables, match, catch, and
+    /// crash bindings, closure and handler parameters. Any of them shadows a `shared let`
+    /// of the same name, so none counts as a touch; collected for the whole body at once,
+    /// which errs toward accepting, and codegen still has the last word.
+    fn declared_names(body: &Expr, params: &[crate::ast::Param]) -> HashSet<String> {
+        let mut names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+        Self::search_expr(body, true, &mut |node| {
+            match node {
+                Node::Stmt(stmt) => match &stmt.node {
+                    StmtNode::Let { name, .. } => {
+                        names.insert(name.clone());
+                    }
+                    StmtNode::ForIn { var, index_var, .. } => {
+                        names.insert(var.clone());
+                        names.extend(index_var.iter().cloned());
+                    }
+                    _ => {}
+                },
+                Node::Expr(expr) => match &expr.node {
+                    ExprNode::Closure { params, .. } | ExprNode::TriggeredBlock { params, .. } => {
+                        names.extend(params.iter().map(|p| p.name.clone()));
+                    }
+                    ExprNode::AutomaticBlock { crash_handler: Some((name, _)), .. } | ExprNode::TryCatch { err_name: name, .. } => {
+                        names.insert(name.clone());
+                    }
+                    ExprNode::Match { arms, .. } => {
+                        for arm in arms {
+                            Self::pattern_names(&arm.pattern, &mut names);
+                        }
+                    }
+                    _ => {}
+                },
+            }
+            None::<()>
+        });
+        names
+    }
+
+    fn pattern_names(pattern: &MatchPattern, names: &mut HashSet<String>) {
+        match pattern {
+            MatchPattern::EnumVariant { binding: Some(name), .. } | MatchPattern::Binding(name) => {
+                names.insert(name.clone());
+            }
+            MatchPattern::Guard { inner, .. } => Self::pattern_names(inner, names),
+            _ => {}
+        }
+    }
+
     /// A body that declares a return type must end in a value or return on every path.
     /// `fn f(n: int) -> int { if n > 0 { return 1 } }` reached rustc as E0317 before this;
     /// a block whose tail is a statement types as void, so the check is on the tail's
@@ -370,11 +714,20 @@ impl TypeChecker {
 
     fn check_stmt(&mut self, stmt: &Stmt) -> Result<(), String> {
         match &stmt.node {
-            StmtNode::Let { name, ty, value, .. } => {
+            StmtNode::Let { name, ty, value, shared } => {
                 if let ExprNode::StartServerlet { name: serverlet, .. } = &value.node {
                     self.var_serverlet.insert(name.clone(), serverlet.clone());
                 }
                 let val_ty = self.infer_expr(value)?;
+                if *shared {
+                    let bound = ty.clone().unwrap_or_else(|| val_ty.clone());
+                    if !Self::mentions_void(&bound) && !Self::shareable(&bound) {
+                        return Err(format!(
+                            "line {}, col {}: shared let '{}' has type {}, which cannot be shared. A shared binding holds data: int, float, bool, string, an array, or a struct.",
+                            stmt.span.line, stmt.span.col, name, bound.display_name()
+                        ));
+                    }
+                }
                 if let Some(expected_ty) = ty {
                     if !self.types_compatible(expected_ty, &val_ty) {
                         return Err(format!(
@@ -427,6 +780,14 @@ impl TypeChecker {
                 self.pop_env();
                 self.current_return_type = prev_return;
                 Self::check_body_returns("function", name, return_type, body, body_ty, stmt.span.line, stmt.span.col)?;
+                // Anywhere in the body, closures included: codegen refuses the `.await`
+                // a wait would need in a synchronous function, wherever it is.
+                if let Some(what) = self.first_wait(body, true) {
+                    return Err(format!(
+                        "line {}, col {}: fn '{}' {}. A `fn` compiles to a synchronous function, so it cannot wait; declare it as a `task` instead, and call it from another task or from a hook.",
+                        stmt.span.line, stmt.span.col, name, what
+                    ));
+                }
             }
             StmtNode::TaskDecl { name, params, body, return_type, type_params, .. } |
             StmtNode::ProcessDecl { name, params, body, return_type, type_params, .. } => {
@@ -616,6 +977,17 @@ impl TypeChecker {
                     if let Err(error) = checked {
                         self.sandbox_grants = None;
                         return Err(error);
+                    }
+                    // A guest has no runtime to wait on. Closure bodies are their own
+                    // context in codegen, so they are not counted here either.
+                    if sandbox.is_some() {
+                        if let Some(what) = self.first_wait(&h.body, false) {
+                            self.sandbox_grants = None;
+                            return Err(format!(
+                                "line {}, col {}: sandboxed serverlet '{}': handler '{}' waits — it {} — and a guest handler cannot wait; it runs to completion inside the guest, which has no runtime and reaches nothing but its grants",
+                                stmt.span.line, stmt.span.col, serverlet, h.name, what
+                            ));
+                        }
                     }
                 }
                 self.sandbox_grants = None;
@@ -1665,6 +2037,29 @@ mod tests {
     #[test]
     fn test_for_range_ok() {
         assert!(check("for i in range(10) { print(to_string(i)) }").is_ok());
+    }
+
+    #[test]
+    fn test_check_refuses_what_waits_where_codegen_cannot_wait() {
+        let error = check("task slow() -> int { return 1 }\nfn wrap() -> int { return slow() }\norchestrator main() {}").unwrap_err();
+        assert!(error.contains("fn 'wrap' calls the task 'slow'"), "{error}");
+        let error = check("fn nap() { sleep(1) }\norchestrator main() {}").unwrap_err();
+        assert!(error.contains("fn 'nap' calls sleep"), "{error}");
+        let error = check("shared let total = 0\ntask fetch() -> int { return 5 }\norchestrator main() { total = total + fetch() }").unwrap_err();
+        assert!(error.contains("cannot both wait and touch shared state"), "{error}");
+        let error = check("serverlet C { on add(n: int) -> int { return n } }\nshared let c = start C()\norchestrator main() {}").unwrap_err();
+        assert!(error.contains("shared let 'c' has type process, which cannot be shared"), "{error}");
+    }
+
+    #[test]
+    fn test_check_accepts_what_codegen_accepts_around_waits_and_shared_state() {
+        // A wait and a shared touch in separate statements; a local that shadows the
+        // shared name in a statement that waits; a closure that touches shared state,
+        // which is its own statement; a fn calling a fn. All compile, so all check.
+        assert!(check("shared let total = 0\ntask fetch() -> int { return 5 }\norchestrator main() {\n let n = fetch()\n total = total + n\n}").is_ok());
+        assert!(check("shared let total = 0\ntask fetch() -> int { return 5 }\ntask t() -> int { let total = fetch() + 1\n return total }\norchestrator main() {}").is_ok());
+        assert!(check("shared let total = 0\ntask fetch() -> int { return 5 }\norchestrator main() {\n let f = fn(x: int) -> int { total + x }\n let n = fetch()\n}").is_ok());
+        assert!(check("fn twice(n: int) -> int { return n * 2 }\nfn four() -> int { return twice(2) }\norchestrator main() {}").is_ok());
     }
 
     #[test]
