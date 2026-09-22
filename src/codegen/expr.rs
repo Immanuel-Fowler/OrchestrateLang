@@ -18,8 +18,14 @@ impl Codegen {
                     crate::ast::UnaryOp::Neg => format!("(-{})", operand_str),
                 }
             }
-            ExprNode::Index { object, index } => {
-                format!("{}[({}) as usize].clone()", self.compile_expr(object), self.compile_expr(index))
+            // The element is read out of the array where it lives; the array itself is not
+            // copied first, which for a `shared let` it used to be on every read.
+            ExprNode::Index { .. } => format!("{}.clone()", self.compile_place(expr)),
+            ExprNode::Binary { op: BinaryOp::Assign, lhs, rhs } => {
+                // Assigning needs the place itself: a write to a copy is a write lost.
+                let value = self.compile_expr(rhs);
+                let place = self.compile_place(lhs);
+                format!("{} = {}", place, value)
             }
             ExprNode::Binary { op, lhs, rhs } => {
                 let lhs_str = self.compile_expr(lhs);
@@ -27,14 +33,6 @@ impl Codegen {
                 if *op == BinaryOp::Add {
                     // Both sides are borrowed: `a + b` must leave `a` and `b` usable.
                     format!("OrchAdd::orch_add(&({}), &({}))", lhs_str, rhs_str)
-                } else if *op == BinaryOp::Assign {
-                    // Assigning needs a place expression, not a clone of the value.
-                    let place = match &lhs.node {
-                        ExprNode::Index { object, index } => format!("{}[({}) as usize]", self.compile_expr(object), self.compile_expr(index)),
-                        ExprNode::Identifier(name) if self.is_shared(name) => format!("__shared.{}", rust_ident(name)),
-                        _ => lhs_str,
-                    };
-                    format!("{} = {}", place, rhs_str)
                 } else {
                     let op_str = match op {
                         BinaryOp::Sub => "-",
@@ -55,16 +53,22 @@ impl Codegen {
                 }
             }
             ExprNode::Call { callee, args } => {
+                // `length`, `append`, and `remove` work on the array where it lives, so a
+                // change reaches the binding — a `shared let` or instance state included.
+                if callee == "length" && args.len() == 1 {
+                    // Parenthesised: `n as i64 < m` reads `<` as the start of generic arguments.
+                    return format!("({}.len() as i64)", self.compile_place(&args[0]));
+                } else if callee == "append" && args.len() == 2 {
+                    let value = self.compile_expr(&args[1]);
+                    return format!("{}.push({})", self.compile_place(&args[0]), value);
+                } else if callee == "remove" && args.len() == 2 {
+                    let index = self.compile_expr(&args[1]);
+                    return format!("{}.remove(({}) as usize)", self.compile_place(&args[0]), index);
+                }
                 let args_str = args.iter().map(|a| self.compile_expr(a)).collect::<Vec<String>>().join(", ");
 
                 if callee == "print" {
                     format!("print_val({})", args_str)
-                } else if callee == "length" && args.len() == 1 {
-                    format!("{}.len() as i64", self.compile_expr(&args[0]))
-                } else if callee == "append" && args.len() == 2 {
-                    format!("{}.push({})", self.compile_expr(&args[0]), self.compile_expr(&args[1]))
-                } else if callee == "remove" && args.len() == 2 {
-                    format!("{}.remove({} as usize)", self.compile_expr(&args[0]), self.compile_expr(&args[1]))
                 } else if callee == "range" && args.len() == 1 {
                     let n = self.compile_expr(&args[0]);
                     format!("(0i64..{} as i64).collect::<Vec<i64>>()", n)
@@ -118,48 +122,18 @@ impl Codegen {
                     format!("{}({})", self.call_name(callee), args_str)
                 }
             }
+            // `x |> f(a)` is `f(x, a)`, compiled as that call, so a pipeline and a call can
+            // never mean different things.
             ExprNode::Pipeline { value, function } => {
-                let val_str = self.compile_expr(value);
-                match &function.node {
-                    ExprNode::Identifier(name) => {
-                        if name == "print" {
-                            format!("print_val({})", val_str)
-                        } else if name == "sleep" {
-                            self.require_async("calls sleep, which suspends until the timer fires");
-                            format!("tokio::time::sleep(std::time::Duration::from_millis({} as u64)).await", val_str)
-                        } else if self.tasks.contains(name) {
-                            self.require_async(&format!("calls the task '{}', which it would have to wait for", name));
-                            format!("{}({}).await", rust_ident(name), val_str)
-                        } else {
-                            format!("{}({})", self.call_name(name), val_str)
-                        }
-                    }
-                    ExprNode::Call { callee, args } => {
-                        let mut all_args = vec![val_str];
-                        for arg in args {
-                            all_args.push(self.compile_expr(arg));
-                        }
-                        let all_args_str = all_args.join(", ");
-                        if callee == "print" {
-                            format!("print_val({})", all_args_str)
-                        } else if callee == "length" && all_args.len() == 1 {
-                            format!("{}.len() as i64", all_args[0])
-                        } else if callee == "append" && all_args.len() == 2 {
-                            format!("{}.push({})", all_args[0], all_args[1])
-                        } else if callee == "remove" && all_args.len() == 2 {
-                            format!("{}.remove({} as usize)", all_args[0], all_args[1])
-                        } else if callee == "sleep" {
-                            self.require_async("calls sleep, which suspends until the timer fires");
-                            format!("tokio::time::sleep(std::time::Duration::from_millis({} as u64)).await", all_args_str)
-                        } else if self.tasks.contains(callee) {
-                            self.require_async(&format!("calls the task '{}', which it would have to wait for", callee));
-                            format!("{}({}).await", callee, all_args_str)
-                        } else {
-                            format!("{}({})", self.call_name(callee), all_args_str)
-                        }
-                    }
+                let (callee, rest) = match &function.node {
+                    ExprNode::Identifier(name) => (name.clone(), Vec::new()),
+                    ExprNode::Call { callee, args } => (callee.clone(), args.clone()),
                     _ => panic!("Invalid pipeline function target: {:?}", function),
-                }
+                };
+                let mut args = vec![(**value).clone()];
+                args.extend(rest);
+                let call = crate::ast::Spanned { span: expr.span.clone(), node: ExprNode::Call { callee, args } };
+                self.compile_expr(&call)
             }
             ExprNode::Block(_) => {
                 let inner = self.compile_block_inner(expr, false);

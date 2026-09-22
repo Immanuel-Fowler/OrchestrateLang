@@ -1013,6 +1013,61 @@ orchestrator main(procs: process[writer, reader]) { }
     assert_eq!(out.trim(), "written");
 }
 
+/// A change made in place — an element, a field, `append`, `remove` — reaches the
+/// `shared let` itself. Each of them used to land on a copy that was dropped, so the
+/// program built, ran, and quietly did nothing. The orchestrator body, an event handler,
+/// and a worker each write their own slot and read it straight back.
+#[test]
+fn runtime_shared_state_changes_in_place_reach_the_binding() {
+    let out = run_orch("shared_in_place", r#"
+struct Tally { count: int, names: string[] }
+shared let slots = [0, 0, 0]
+shared let seen: int[] = []
+shared let tally = Tally { count: 0, names: [] }
+shared let grid = [[0, 0], [0, 0]]
+
+let listener = on note(n: int) {
+    slots[1] = n
+    append(seen, n)
+    tally.count = tally.count + 1
+    let mine = slots[1]
+    print("handler reads {mine}")
+}
+
+let worker = automatic {
+    slots[2] = 30
+    append(seen, 30)
+    append(tally.names, "worker")
+    let mine = slots[2]
+    print("worker reads {mine}")
+    trigger note(20)
+    sleep(10000)
+}
+
+orchestrator main(procs: process[worker]) {
+    slots[0] = 10
+    append(seen, 10)
+    grid[1][0] = 9
+    let mine = slots[0]
+    print("body reads {mine}")
+    sleep(500)
+    remove(seen, 0)
+    let total = slots[0] + slots[1] + slots[2]
+    let left = length(seen)
+    let count = tally.count
+    let names = length(tally.names)
+    let cell = grid[1][0]
+    print("total {total} left {left} count {count} names {names} cell {cell}")
+    stop_orch()
+}
+"#);
+    let mut lines: Vec<&str> = out.lines().collect();
+    let last = lines.pop();
+    lines.sort();
+    assert_eq!(lines, vec!["body reads 10", "handler reads 20", "worker reads 30"], "{out}");
+    assert_eq!(last, Some("total 60 left 2 count 1 names 1 cell 9"), "{out}");
+}
+
 /// Arrays and structs across the C ABI. An array parameter is a pointer and a count; an
 /// array return is a `malloc`'d pointer plus a count written through an out-parameter,
 /// which the wrapper copies and frees — the same ownership rule strings follow. A struct

@@ -804,6 +804,39 @@ impl Codegen {
         }
     }
 
+    /// Where a value lives, for a write or a borrow: an assignment's target, the array
+    /// `append` changes, the array an index reads from. A `shared let` is its field behind
+    /// the lock — the statement takes the lock around it — instance state is its field, and
+    /// a local is itself. Anything else is a temporary, which is its own place.
+    ///
+    /// A read of a whole binding goes through `read_name` and produces a copy; a place
+    /// never does, so a write through it reaches the binding.
+    pub(super) fn compile_place(&mut self, expr: &Expr) -> String {
+        match &expr.node {
+            ExprNode::Identifier(name) => self.place_name(name),
+            ExprNode::Index { object, index } => {
+                let object = self.compile_place(object);
+                let index = self.compile_expr(index);
+                format!("{object}[({index}) as usize]")
+            }
+            ExprNode::FieldAccess { object, field } => format!("{}.{}", self.compile_place(object), rust_ident(field)),
+            _ => self.compile_expr(expr),
+        }
+    }
+
+    /// A name as a place: see `compile_place`.
+    fn place_name(&self, name: &str) -> String {
+        if self.is_shared(name) {
+            self.shared_touches.set(self.shared_touches.get() + 1);
+            return format!("__shared.{}", rust_ident(name));
+        }
+        let receiver = self.state_rewrite.as_ref().map_or("", |rewrite| rewrite.receiver);
+        match self.state_field(name) {
+            Some(_) => format!("{receiver}.{}", rust_ident(name)),
+            None => rust_ident(name),
+        }
+    }
+
     /// `.clone()` when `expr` is a bare name of the current handler's state, so
     /// `return seen` hands the caller a copy rather than moving the state out of the
     /// serverlet, which rustc would refuse. A number's clone is a copy.
