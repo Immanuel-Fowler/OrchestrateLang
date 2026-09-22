@@ -384,6 +384,16 @@ impl TypeChecker {
         Ok(())
     }
 
+    /// An array whose element type is still unknown, as an unannotated binding keeps it:
+    /// `int` elements, nested arrays likewise.
+    fn default_unknown_elements(ty: Type) -> Type {
+        match ty {
+            Type::Array(inner, dims) if *inner == Type::Void => Type::Array(Box::new(Type::Int), dims),
+            Type::Array(inner, dims) => Type::Array(Box::new(Self::default_unknown_elements(*inner)), dims),
+            other => other,
+        }
+    }
+
     fn mentions_void(ty: &Type) -> bool {
         match ty {
             Type::Void => true,
@@ -753,7 +763,9 @@ impl TypeChecker {
                     }
                     self.define_var(name.clone(), expected_ty.clone());
                 } else {
-                    self.define_var(name.clone(), val_ty);
+                    // `let xs = []` says nothing about what it will hold; it has always
+                    // meant int[], and still does.
+                    self.define_var(name.clone(), Self::default_unknown_elements(val_ty));
                 }
             }
             StmtNode::Expr(expr) => {
@@ -1064,9 +1076,10 @@ impl TypeChecker {
         if let (Type::Option(exp_inner), Type::Option(act_inner)) = (expected, actual) {
             return self.types_compatible(exp_inner, act_inner);
         }
-        // Array covariance
+        // Array covariance. An element type that is not known yet — an empty literal's —
+        // fits any array, as `none` fits any option.
         if let (Type::Array(exp_inner, _), Type::Array(act_inner, _)) = (expected, actual) {
-            return self.types_compatible(exp_inner, act_inner);
+            return **act_inner == Type::Void || self.types_compatible(exp_inner, act_inner);
         }
         // Void in if-else / try-catch: allow Void on either side when the other is also Void
         // (already handled by expected == actual check above)
@@ -1599,17 +1612,24 @@ impl TypeChecker {
                 for (i, e) in elements.iter().enumerate() {
                     let ty = self.infer_expr(e)?;
                     if let Some(ref prev) = inner_ty.clone() {
-                        if !self.types_compatible(prev, &ty) {
+                        if !self.types_compatible(prev, &ty) && !self.types_compatible(&ty, prev) {
                             return Err(format!(
                                 "line {}, col {}: array element {} has type {}, expected {}",
                                 expr.span.line, expr.span.col, i, ty.display_name(), prev.display_name()
                             ));
                         }
+                        // `[[], [1]]`: the element that says what it holds decides.
+                        if Self::mentions_void(prev) && !Self::mentions_void(&ty) {
+                            inner_ty = Some(ty);
+                        }
                     } else {
                         inner_ty = Some(ty);
                     }
                 }
-                Ok(Type::Array(Box::new(inner_ty.unwrap_or(Type::Int)), vec![]))
+                // An empty literal holds nothing yet, so its element type is unknown (void)
+                // and it fits any array: `let xs: float[] = []` takes its type from the
+                // annotation, a field or a parameter from its declaration.
+                Ok(Type::Array(Box::new(inner_ty.unwrap_or(Type::Void)), vec![]))
             }
             ExprNode::StructLiteral { name, fields } => {
                 if let Some(def) = self.struct_defs.get(name).cloned() {
@@ -1967,6 +1987,18 @@ mod tests {
     #[test]
     fn test_array_consistent_types_ok() {
         assert!(check("let a = [1, 2, 3];").is_ok());
+    }
+
+    #[test]
+    fn test_empty_array_takes_its_type_from_where_it_goes() {
+        assert!(check("let xs: float[] = []").is_ok());
+        assert!(check("let names: string[] = [] append(names, \"a\")").is_ok());
+        assert!(check("struct T { names: string[] } let t = T { names: [] }").is_ok());
+        assert!(check("fn total(xs: float[]) -> float { return 0.0 } let t = total([])").is_ok());
+        assert!(check("let grid = [[], [1.5]] let x: float = grid[1][0]").is_ok());
+        // Unannotated, it is int[], as it always was.
+        assert!(check("let xs = [] append(xs, 1)").is_ok());
+        assert!(check("let xs = [] append(xs, \"a\")").is_err());
     }
 
     #[test]
