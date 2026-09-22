@@ -1,0 +1,16 @@
+// Regression: element assignment, append and remove on a `shared let` changed a copy
+// that was dropped; the program printed "value 0" and "len 1 first 1".
+shared let xs = [0, 0]
+shared let q = [1]
+
+orchestrator main() {
+    xs[1] = 5
+    let v = xs[1]
+    print("value {v}")
+    append(q, 2)
+    remove(q, 0)
+    let n = length(q)
+    let f = q[0]
+    print("len {n} first {f}")
+    stop_orch()
+}

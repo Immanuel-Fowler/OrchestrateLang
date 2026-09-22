@@ -678,7 +678,9 @@ orchestrator main() {
 
 #[test]
 fn runtime_regression_programs() {
-    // Every program in tests/programs/ must compile and exit successfully.
+    // Every program in tests/programs/ must compile and exit successfully, and one with a
+    // `<name>.expected` beside it must print exactly that: a program that runs and prints
+    // the wrong thing is the failure an exit status cannot see.
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/programs");
     let mut programs: Vec<PathBuf> = fs::read_dir(&dir).unwrap()
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -695,6 +697,11 @@ fn runtime_regression_programs() {
         assert!(out.status.success(),
             "{:?} failed:\nstdout: {}\nstderr: {}", program,
             String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        if let Ok(expected) = fs::read_to_string(program.with_extension("expected")) {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let printed: Vec<&str> = stdout.lines().filter(|l| !l.starts_with("[orchestrate]")).collect();
+            assert_eq!(printed, expected.lines().collect::<Vec<_>>(), "{:?} printed the wrong thing", program);
+        }
     }
     // These programs build beside their sources, into one shared cache of about 4 GB;
     // a passing run leaves nothing in the source tree.

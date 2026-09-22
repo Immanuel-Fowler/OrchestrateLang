@@ -1,0 +1,14 @@
+// Regression: `length(xs) < 4` in a sandboxed handler was emitted as
+// `xs.len() as i64 < 4`, which Rust parses as generic arguments.
+serverlet G sandbox(memory_limit: "8mb", timeout: "20ms") {
+    on small(xs: int[]) -> int {
+        if length(xs) < 4 { return 1 }
+        return 0
+    }
+}
+
+orchestrator main() {
+    let g = start G()
+    print("{g.small([1])} {g.small([1, 2, 3, 4, 5])}")
+    stop_orch()
+}

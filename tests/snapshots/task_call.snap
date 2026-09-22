@@ -86,7 +86,7 @@ async fn orchestrator_main() {
     // orch:6:5
         let mut result = add(3, 4).await;
         // orch:7:5
-        print_val(to_string(result));
+        print_val(to_string(&result));
 }
 
 #[tokio::main]

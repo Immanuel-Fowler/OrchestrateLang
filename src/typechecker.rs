@@ -1343,8 +1343,13 @@ impl TypeChecker {
                 for p in params {
                     self.define_var(p.name.clone(), p.ty.clone());
                 }
-                self.infer_expr(body)?;
+                // A `return` inside the closure returns from the closure, so it is checked
+                // against the closure's type, not the enclosing function's.
+                let enclosing = self.current_return_type.replace(declared_ret.clone());
+                let checked = self.infer_expr(body);
+                self.current_return_type = enclosing;
                 self.pop_env();
+                checked?;
 
                 Ok(Type::Fn(param_types, Box::new(declared_ret)))
             }
@@ -1436,7 +1441,10 @@ impl TypeChecker {
                     if then_ty != Type::Void { return Ok(then_ty); }
                     return Ok(else_ty);
                 }
-                Ok(then_ty)
+                // Without `else` nothing is produced when the condition is false, so the
+                // `if` is a statement whatever its branch ends in.
+                let _ = then_ty;
+                Ok(Type::Void)
             }
             ExprNode::ModuleCall { module_local_name, function, args } => {
                 let mut arg_types = Vec::new();

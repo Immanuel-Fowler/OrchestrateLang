@@ -91,7 +91,7 @@ async fn orchestrator_main() {
         y: 4,
     };
         // orch:8:5
-        print_val(to_string(p.x));
+        print_val(to_string(&p.x));
 }
 
 #[tokio::main]

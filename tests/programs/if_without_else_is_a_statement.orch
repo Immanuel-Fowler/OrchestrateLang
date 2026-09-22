@@ -1,0 +1,22 @@
+// Regression: a value-producing call as the last statement of an `if` without `else`
+// became the `if`'s value, and rustc refused it (E0308). A loop body the same.
+serverlet S {
+    let n = 0
+    on bump() -> int {
+        n = n + 1
+        return n
+    }
+}
+
+orchestrator main() {
+    let xs = [1, 2, 3]
+    if length(xs) > 2 { remove(xs, 0) }
+    print("{length(xs)}")
+    let s = start S()
+    let go = true
+    if go { s.bump() }
+    for i in range(2) { s.bump() }
+    let now = s.bump()
+    print("{now}")
+    stop_orch()
+}

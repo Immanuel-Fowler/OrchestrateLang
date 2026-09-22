@@ -395,6 +395,13 @@ pub struct Codegen {
     /// import for that grant; an ungranted one is an error, since the guest has no
     /// other way to reach the host.
     pub(super) sandbox_guest_grants: Option<Vec<String>>,
+    /// How many closures deep the code being compiled is. A closure may run many times,
+    /// so a binding it captured is copied out of it, never moved.
+    pub(super) closure_depth: usize,
+    /// Set just before a function body is compiled: its final value leaves the body, so
+    /// a local there moves out. Taken by the first block compiled, so no nested block
+    /// sees it.
+    pub(super) tail_moves: bool,
 }
 
 impl Codegen {
@@ -429,6 +436,8 @@ impl Codegen {
             sandbox_codecs_emitted: false,
             handler_state: HashSet::new(),
             sandbox_guest_grants: None,
+            closure_depth: 0,
+            tail_moves: false,
         }
     }
 
@@ -825,7 +834,7 @@ impl Codegen {
     }
 
     /// A name as a place: see `compile_place`.
-    fn place_name(&self, name: &str) -> String {
+    pub(super) fn place_name(&self, name: &str) -> String {
         if self.is_shared(name) {
             self.shared_touches.set(self.shared_touches.get() + 1);
             return format!("__shared.{}", rust_ident(name));
@@ -837,36 +846,62 @@ impl Codegen {
         }
     }
 
-    /// `.clone()` when `expr` is a bare name of the current handler's state, so
-    /// `return seen` hands the caller a copy rather than moving the state out of the
-    /// serverlet, which rustc would refuse. A number's clone is a copy.
-    pub(super) fn state_copy_suffix(&self, expr: &Expr) -> &'static str {
-        match &expr.node {
-            ExprNode::Identifier(name) if self.handler_state.contains(name) && !self.is_shared(name) => ".clone()",
-            _ => "",
-        }
-    }
-
     /// Arguments for a foreign function whose handle parameters are passed by reference.
     pub(super) fn compile_args_for(&mut self, key: &str, args: &[Expr]) -> String {
         let flags = self.foreign_handle_params.get(key).cloned().unwrap_or_default();
         args.iter().enumerate().map(|(i, arg)| {
-            let compiled = self.compile_expr(arg);
-            if flags.get(i).copied().unwrap_or(false) { format!("&({})", compiled) } else { compiled }
+            if flags.get(i).copied().unwrap_or(false) { format!("&({})", self.compile_place(arg)) } else { self.compile_value(arg) }
         }).collect::<Vec<_>>().join(", ")
     }
 
-    /// An argument the callee takes by value. A place — a binding or a field — is
-    /// copied so the caller keeps it; an index already reads as a copy, and a
-    /// temporary is moved as it is.
-    pub(super) fn compile_owned_arg(&mut self, arg: &Expr) -> String {
-        let compiled = self.compile_expr(arg);
-        match &arg.node {
+    /// An expression whose value is taken: bound by `let`, assigned, passed to a call,
+    /// stored in an array, a struct, or a variant, sent with an event, returned.
+    ///
+    /// OrchestrateLang has value semantics — `let b = a` leaves `a` as it was — and Rust
+    /// moves, so a place, a binding or a field, is copied here and the original stays
+    /// usable; an index already reads as a copy, and a temporary is moved as it is. This is
+    /// the one place that rule lives. Before it, `print(a)  print(a)` on a string, or
+    /// `let b = a` on an array, reached rustc as a use of a moved value.
+    pub(super) fn compile_value(&mut self, expr: &Expr) -> String {
+        let compiled = self.compile_expr(expr);
+        match &expr.node {
             ExprNode::Identifier(_) | ExprNode::FieldAccess { .. } if !compiled.ends_with(".clone()") => {
                 format!("{compiled}.clone()")
             }
             _ => compiled,
         }
+    }
+
+    /// An argument the callee only reads and takes generically: a place is lent by
+    /// reference rather than copied, and a temporary is handed over as it is.
+    pub(super) fn compile_lent(&mut self, expr: &Expr) -> String {
+        let place = self.compile_place(expr);
+        match &expr.node {
+            ExprNode::Identifier(_) | ExprNode::FieldAccess { .. } | ExprNode::Index { .. } => format!("&{place}"),
+            _ => place,
+        }
+    }
+
+    /// Each argument as a value, comma-separated.
+    pub(super) fn compile_values(&mut self, args: &[Expr]) -> String {
+        args.iter().map(|arg| self.compile_value(arg)).collect::<Vec<_>>().join(", ")
+    }
+
+    /// A value that leaves the body it was computed in — a `return`, or a body's final
+    /// value. A local of that body is not used again, so it moves out rather than being
+    /// copied; anything that outlives the body — state, a field, a binding a closure
+    /// captured — is copied, as any value is.
+    pub(super) fn compile_leaving_value(&mut self, expr: &Expr) -> String {
+        if let ExprNode::Identifier(name) = &expr.node {
+            let local = !self.is_shared(name)
+                && self.state_field(name).is_none()
+                && !self.handler_state.contains(name)
+                && self.closure_depth == 0;
+            if local {
+                return self.compile_expr(expr);
+            }
+        }
+        self.compile_value(expr)
     }
 
     /// A name in call position; a program field needs parentheses to be called.
@@ -940,7 +975,7 @@ impl Codegen {
             let StmtNode::Let { name, value, shared: true, .. } = &stmt.node else { continue };
             let rust_ty = self.shared_fields.iter().find(|(field, _)| field == name).map(|(_, ty)| ty.clone());
             let Some(rust_ty) = rust_ty else { continue };
-            let value = self.compile_expr(value);
+            let value = self.compile_value(value);
             initialisers.push(format!("        let {}: {rust_ty} = {value};", rust_ident(name)));
         }
         let names = self.shared_fields.iter().map(|(name, _)| rust_ident(name)).collect::<Vec<_>>().join(", ");
@@ -1276,6 +1311,7 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
     }
 
     pub fn compile_block_inner(&mut self, body: &Expr, force_semicolons: bool) -> String {
+        let tail_moves = std::mem::take(&mut self.tail_moves);
         if let ExprNode::Block(stmts) = &body.node {
             let mut parts = Vec::new();
             self.push_scope();
@@ -1296,14 +1332,16 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
                         let before = self.shared_touches.get();
                         let awaits_before = self.awaits;
                         let outer = std::mem::replace(&mut self.guard_held, true);
-                        let compiled = self.compile_expr(expr);
+                        // The block's value is taken by whatever holds the block, so it is
+                        // a value: a copy, unless it is a function body's local leaving.
+                        let compiled = if tail_moves { self.compile_leaving_value(expr) } else { self.compile_value(expr) };
                         self.guard_held = outer;
                         if self.shared_touches.get() != before && self.awaits != awaits_before {
                             self.errors.push(
                                 "a statement cannot both wait and touch shared state: the lock would be held across the wait, blocking every other reader. Split it into two statements.".to_string()
                             );
                         }
-                        let mut compiled = format!("{}{}", compiled, self.state_copy_suffix(expr));
+                        let mut compiled = compiled;
                         if self.shared_touches.get() != before && !outer {
                             compiled = self.wrap_shared(compiled);
                         }
@@ -1311,7 +1349,11 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
                     }
                     _ => {
                         let compiled = self.compile_stmt(s);
-                        if !compiled.ends_with(';') && !compiled.ends_with('}') {
+                        // An expression used as a statement is discarded, even one that
+                        // ends in a brace: a `match` or an `if`/`else` there has a value
+                        // Rust would otherwise take for the statement's.
+                        let discard = matches!(&s.node, StmtNode::Expr(_)) && !compiled.ends_with(';');
+                        if discard || (!compiled.ends_with(';') && !compiled.ends_with('}')) {
                             parts.push(format!("{}{};", src_comment, compiled));
                         } else {
                             parts.push(format!("{}{}", src_comment, compiled));
@@ -1323,6 +1365,17 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
             parts.join("\n    ")
         } else {
             self.compile_expr(body)
+        }
+    }
+
+    /// A body whose value nobody takes — a loop's, a handler's that returns nothing, an
+    /// `if` without `else` — so every statement in it, the last included, is discarded.
+    pub(super) fn compile_statement_body(&mut self, body: &Expr) -> String {
+        if let ExprNode::Block(_) = &body.node {
+            let inner = self.compile_block_inner(body, true);
+            format!("{{\n    {}\n}}", inner.replace("\n", "\n    "))
+        } else {
+            format!("{{ {}; }}", self.compile_expr(body))
         }
     }
 

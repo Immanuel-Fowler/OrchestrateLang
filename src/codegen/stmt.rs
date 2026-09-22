@@ -25,7 +25,7 @@ impl Codegen {
                 let before = self.shared_touches.get();
                 let awaits_before = self.awaits;
                 let outer = std::mem::replace(&mut self.guard_held, true);
-                let val_str = self.compile_expr(value);
+                let val_str = self.compile_value(value);
                 self.guard_held = outer;
                 if self.shared_touches.get() != before && self.awaits != awaits_before {
                     self.errors.push(
@@ -84,7 +84,7 @@ impl Codegen {
                     let before = self.shared_touches.get();
                     let awaits_before = self.awaits;
                     let outer = std::mem::replace(&mut self.guard_held, true);
-                    let compiled = format!("{}{}", self.compile_expr(expr), self.state_copy_suffix(expr));
+                    let compiled = self.compile_leaving_value(expr);
                     self.guard_held = outer;
                     if self.shared_touches.get() != before && self.awaits != awaits_before {
                         self.errors.push(
@@ -115,6 +115,7 @@ impl Codegen {
                 let outer = std::mem::replace(&mut self.sync_fn, Some(name.clone()));
                 let body_str = if let ExprNode::Block(_) = &body.node {
                     let force_semi = *return_type == Type::Void;
+                    self.tail_moves = !force_semi;
                     let inner = self.compile_block_inner(body, force_semi);
                     format!("{{\n    {}\n}}", inner.replace("\n", "\n    "))
                 } else {
@@ -137,6 +138,7 @@ impl Codegen {
                 };
                 let body_str = if let ExprNode::Block(_) = &body.node {
                     let force_semi = *return_type == Type::Void;
+                    self.tail_moves = !force_semi;
                     let inner = self.compile_block_inner(body, force_semi);
                     format!("{{\n    {}\n}}", inner.replace("\n", "\n    "))
                 } else {
@@ -158,6 +160,7 @@ impl Codegen {
                 };
                 let body_str = if let ExprNode::Block(_) = &body.node {
                     let force_semi = *return_type == Type::Void;
+                    self.tail_moves = !force_semi;
                     let inner = self.compile_block_inner(body, force_semi);
                     format!("{{\n    {}\n}}", inner.replace("\n", "\n    "))
                 } else {
@@ -384,13 +387,13 @@ impl Codegen {
             StmtNode::Trigger { event_name, args } => {
                 let prefix = if self.is_main { "" } else { "crate::" };
                 let func_name = format!("{}get_registry_{}", prefix, event_name);
+                // The event carries copies: the trigger's bindings are still there after it.
                 let payload = if args.is_empty() {
                     "()".to_string()
                 } else if args.len() == 1 {
-                    self.compile_expr(&args[0])
+                    self.compile_value(&args[0])
                 } else {
-                    let compiled_args = args.iter().map(|a| self.compile_expr(a)).collect::<Vec<String>>().join(", ");
-                    format!("({})", compiled_args)
+                    format!("({})", self.compile_values(args))
                 };
                 if self.library && event_name != "update_orchestrator" {
                     if self.context_bound {
@@ -414,7 +417,7 @@ impl Codegen {
                     match &s.node {
                         StmtNode::Let { name, value, .. } => {
                             binds.push(name.clone());
-                            futures.push(format!("async {{ {} }}", self.compile_expr(value)));
+                            futures.push(format!("async {{ {} }}", self.compile_value(value)));
                         }
                         StmtNode::Expr(expr) => {
                             binds.push("_".to_string());
@@ -440,21 +443,22 @@ impl Codegen {
             }
             StmtNode::ForIn { var, index_var, iter, body } => {
                 // Build iterator expression — detect range() for efficient codegen
-                let iter_str = if let ExprNode::Call { callee, args } = &iter.node {
-                    if callee == "range" {
-                        if args.len() == 1 {
-                            format!("(0i64..{} as i64)", self.compile_expr(&args[0]))
-                        } else if args.len() == 2 {
-                            format!("({} as i64..{} as i64)", self.compile_expr(&args[0]), self.compile_expr(&args[1]))
-                        } else {
-                            format!("({}).clone().into_iter()", self.compile_expr(iter))
-                        }
-                    } else {
-                        format!("({}).clone().into_iter()", self.compile_expr(iter))
+                // The array is walked where it lives, one copied element at a time. A
+                // `shared let` is copied out under the lock, which is released before the
+                // body runs; the body's statements take it for themselves.
+                let before = self.shared_touches.get();
+                let outer = std::mem::replace(&mut self.guard_held, true);
+                let iter_str = match &iter.node {
+                    ExprNode::Call { callee, args } if callee == "range" && args.len() == 1 => {
+                        format!("(0i64..({}) as i64)", self.compile_expr(&args[0]))
                     }
-                } else {
-                    format!("({}).clone().into_iter()", self.compile_expr(iter))
+                    ExprNode::Call { callee, args } if callee == "range" && args.len() == 2 => {
+                        format!("(({}) as i64..({}) as i64)", self.compile_expr(&args[0]), self.compile_expr(&args[1]))
+                    }
+                    _ => format!("({}).clone().into_iter()", self.compile_place(iter)),
                 };
+                self.guard_held = outer;
+                let iter_str = if self.shared_touches.get() != before && !outer { self.wrap_shared(iter_str) } else { iter_str };
 
                 self.push_scope();
                 self.define_local(var);
@@ -466,15 +470,20 @@ impl Codegen {
                         rust_ident(var), iter_str, rust_ident(idx), inner
                     )
                 } else {
-                    let body_str = self.compile_expr(body);
+                    let body_str = self.compile_statement_body(body);
                     format!("for {} in {} {}", rust_ident(var), iter_str, body_str)
                 };
                 self.pop_scope();
                 compiled
             }
             StmtNode::While { cond, body } => {
+                // The condition reads shared state under the lock, released before the body.
+                let before = self.shared_touches.get();
+                let outer = std::mem::replace(&mut self.guard_held, true);
                 let cond_str = self.compile_expr(cond);
-                let body_str = self.compile_expr(body);
+                self.guard_held = outer;
+                let cond_str = if self.shared_touches.get() != before && !outer { self.wrap_shared(cond_str) } else { cond_str };
+                let body_str = self.compile_statement_body(body);
                 format!("while {} {}", cond_str, body_str)
             }
             StmtNode::UseModule { local_name, .. } => {
@@ -587,7 +596,7 @@ impl Codegen {
                     let mut bindings = h.params.iter().map(|p| rust_ident(&p.name)).collect::<Vec<String>>();
                     bindings.push("reply_to".to_string());
                     let bindings_str = bindings.join(", ");
-                    let body_str = self.compile_expr(&h.body);
+                    let body_str = self.compile_handler_body(h);
 
                     let handler_name_str = &h.name;
 
@@ -619,7 +628,7 @@ impl Codegen {
                 let mut state_vars = Vec::new();
                 for s in state {
                     if let StmtNode::Let { name: vname, ty, value, .. } = &s.node {
-                        let val_str = self.compile_expr(value);
+                        let val_str = self.compile_value(value);
                         if let Some(t) = ty {
                             state_vars.push(format!("            let mut {}: {} = {};", rust_ident(vname), self.compile_type(t), val_str));
                         } else {
@@ -743,7 +752,7 @@ impl Codegen {
         let mut state_vars = Vec::new();
         for s in state {
             if let StmtNode::Let { name: vname, ty, value, .. } = &s.node {
-                let val_str = self.compile_expr(value);
+                let val_str = self.compile_value(value);
                 if let Some(t) = ty {
                     state_vars.push(format!("    let mut {}: {} = {};", rust_ident(vname), self.compile_type(t), val_str));
                 } else {
@@ -763,7 +772,7 @@ impl Codegen {
                     rust_ident(&p.name), ty
                 ));
             }
-            let body = self.compile_expr(&h.body);
+            let body = self.compile_handler_body(h);
             let finish = if h.return_type == Type::Void {
                 "                        __handler();\n                        Ok(Vec::new())".to_string()
             } else {
@@ -805,6 +814,19 @@ impl Codegen {
 }
 
 impl Codegen {
+    /// A serverlet handler's body: its final value is the reply, or, for a handler that
+    /// returns nothing, discarded.
+    fn compile_handler_body(&mut self, h: &Handler) -> String {
+        if h.return_type == Type::Void {
+            self.compile_statement_body(&h.body)
+        } else {
+            self.tail_moves = true;
+            let body = self.compile_expr(&h.body);
+            self.tail_moves = false;
+            body
+        }
+    }
+
     /// The actor loop for a sandboxed serverlet. It looks like any other serverlet's from
     /// the outside — same `XMsg`, same `XClient` — but each call crosses into a wasmtime
     /// guest instead of running inline, under the declared memory cap and timeout. A call
@@ -1138,7 +1160,7 @@ impl Codegen {
                 ));
                 return String::new();
             };
-            let value = self.compile_expr(value);
+            let value = self.compile_value(value);
             initializers.push(format!("        let mut {}: {} = {};", rust_ident(field), self.compile_type(&resolved), value));
             if !names.contains(field) {
                 fields.push(format!("    {}: {},", rust_ident(field), self.compile_type(&resolved)));
@@ -1162,7 +1184,7 @@ impl Codegen {
                 receiver: "__state",
             });
             let awaits_before = self.awaits;
-            let body = self.compile_expr(&h.body);
+            let body = self.compile_handler_body(h);
             self.state_rewrite = None;
             // A guest handler is an exported function that runs to completion inside
             // the guest: there is no runtime in there to wait on.

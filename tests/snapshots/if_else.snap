@@ -92,7 +92,7 @@ async fn orchestrator_main() {
     // orch:10:5
         let mut m = max(3, 7);
         // orch:11:5
-        print_val(to_string(m));
+        print_val(to_string(&m));
 }
 
 #[tokio::main]

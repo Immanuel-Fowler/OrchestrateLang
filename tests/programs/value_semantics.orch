@@ -1,0 +1,44 @@
+// Regression: OrchestrateLang has value semantics, and a binding used as a value is
+// copied. Each of these reached rustc as a use of a moved value.
+struct Pair { name: string, items: int[] }
+struct Last { a: int }
+shared let last = Last { a: 0 }
+
+fn count(xs: int[]) -> int { return length(xs) }
+fn build(n: int) -> int[] {
+    let xs: int[] = []
+    for i in range(n) { append(xs, i) }
+    return xs
+}
+
+orchestrator main() {
+    // let, call arguments, print, and append keep what they were given.
+    let xs = build(3)
+    let ys = xs
+    append(ys, 9)
+    let n = count(xs)
+    let tok = "tok"
+    let words = [""]
+    append(words, tok)
+    print(tok)
+    print(tok)
+    print("{n} {length(ys)} {length(words)}")
+
+    // Struct literals, fields, assignment, and a struct stored into a shared let.
+    let p = Pair { name: tok, items: xs }
+    let q = p
+    append(q.items, 7)
+    let name = p.name
+    let s = Last { a: 1 }
+    last = s
+    let copied = last.a
+    print("{name} {length(p.items)} {length(q.items)} {s.a} {copied}")
+
+    // A closure captures a copy and can run more than once.
+    let suffix = "!"
+    let shout = fn(w: string) -> string { return w + suffix }
+    print(shout(tok))
+    print(shout(name))
+    print(suffix)
+    stop_orch()
+}

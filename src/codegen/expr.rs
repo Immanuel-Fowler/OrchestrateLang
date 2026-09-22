@@ -22,14 +22,16 @@ impl Codegen {
             // copied first, which for a `shared let` it used to be on every read.
             ExprNode::Index { .. } => format!("{}.clone()", self.compile_place(expr)),
             ExprNode::Binary { op: BinaryOp::Assign, lhs, rhs } => {
-                // Assigning needs the place itself: a write to a copy is a write lost.
-                let value = self.compile_expr(rhs);
+                // Assigning needs the place itself: a write to a copy is a write lost. The
+                // value assigned is a copy, so `b = a` leaves `a` usable.
+                let value = self.compile_value(rhs);
                 let place = self.compile_place(lhs);
                 format!("{} = {}", place, value)
             }
             ExprNode::Binary { op, lhs, rhs } => {
-                let lhs_str = self.compile_expr(lhs);
-                let rhs_str = self.compile_expr(rhs);
+                // Operands are read where they live: every operator borrows or copies them.
+                let lhs_str = self.compile_place(lhs);
+                let rhs_str = self.compile_place(rhs);
                 if *op == BinaryOp::Add {
                     // Both sides are borrowed: `a + b` must leave `a` and `b` usable.
                     format!("OrchAdd::orch_add(&({}), &({}))", lhs_str, rhs_str)
@@ -59,66 +61,67 @@ impl Codegen {
                     // Parenthesised: `n as i64 < m` reads `<` as the start of generic arguments.
                     return format!("({}.len() as i64)", self.compile_place(&args[0]));
                 } else if callee == "append" && args.len() == 2 {
-                    let value = self.compile_expr(&args[1]);
+                    let value = self.compile_value(&args[1]);
                     return format!("{}.push({})", self.compile_place(&args[0]), value);
                 } else if callee == "remove" && args.len() == 2 {
+                    // A block, so the call is void as the language types it: Rust's
+                    // `remove` returns the element, which as the last statement of an
+                    // `if` would have become the `if`'s value.
                     let index = self.compile_expr(&args[1]);
-                    return format!("{}.remove(({}) as usize)", self.compile_place(&args[0]), index);
+                    return format!("{{ {}.remove(({}) as usize); }}", self.compile_place(&args[0]), index);
                 }
-                let args_str = args.iter().map(|a| self.compile_expr(a)).collect::<Vec<String>>().join(", ");
 
-                if callee == "print" {
-                    format!("print_val({})", args_str)
+                if callee == "print" || callee == "to_string" {
+                    // Both only display their argument, so it is lent, not copied.
+                    let args_str = args.iter().map(|a| self.compile_lent(a)).collect::<Vec<_>>().join(", ");
+                    let function = if callee == "print" { "print_val" } else { "to_string" };
+                    format!("{}({})", function, args_str)
                 } else if callee == "range" && args.len() == 1 {
                     let n = self.compile_expr(&args[0]);
-                    format!("(0i64..{} as i64).collect::<Vec<i64>>()", n)
+                    format!("(0i64..({}) as i64).collect::<Vec<i64>>()", n)
                 } else if callee == "range" && args.len() == 2 {
                     let s = self.compile_expr(&args[0]);
                     let e = self.compile_expr(&args[1]);
-                    format!("({} as i64..{} as i64).collect::<Vec<i64>>()", s, e)
-                } else if callee == "map" && args.len() == 2 {
-                    let xs = self.compile_expr(&args[0]);
-                    let f = self.compile_expr(&args[1]);
-                    format!("{{ let mut __f = ({}); ({}).clone().into_iter().map(|__x| __f(__x)).collect::<Vec<_>>() }}", f, xs)
-                } else if callee == "filter" && args.len() == 2 {
-                    let xs = self.compile_expr(&args[0]);
-                    let f = self.compile_expr(&args[1]);
-                    format!("{{ let mut __f = ({}); ({}).clone().into_iter().filter(|__x| __f((*__x).clone())).collect::<Vec<_>>() }}", f, xs)
+                    format!("(({}) as i64..({}) as i64).collect::<Vec<i64>>()", s, e)
+                } else if matches!(callee.as_str(), "map" | "filter" | "find" | "any" | "all") && args.len() == 2 {
+                    // The function is taken by value; the array is walked where it lives,
+                    // one copied element at a time.
+                    let xs = self.compile_place(&args[0]);
+                    let f = self.compile_value(&args[1]);
+                    let walk = match callee.as_str() {
+                        "map" => "map(|__x| __f(__x)).collect::<Vec<_>>()",
+                        "filter" => "filter(|__x| __f((*__x).clone())).collect::<Vec<_>>()",
+                        "find" => "find(|__x| __f((*__x).clone()))",
+                        "any" => "any(|__x| __f(__x))",
+                        _ => "all(|__x| __f(__x))",
+                    };
+                    format!("{{ let mut __f = ({}); ({}).clone().into_iter().{} }}", f, xs, walk)
                 } else if callee == "reduce" && args.len() == 3 {
-                    let xs = self.compile_expr(&args[0]);
-                    let init = self.compile_expr(&args[1]);
-                    let f = self.compile_expr(&args[2]);
+                    let xs = self.compile_place(&args[0]);
+                    let init = self.compile_value(&args[1]);
+                    let f = self.compile_value(&args[2]);
                     format!("{{ let mut __f = ({}); ({}).clone().into_iter().fold({}, |acc, __x| __f(acc, __x)) }}", f, xs, init)
-                } else if callee == "find" && args.len() == 2 {
-                    let xs = self.compile_expr(&args[0]);
-                    let f = self.compile_expr(&args[1]);
-                    format!("{{ let mut __f = ({}); ({}).clone().into_iter().find(|__x| __f((*__x).clone())) }}", f, xs)
-                } else if callee == "any" && args.len() == 2 {
-                    let xs = self.compile_expr(&args[0]);
-                    let f = self.compile_expr(&args[1]);
-                    format!("{{ let mut __f = ({}); ({}).clone().into_iter().any(|__x| __f(__x)) }}", f, xs)
-                } else if callee == "all" && args.len() == 2 {
-                    let xs = self.compile_expr(&args[0]);
-                    let f = self.compile_expr(&args[1]);
-                    format!("{{ let mut __f = ({}); ({}).clone().into_iter().all(|__x| __f(__x)) }}", f, xs)
                 } else if callee == "to_int" && args.len() == 1 {
-                    format!("({}) as i64", self.compile_expr(&args[0]))
+                    format!("(({}) as i64)", self.compile_expr(&args[0]))
                 } else if callee == "to_float" && args.len() == 1 {
-                    format!("({}) as f64", self.compile_expr(&args[0]))
+                    format!("(({}) as f64)", self.compile_expr(&args[0]))
                 } else if callee == "parse_int" && args.len() == 1 {
-                    format!("({}).parse::<i64>().map_err(|e| e.to_string())", self.compile_expr(&args[0]))
+                    format!("({}).parse::<i64>().map_err(|e| e.to_string())", self.compile_place(&args[0]))
                 } else if callee == "parse_float" && args.len() == 1 {
-                    format!("({}).parse::<f64>().map_err(|e| e.to_string())", self.compile_expr(&args[0]))
+                    format!("({}).parse::<f64>().map_err(|e| e.to_string())", self.compile_place(&args[0]))
                 } else if callee == "sleep" {
+                    let args_str = self.compile_values(args);
                     self.require_async("calls sleep, which suspends until the timer fires");
-                    format!("tokio::time::sleep(std::time::Duration::from_millis({} as u64)).await", args_str)
+                    format!("tokio::time::sleep(std::time::Duration::from_millis(({}) as u64)).await", args_str)
                 } else if self.tasks.contains(callee) {
+                    let args_str = self.compile_values(args);
                     self.require_async(&format!("calls the task '{}', which it would have to wait for", callee));
                     format!("{}({}).await", rust_ident(callee), args_str)
                 } else if self.foreign_handle_params.contains_key(callee) {
                     let args = self.compile_args_for(callee, args);
                     format!("{}({})", self.call_name(callee), args)
                 } else {
+                    let args_str = self.compile_values(args);
                     format!("{}({})", self.call_name(callee), args_str)
                 }
             }
@@ -141,16 +144,23 @@ impl Codegen {
             }
             ExprNode::If { cond, then_branch, else_branch } => {
                 let cond_str = self.compile_expr(cond);
-                let then_str = self.compile_expr(then_branch);
                 if let Some(else_b) = else_branch {
+                    let then_str = self.compile_expr(then_branch);
                     let else_str = self.compile_expr(else_b);
                     format!("if {} {} else {}", cond_str, then_str, else_str)
                 } else {
-                    format!("if {} {}", cond_str, then_str)
+                    // Without `else` there is no value on the false path, so the branch is
+                    // a statement: its last call's result is discarded, not the `if`'s value.
+                    format!("if {} {}", cond_str, self.compile_statement_body(then_branch))
                 }
             }
             ExprNode::ModuleCall { module_local_name, function, args } => {
-                let args_str = args.iter().map(|a| self.compile_expr(a)).collect::<Vec<String>>().join(", ");
+                // Every callee here owns its arguments — a host method, a guest's import,
+                // a module function, a serverlet's message — so a caller's binding is
+                // copied and is still there after the call, on every boundary.
+                let is_foreign_with_handles = self.modules.contains(module_local_name)
+                    && self.foreign_handle_params.contains_key(&format!("{}::{}", module_local_name, function));
+                let args_str = if is_foreign_with_handles { String::new() } else { self.compile_values(args) };
 
                 let is_host_call = self.host_functions.iter().any(|(g, h)| g == module_local_name && h.name == *function);
                 if let (Some(granted), true) = (&self.sandbox_guest_grants, is_host_call) {
@@ -188,11 +198,7 @@ impl Codegen {
                     }
                 } else {
                     self.require_async(&format!("calls '{}.{}', which waits for the serverlet to reply", module_local_name, function));
-                    // The client method owns its arguments, since they become the
-                    // message; a caller's binding is copied so it is still there after
-                    // the call, on every boundary, without the message changing.
-                    let owned_args = args.iter().map(|a| self.compile_owned_arg(a)).collect::<Vec<String>>().join(", ");
-                    format!("{}.{}({}).await", self.read_name(module_local_name), rust_ident(function), owned_args)
+                    format!("{}.{}({}).await", self.place_name(module_local_name), rust_ident(function), args_str)
                 }
             }
             ExprNode::StartServerlet { name, args } => {
@@ -202,7 +208,7 @@ impl Codegen {
                 } else {
                     format!("start_{}", name)
                 };
-                let args_str = args.iter().map(|a| self.compile_expr(a)).collect::<Vec<String>>().join(", ");
+                let args_str = self.compile_values(args);
                 format!("{}({})", start_fn, args_str)
             }
             ExprNode::AutomaticBlock { body, restart_policy, crash_handler } => {
@@ -374,33 +380,33 @@ impl Codegen {
                 if target_str.starts_with("__program.") { format!("({})()", target_str) } else { format!("{}()", target_str) }
             }
             ExprNode::ArrayLiteral(elements) => {
-                let elems_str = elements.iter().map(|e| self.compile_expr(e)).collect::<Vec<String>>().join(", ");
+                let elems_str = self.compile_values(elements);
                 format!("vec![{}]", elems_str)
             }
             ExprNode::StructLiteral { name, fields } => {
                 let fields_str = fields.iter()
-                    .map(|(fname, val)| format!("    {}: {},", rust_ident(fname), self.compile_expr(val)))
+                    .map(|(fname, val)| format!("    {}: {},", rust_ident(fname), self.compile_value(val)))
                     .collect::<Vec<_>>()
                     .join("\n");
                 format!("{} {{\n{}\n}}", rust_ident(name), fields_str)
             }
-            ExprNode::FieldAccess { object, field } => {
-                format!("{}.{}", self.compile_expr(object), rust_ident(field))
-            }
+            // A field is read where its struct lives, not from a copy of the whole struct;
+            // where the value is taken, `compile_value` copies the field itself.
+            ExprNode::FieldAccess { .. } => self.compile_place(expr),
             // Error handling expressions
             ExprNode::NoneLiteral => "None".to_string(),
             ExprNode::SomeLiteral(inner) => {
-                format!("Some({})", self.compile_expr(inner))
+                format!("Some({})", self.compile_value(inner))
             }
             ExprNode::OkLiteral(inner) => {
-                format!("Ok({})", self.compile_expr(inner))
+                format!("Ok({})", self.compile_value(inner))
             }
             ExprNode::ErrLiteral(msg) => {
-                format!("Err({})", self.compile_expr(msg))
+                format!("Err({})", self.compile_value(msg))
             }
             ExprNode::Propagate(inner) => {
                 // In async context, ? works directly on Result/Option
-                format!("({})? ", self.compile_expr(inner))
+                format!("({})? ", self.compile_value(inner))
             }
             ExprNode::TryCatch { body, err_name, err_type, handler } => {
                 let before = self.awaits;
@@ -427,12 +433,19 @@ impl Codegen {
             // Enum expressions
             ExprNode::EnumVariantLiteral { enum_name, variant_name, payload } => {
                 match payload {
-                    Some(p) => format!("{}::{}({})", rust_ident(enum_name), rust_ident(variant_name), self.compile_expr(p)),
+                    Some(p) => format!("{}::{}({})", rust_ident(enum_name), rust_ident(variant_name), self.compile_value(p)),
                     None => format!("{}::{}", rust_ident(enum_name), rust_ident(variant_name)),
                 }
             }
             ExprNode::Match { value, arms } => {
-                let val_str = self.compile_expr(value);
+                // An arm that binds takes the value it binds, so the subject is a copy; one
+                // that only compares reads it where it lives.
+                let binds = arms.iter().any(|arm| {
+                    let mut names = Vec::new();
+                    Self::pattern_bindings(&arm.pattern, &mut names);
+                    !names.is_empty()
+                });
+                let val_str = if binds { self.compile_value(value) } else { self.compile_place(value) };
                 // String literal patterns require matching on &str via .as_str()
                 let has_str_literal = arms.iter().any(|a| matches!(&a.pattern, MatchPattern::Literal(Literal::Str(_))));
                 let match_subject = if has_str_literal { format!("{}.as_str()", val_str) } else { val_str };
@@ -467,16 +480,38 @@ impl Codegen {
                     Some(rt) if *rt != Type::Void => format!(" -> {}", self.compile_type(rt)),
                     _ => String::new(),
                 };
+                // A closure captures copies of what it names from outside, taken when it is
+                // made, so the originals stay usable and the closure can run any number of
+                // times. A `shared let` is reached through the lock instead, as everywhere.
+                let mut free = HashSet::new();
+                let mut bound_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+                self.get_free_vars_expr(body, &mut bound_names, &mut free);
+                let mut free: Vec<String> = free.into_iter().filter(|name| !self.is_shared(name)).collect();
+                free.sort();
+                let capture = free.iter()
+                    .map(|name| format!("let {} = {}.clone(); ", rust_ident(name), self.read_name(name)))
+                    .collect::<String>();
                 self.push_scope();
+                for name in &free { self.define_local(name); }
                 for p in params { self.define_local(&p.name); }
                 // A closure may outlive the tick, so it cannot borrow the tick's bindings.
                 let bound = std::mem::replace(&mut self.context_bound, false);
                 let deferred = self.enter_deferred_body();
-                let body_str = self.compile_expr(body);
+                self.closure_depth += 1;
+                let body_str = if return_type.as_ref().is_some_and(|rt| *rt != Type::Void) {
+                    self.compile_expr(body)
+                } else {
+                    self.compile_statement_body(body)
+                };
+                self.closure_depth -= 1;
                 self.leave_deferred_body(deferred);
                 self.context_bound = bound;
                 self.pop_scope();
-                format!("move |{}|{} {}", params_str, ret_str, body_str)
+                if capture.is_empty() {
+                    format!("move |{}|{} {}", params_str, ret_str, body_str)
+                } else {
+                    format!("{{ {}move |{}|{} {} }}", capture, params_str, ret_str, body_str)
+                }
             }
             ExprNode::StringInterp { parts } => {
                 let mut fmt_str = String::new();
@@ -487,8 +522,9 @@ impl Codegen {
                             fmt_str.push_str(&s.replace('{', "{{").replace('}', "}}"));
                         }
                         StringPart::Expr(e) => {
+                            // `format!` borrows what it prints, so a binding is read in place.
                             fmt_str.push_str("{}");
-                            args.push(self.compile_expr(e));
+                            args.push(self.compile_place(e));
                         }
                     }
                 }
