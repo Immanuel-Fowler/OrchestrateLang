@@ -21,6 +21,13 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   inline, before. A program's own `fn` of the same name takes precedence.
 - **`clock_nanos()`**, on the same monotonic clock as `clock_micros`, whose resolution
   was the floor under every per-call measurement.
+- **`Scripts::handle_events()`** (and `handle_events_blocking`) handles a library's
+  queued events without running a tick hook. Events were handled only around ticks, so a
+  host could not tell a library anything between them.
+- **`orchestrate --version`** (also `-V` and `version`) prints the version and the commit
+  the compiler was built from; it was "Unknown command". `orchestrate --help | head -1`
+  panicked with a broken pipe once `head` closed it, and now stops quietly, as a
+  command-line tool does. Patch-level on its own, as a command that only reports.
 - **`start` and `on` can be names** where they cannot begin a start or a handler — a
   parameter called `start` was refused with "Expected parameter name". Any other keyword
   used as a name, and `none`, is refused with a message saying the word is reserved.

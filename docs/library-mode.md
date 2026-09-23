@@ -199,7 +199,11 @@ scripts.trigger_hit(3)?; // handled during the next tick or fixed tick
 `trigger_<event>` queues the event for that instance only, and returns an error after
 shutdown. Events fired by the host and by scripts (`trigger hit(3)`) wait in a
 per-instance queue that is handled in order before and after each tick and fixed tick.
-Queued events are never dropped.
+Queued events are never dropped. To have them handled between ticks — to tell the
+library something without running its tick hooks — call `handle_events().await` (or
+`handle_events_blocking(&runtime)`): it handles what is queued and runs no hook. Time
+does not advance there, so in deterministic mode a handler sleeping on host time stays
+queued until a tick moves the clock past its deadline.
 
 Each of those two passes handles the events that were queued when it started, and no
 more. An event a handler triggers is handled by the next pass — the one after the tick

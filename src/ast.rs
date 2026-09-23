@@ -438,7 +438,7 @@ pub fn walk_stmt<'a>(stmt: &'a Stmt, visit: &mut dyn FnMut(Node<'a>)) {
 
 fn walk_expr_inner<'a>(expr: &'a Expr, visit: &mut dyn FnMut(Node<'a>), deferred: bool) {
     visit(Node::Expr(expr));
-    let mut go = |e: &'a Expr, visit: &mut dyn FnMut(Node<'a>)| walk_expr_inner(e, visit, deferred);
+    let go = |e: &'a Expr, visit: &mut dyn FnMut(Node<'a>)| walk_expr_inner(e, visit, deferred);
     match &expr.node {
         ExprNode::Literal(_) | ExprNode::Identifier(_) | ExprNode::NoneLiteral => {}
         ExprNode::Unary { operand, .. } => go(operand, visit),
@@ -481,7 +481,7 @@ fn walk_expr_inner<'a>(expr: &'a Expr, visit: &mut dyn FnMut(Node<'a>), deferred
 
 fn walk_stmt_inner<'a>(stmt: &'a Stmt, visit: &mut dyn FnMut(Node<'a>), deferred: bool) {
     visit(Node::Stmt(stmt));
-    let mut go = |e: &'a Expr, visit: &mut dyn FnMut(Node<'a>)| walk_expr_inner(e, visit, deferred);
+    let go = |e: &'a Expr, visit: &mut dyn FnMut(Node<'a>)| walk_expr_inner(e, visit, deferred);
     match &stmt.node {
         StmtNode::Let { value, .. } | StmtNode::Expr(value) | StmtNode::Return(Some(value)) => go(value, visit),
         StmtNode::FnDecl { body, .. } | StmtNode::TaskDecl { body, .. } | StmtNode::ProcessDecl { body, .. }

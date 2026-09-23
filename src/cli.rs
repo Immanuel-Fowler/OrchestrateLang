@@ -25,6 +25,7 @@ fn print_help(invocation: &str) {
     println!();
     println!("FLAGS:");
     println!("  --help, -h                   Show this help message");
+    println!("  --version, -V                Show the version and the commit it was built from");
     println!();
     println!("ENVIRONMENT:");
     println!("  ORCH_SHOW_GENERATED=1        Print the generated Rust code before compiling");
@@ -50,6 +51,23 @@ fn parse_dependency_args(args: &[(&str, &str)]) -> Result<Vec<crate::dependencie
     Ok(dependencies)
 }
 
+/// Rust ignores SIGPIPE, so a write to a closed pipe — `orchestrate --help | head -1` —
+/// fails and `println!` panics on it. A command-line tool is expected to stop quietly
+/// there instead, which is what the signal's default does.
+fn restore_broken_pipe_default() {
+    #[cfg(unix)]
+    {
+        const SIGPIPE: i32 = 13;
+        const SIG_DFL: usize = 0;
+        unsafe extern "C" {
+            fn signal(signum: i32, handler: usize) -> usize;
+        }
+        // SAFETY: setting a signal's disposition to its default, at startup, before any
+        // thread exists that could be relying on it being ignored.
+        unsafe { signal(SIGPIPE, SIG_DFL); }
+    }
+}
+
 fn print_short_usage(invocation: &str) {
     println!("OrchestrateLang compiler");
     println!("Run '{} --help' for usage.", invocation);
@@ -58,6 +76,7 @@ fn print_short_usage(invocation: &str) {
 /// Dispatch one CLI invocation. `args` starts with the program name, as `env::args` yields it.
 /// `invocation` is how the user spelled the command, so help and errors echo it back.
 pub fn run(invocation: &str, args: &[String]) {
+    restore_broken_pipe_default();
     if args.len() < 2 {
         print_short_usage(invocation);
         std::process::exit(1);
@@ -192,6 +211,9 @@ pub fn run(invocation: &str, args: &[String]) {
                     std::process::exit(1);
                 }
             }
+        }
+        "--version" | "-V" | "version" => {
+            println!("OrchestrateLang compiler v{} (commit {})", env!("CARGO_PKG_VERSION"), env!("ORCH_COMMIT"));
         }
         "--help" | "-h" | "help" => {
             print_help(invocation);

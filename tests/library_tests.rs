@@ -442,6 +442,42 @@ fn main() {
     assert_eq!(output.trim(), "before: a true b false\nafter: a false b true");
 }
 
+/// A host can have its events handled between ticks, without running a tick hook: before
+/// `handle_events` an event waited for the next tick.
+#[test]
+fn library_events_are_handled_between_ticks() {
+    let root = root("events_between_ticks");
+    build(&root, r#"
+host world { fn record(n: int) }
+let total = 0
+on hit(n: int) {
+    total = total + n
+    world.record(total)
+}
+on_tick(dt: float) { world.record(-1) }
+orchestrator main() {}
+"#);
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<i64>>>);
+impl scripts::Host for Host { fn world_record(&self, n: i64) -> Result<(), String> { self.0.lock().unwrap().push(n); Ok(()) } }
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let mut scripts = scripts::start(runtime.handle(), Host(recorded.clone())).unwrap();
+    scripts.ready_blocking(&runtime).unwrap();
+    scripts.trigger_hit(3).unwrap();
+    scripts.trigger_hit(4).unwrap();
+    scripts.handle_events_blocking(&runtime).unwrap();
+    println!("{:?}", recorded.lock().unwrap());
+    scripts.tick_blocking(&runtime, 0.016).unwrap();
+    scripts.shutdown_blocking(&runtime).unwrap();
+    println!("{:?}", recorded.lock().unwrap());
+}
+"#);
+    assert_eq!(output.trim(), "[3, 7]\n[3, 7, -1]");
+}
+
 #[test]
 fn library_secret_and_drop_shutdown() {
     let root = root("secret");

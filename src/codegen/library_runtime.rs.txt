@@ -357,6 +357,7 @@ impl OrchContext {
 enum OrchCommand {
     Tick(f64@TICK_FIELD@, tokio::sync::oneshot::Sender<@TICK_OUTPUT@>),
     FixedTick(f64, tokio::sync::oneshot::Sender<()>),
+    Events(tokio::sync::oneshot::Sender<()>),
     Shutdown,
 }
 /// A tick polled on the calling thread: the instance is reachable through the thread for
@@ -435,6 +436,24 @@ impl Scripts {
     }
     pub fn fixed_tick_blocking(&mut self, runtime: &tokio::runtime::Runtime, step: f64) -> Result<(), String> {
         runtime.block_on(self.fixed_tick(step))
+    }
+
+    /// Handle the events queued so far — by `trigger_<event>`, or by the program's workers
+    /// and handlers — without running any tick hook, so a host can tell the library
+    /// something between ticks. Otherwise events are handled only around ticks. Time does
+    /// not advance, so in deterministic mode a handler sleeping on host time stays queued.
+    pub async fn handle_events(&mut self) -> Result<(), String> {
+        self.ready().await?;
+        if self.stop_requested() { return Err("orchestration requested stop".into()); }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.commands.send(OrchCommand::Events(tx)).map_err(|_| "library is stopped")?;
+        match rx.await {
+            Ok(()) => Ok(()),
+            Err(_) => Err(format!("event handling failed: {}", self.failure_reason().await)),
+        }
+    }
+    pub fn handle_events_blocking(&mut self, runtime: &tokio::runtime::Runtime) -> Result<(), String> {
+        runtime.block_on(self.handle_events())
     }
 
     /// Run the tick on the calling thread, with no coordinator task, command channel, park,

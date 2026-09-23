@@ -367,6 +367,11 @@ async fn __orch_entry(mut commands: tokio::sync::mpsc::UnboundedReceiver<OrchCom
                 let __program = __state.as_mut().expect("program state");
                 tokio::select! {{ biased; _ = __shutdown.changed() => break, _ = __orch_run_fixed_tick(&__context, __program, __dt) => {{ let _ = reply.send(()); }} }}
             }},
+            OrchCommand::Events(reply) => {{
+                let mut __state = __context.program.enter().await;
+                let __program = __state.as_mut().expect("program state");
+                tokio::select! {{ biased; _ = __shutdown.changed() => break, _ = async {{ if __context.events_pending() {{ __context.drain_events_with(__program).await; }} }} => {{ let _ = reply.send(()); }} }}
+            }},
             OrchCommand::Shutdown => break,
         }}
     }}
