@@ -90,7 +90,7 @@ Reading the results:
 ### Sample results
 
 
-One run on Apple M2 (macOS-15.3.2-arm64-arm-64bit, arm64), 2026-09-21T03:54:37+00:00, commit `afbc07fb4be4`. rustc 1.98.1 (48a229cea 2026-09-01); Python 3.12.7; wasmtime 37.0.3; TypeScript rung included. Round trips in microseconds unless the unit says otherwise; the state rungs are nanoseconds per statement. Your numbers will differ.
+One run on Apple M2 (macOS-15.3.2-arm64-arm-64bit, arm64), 2026-09-23T21:11:27+00:00, commit `d54e936d93e5` (dirty tree). rustc 1.98.1 (48a229cea 2026-09-01); Python 3.12.7; wasmtime 37.0.3; TypeScript rung included. Round trips in microseconds unless the unit says otherwise; the state rungs are nanoseconds per statement. Your numbers will differ.
 
 #### Payload sweep
 
@@ -98,21 +98,21 @@ Calls back to back, one caller.
 
 | Kind | Payload | Samples | p50 | p90 | p99 | max |
 |---|---|---:|---:|---:|---:|---:|
-| in-process | int | 2000 | 14 | 20 | 31 | 136 |
-| in-process | string-1KB | 2000 | 8 | 12 | 16 | 41 |
-| in-process | int[1000] | 2000 | 7 | 10 | 14 | 29 |
-| sandbox | int | 2000 | 7 | 15 | 31 | 43 |
-| sandbox | string-1KB | 2000 | 9 | 21 | 40 | 271 |
-| sandbox | int[1000] | 2000 | 13 | 18 | 45 | 140 |
-| secret | int | 2000 | 17 | 22 | 34 | 77 |
-| secret | string-1KB | 2000 | 17 | 22 | 34 | 96 |
-| secret | int[1000] | 2000 | 25 | 31 | 45 | 118 |
-| python | int | 2000 | 24 | 32 | 49 | 186 |
-| python | string-1KB | 2000 | 25 | 29 | 44 | 131 |
-| python | int[1000] | 2000 | 568 | 596 | 677 | 1114 |
-| typescript | int | 2000 | 45 | 54 | 69 | 649 |
-| typescript | string-1KB | 2000 | 47 | 57 | 73 | 535 |
-| typescript | int[1000] | 2000 | 314 | 1024 | 1393 | 2050 |
+| in-process | int | 2000 | 9 | 12 | 22 | 29 |
+| in-process | string-1KB | 2000 | 9 | 13 | 25 | 64 |
+| in-process | int[1000] | 2000 | 9 | 12 | 23 | 36 |
+| sandbox | int | 2000 | 9 | 13 | 22 | 39 |
+| sandbox | string-1KB | 2000 | 10 | 14 | 28 | 48 |
+| sandbox | int[1000] | 2000 | 12 | 15 | 21 | 70 |
+| secret | int | 2000 | 20 | 40 | 82 | 525 |
+| secret | string-1KB | 2000 | 19 | 31 | 39 | 58 |
+| secret | int[1000] | 2000 | 24 | 33 | 47 | 81 |
+| python | int | 2000 | 20 | 30 | 41 | 167 |
+| python | string-1KB | 2000 | 26 | 35 | 50 | 1551 |
+| python | int[1000] | 2000 | 607 | 634 | 670 | 715 |
+| typescript | int | 2000 | 46 | 59 | 79 | 713 |
+| typescript | string-1KB | 2000 | 48 | 61 | 84 | 585 |
+| typescript | int[1000] | 2000 | 328 | 1122 | 1648 | 5690 |
 
 #### Call-rate sweep
 
@@ -120,26 +120,26 @@ The `int` payload. At 100 Hz and 1 kHz the caller sleeps between calls; at 10 kH
 
 | Kind | Rate | Samples | p50 | p90 | p99 | max |
 |---|---|---:|---:|---:|---:|---:|
-| in-process | unpaced | 2000 | 14 | 20 | 31 | 136 |
-| in-process | 100hz | 300 | 33 | 48 | 113 | 379 |
-| in-process | 1khz | 1000 | 29 | 41 | 58 | 119 |
-| in-process | 10khz | 2000 | 7 | 11 | 42 | 416 |
-| sandbox | unpaced | 2000 | 7 | 15 | 31 | 43 |
-| sandbox | 100hz | 300 | 34 | 50 | 66 | 244 |
-| sandbox | 1khz | 1000 | 31 | 42 | 54 | 565 |
-| sandbox | 10khz | 2000 | 7 | 11 | 19 | 33 |
-| secret | unpaced | 2000 | 17 | 22 | 34 | 77 |
-| secret | 100hz | 300 | 60 | 92 | 128 | 152 |
-| secret | 1khz | 1000 | 50 | 73 | 104 | 1028 |
-| secret | 10khz | 2000 | 15 | 26 | 36 | 84 |
-| python | unpaced | 2000 | 24 | 32 | 49 | 186 |
-| python | 100hz | 300 | 85 | 141 | 241 | 629 |
-| python | 1khz | 1000 | 59 | 104 | 150 | 641 |
-| python | 10khz | 2000 | 19 | 28 | 38 | 50 |
-| typescript | unpaced | 2000 | 45 | 54 | 69 | 649 |
-| typescript | 100hz | 300 | 108 | 321 | 2631 | 4782 |
-| typescript | 1khz | 1000 | 92 | 202 | 457 | 17651 |
-| typescript | 10khz | 2000 | 41 | 50 | 67 | 331 |
+| in-process | unpaced | 2000 | 9 | 12 | 22 | 29 |
+| in-process | 100hz | 300 | 16 | 41 | 376 | 689 |
+| in-process | 1khz | 1000 | 11 | 24 | 59 | 489 |
+| in-process | 10khz | 2000 | 7 | 10 | 21 | 66 |
+| sandbox | unpaced | 2000 | 9 | 13 | 22 | 39 |
+| sandbox | 100hz | 300 | 18 | 54 | 2569 | 39062 |
+| sandbox | 1khz | 1000 | 11 | 15 | 64 | 148 |
+| sandbox | 10khz | 2000 | 7 | 21 | 71 | 209 |
+| secret | unpaced | 2000 | 20 | 40 | 82 | 525 |
+| secret | 100hz | 300 | 39 | 86 | 666 | 1353 |
+| secret | 1khz | 1000 | 24 | 66 | 193 | 1896 |
+| secret | 10khz | 2000 | 16 | 22 | 44 | 95 |
+| python | unpaced | 2000 | 20 | 30 | 41 | 167 |
+| python | 100hz | 300 | 61 | 87 | 254 | 340 |
+| python | 1khz | 1000 | 28 | 54 | 478 | 41401 |
+| python | 10khz | 2000 | 22 | 24 | 35 | 68 |
+| typescript | unpaced | 2000 | 46 | 59 | 79 | 713 |
+| typescript | 100hz | 300 | 93 | 134 | 239 | 278 |
+| typescript | 1khz | 1000 | 59 | 90 | 169 | 870 |
+| typescript | 10khz | 2000 | 43 | 51 | 72 | 462 |
 
 #### Concurrent callers
 
@@ -147,26 +147,26 @@ The `int` payload with 1, 2, 4, or 8 callers sharing one serverlet; each sample 
 
 | Kind | Rate | Samples | p50 | p90 | p99 | max |
 |---|---|---:|---:|---:|---:|---:|
-| in-process | callers-1 | 2000 | 14 | 20 | 31 | 136 |
-| in-process | callers-2 | 2000 | 9 | 14 | 20 | 34 |
-| in-process | callers-4 | 4000 | 10 | 15 | 21 | 31 |
-| in-process | callers-8 | 8000 | 6 | 14 | 21 | 42 |
-| sandbox | callers-1 | 2000 | 7 | 15 | 31 | 43 |
-| sandbox | callers-2 | 2000 | 9 | 14 | 17 | 26 |
-| sandbox | callers-4 | 4000 | 11 | 16 | 19 | 36 |
-| sandbox | callers-8 | 8000 | 7 | 15 | 23 | 34 |
-| secret | callers-1 | 2000 | 17 | 22 | 34 | 77 |
-| secret | callers-2 | 2000 | 20 | 26 | 35 | 63 |
-| secret | callers-4 | 4000 | 43 | 51 | 65 | 97 |
-| secret | callers-8 | 8000 | 87 | 99 | 111 | 157 |
-| python | callers-1 | 2000 | 24 | 32 | 49 | 186 |
-| python | callers-2 | 2000 | 31 | 35 | 46 | 64 |
-| python | callers-4 | 4000 | 64 | 73 | 83 | 247 |
-| python | callers-8 | 8000 | 129 | 142 | 174 | 4003 |
-| typescript | callers-1 | 2000 | 45 | 54 | 69 | 649 |
-| typescript | callers-2 | 2000 | 70 | 149 | 2291 | 16812 |
-| typescript | callers-4 | 4000 | 125 | 150 | 185 | 679 |
-| typescript | callers-8 | 8000 | 249 | 281 | 377 | 1116 |
+| in-process | callers-1 | 2000 | 9 | 12 | 22 | 29 |
+| in-process | callers-2 | 2000 | 10 | 15 | 24 | 33 |
+| in-process | callers-4 | 4000 | 10 | 16 | 23 | 42 |
+| in-process | callers-8 | 8000 | 12 | 19 | 27 | 106 |
+| sandbox | callers-1 | 2000 | 9 | 13 | 22 | 39 |
+| sandbox | callers-2 | 2000 | 12 | 30 | 323 | 1148 |
+| sandbox | callers-4 | 4000 | 24 | 65 | 196 | 426 |
+| sandbox | callers-8 | 8000 | 5 | 17 | 53 | 363 |
+| secret | callers-1 | 2000 | 20 | 40 | 82 | 525 |
+| secret | callers-2 | 2000 | 22 | 36 | 50 | 129 |
+| secret | callers-4 | 4000 | 47 | 63 | 79 | 129 |
+| secret | callers-8 | 8000 | 101 | 121 | 144 | 212 |
+| python | callers-1 | 2000 | 20 | 30 | 41 | 167 |
+| python | callers-2 | 2000 | 32 | 40 | 50 | 78 |
+| python | callers-4 | 4000 | 66 | 78 | 95 | 130 |
+| python | callers-8 | 8000 | 133 | 204 | 473 | 1645 |
+| typescript | callers-1 | 2000 | 46 | 59 | 79 | 713 |
+| typescript | callers-2 | 2000 | 86 | 170 | 287 | 987 |
+| typescript | callers-4 | 4000 | 155 | 189 | 356 | 837 |
+| typescript | callers-8 | 8000 | 303 | 347 | 470 | 1166 |
 
 #### State rungs
 
@@ -175,7 +175,7 @@ Nanoseconds per statement, each sample a batch of 1,000 statements; `loop-only` 
 | Kind | Samples | p50 | p90 | p99 | max |
 |---|---:|---:|---:|---:|---:|
 | local-let | 2000 | 0 | 0 | 1 | 1 |
-| shared-let | 2000 | 9 | 10 | 10 | 11 |
+| shared-let | 2000 | 10 | 10 | 11 | 32 |
 | loop-only | 2000 | 0 | 0 | 1 | 1 |
 
 ## tick_cost — library mode
@@ -193,19 +193,20 @@ a run, so medians overlap between cases within a few nanoseconds.
 ### Sample results
 
 
-One run on Apple M2 (macOS-15.3.2-arm64-arm-64bit, arm64), 2026-09-21T03:55:18+00:00, commit `afbc07fb4be4`. rustc 1.98.1 (48a229cea 2026-09-01). Nanoseconds per `tick_sync` on a current-thread runtime: the median of 21 rounds of 200,000 ticks, after 5 warm-up rounds. Your numbers will differ.
+One run on Apple M2 (macOS-15.3.2-arm64-arm-64bit, arm64), 2026-09-23T21:22:40+00:00, commit `667010a61e6f` (dirty tree). rustc 1.98.1 (48a229cea 2026-09-01). Nanoseconds per `tick_sync` on a current-thread runtime: the median of 21 rounds of 200,000 ticks, after 5 warm-up rounds. Your numbers will differ.
 
 | Case | ns per tick (median) | fastest round | p90 round |
 |---|---:|---:|---:|
-| host_method_alone | 1.97 | 1.96 | 1.99 |
-| empty | 6.16 | 6.06 | 6.35 |
-| one_call | 7.27 | 7.08 | 7.43 |
-| five_calls | 14.28 | 12.59 | 14.46 |
-| instance_let | 6.28 | 6.24 | 6.39 |
-| shared_let | 11.68 | 10.86 | 11.93 |
-| event | 211.34 | 196.99 | 226.94 |
+| host_method_alone | 2.09 | 2.01 | 2.23 |
+| empty | 7.25 | 6.91 | 7.39 |
+| one_call | 10.55 | 8.29 | 11.23 |
+| five_calls | 16.19 | 15.92 | 16.93 |
+| instance_let | 8.39 | 8.20 | 8.62 |
+| shared_let | 13.64 | 13.26 | 13.94 |
+| event | 234.49 | 217.57 | 244.99 |
+| measured | 111.75 | 109.79 | 115.19 |
 
-Derived from the fastest rounds, which move least between runs: an empty tick costs 6.06 ns; each host call in a tick costs 1.38 ns (five calls minus one, over four), against 1.96 ns for the trait method called through its vtable alone. The empty tick and the one-call tick are within noise of each other at this resolution.
+Derived from the fastest rounds, which move least between runs: an empty tick costs 6.91 ns; each host call in a tick costs 1.91 ns (five calls minus one, over four), against 2.01 ns for the trait method called through its vtable alone. The empty tick and the one-call tick are within noise of each other at this resolution. Measuring the one hook (`measure hooks`) costs 102.88 ns a tick: two clock readings and the tick's own, three histogram updates, and on one tick in sixteen two readings of the thread's CPU clock.
 
 Medians overlap between cases within a few nanoseconds: the OS moves the thread between core types and clock states during a run, which is why the fastest round is reported beside them. Run on an idle machine, and compare cases within one run.
 
@@ -221,18 +222,18 @@ code, by rustc against generated code (a leak, held to `KNOWN_LEAKS.txt` by the 
 ### Sample results
 
 
-89 deliberately invalid programs in `tests/error_cases/diagnostics/`, run on 2026-09-21T21:52:22+00:00 at commit `fe772dd51b4e` with OrchestrateLang compiler v0.15.0.
+121 deliberately invalid programs in `tests/error_cases/diagnostics/`, run on 2026-09-23T21:12:18+00:00 at commit `d54e936d93e5` with OrchestrateLang compiler v0.15.1.
 
 | Rejected by | Programs | Meaning |
 |---|---:|---|
-| `orchestrate check` | 89 | the typechecker's own error, before any code is generated |
+| `orchestrate check` | 121 | the typechecker's own error, before any code is generated |
 | build, before Cargo | 0 | codegen or the driver, still the compiler's own error |
 | Cargo, no rustc code | 0 | a `compile_error!` the generator planted, reported through Cargo |
 | rustc | 0 | leaked: a rustc error against generated code |
 | nothing | 0 | wrongly accepted |
 
-**89 of 89 invalid programs are rejected by `orchestrate check`.**
-89 of 89 are rejected as the compiler's own error before Cargo runs; 0 more are rejected through Cargo without a rustc error code; 0 leak a rustc error; 0 are wrongly accepted.
+**121 of 121 invalid programs are rejected by `orchestrate check`.**
+121 of 121 are rejected as the compiler's own error before Cargo runs; 0 more are rejected through Cargo without a rustc error code; 0 leak a rustc error; 0 are wrongly accepted.
 
 The per-case rows are in `benchmarks/results/diagnostics_coverage.md` after a run.
 
