@@ -209,7 +209,7 @@ fn stage_and_check(
     };
     let adapter = format!("import './bootstrap.ts';\nimport {{serve, type Context}} from './landline.ts';\nimport {import_name} from {import};\n{declarations}\ninterface Contract {{ {contract} }}\n{constructor}\nserve((context: Context): Contract => {factory}, {}, {}).catch(error => {{ console.error(error); process.exitCode = 1; }});\n", serde_json::to_string(&methods).unwrap(), serde_json::to_string(&schema).unwrap());
     fs::write(work.join("main.ts"), adapter).map_err(|e| e.to_string())?;
-    fs::write(work.join("platform.d.ts"), "declare module 'node:fs' { export function read(fd: number, buffer: Uint8Array, offset: number, length: number, position: null, callback: (error: Error | null, count: number) => void): void; export function readSync(fd: number, buffer: Uint8Array, offset: number, length: number, position: null): number; export function writeSync(fd: number, buffer: Uint8Array, offset: number, length: number): number; }\ndeclare var process: { exitCode: number };\n").map_err(|e| e.to_string())?;
+    fs::write(work.join("platform.d.ts"), PLATFORM_TYPES).map_err(|e| e.to_string())?;
     let mut config = serde_json::json!({"compilerOptions":{"target":"ES2022","module":"ESNext","moduleResolution":"bundler","strict":true,"noEmit":true,"allowImportingTsExtensions":true,"types":[],"skipLibCheck":true},"files":["main.ts","platform.d.ts"]});
     for ancestor in source.parent().unwrap().ancestors() {
         let project = ancestor.join("tsconfig.json");
@@ -267,6 +267,42 @@ fn stage_and_check(
     }
     Ok(Staged { source, work })
 }
+
+/// The Node APIs a landline or FFI source is checked against when its project brings no
+/// types of its own (no `tsconfig.json`, no `@types/bun` or `@types/node` beside it): the
+/// file and path functions both Bun and scriptc provide, beyond the three the runtime
+/// itself uses. A project that installs `@types/bun` or `@types/node`, or has a
+/// `tsconfig.json`, is checked against those instead.
+const PLATFORM_TYPES: &str = r#"declare module 'node:fs' {
+    export function read(fd: number, buffer: Uint8Array, offset: number, length: number, position: null, callback: (error: Error | null, count: number) => void): void;
+    export function readSync(fd: number, buffer: Uint8Array, offset: number, length: number, position?: number | null): number;
+    export function writeSync(fd: number, buffer: Uint8Array, offset: number, length: number, position?: number | null): number;
+    export function readFileSync(path: string | number, encoding: 'utf8' | 'utf-8'): string;
+    export function readFileSync(path: string | number, options: { encoding: 'utf8' | 'utf-8' }): string;
+    export function readFileSync(path: string | number): Uint8Array;
+    export function writeFileSync(path: string, data: string | Uint8Array, encoding?: 'utf8' | 'utf-8'): void;
+    export function appendFileSync(path: string, data: string): void;
+    export function existsSync(path: string): boolean;
+    export function mkdirSync(path: string, options?: { recursive?: boolean }): void;
+    export function readdirSync(path: string): string[];
+    export function unlinkSync(path: string): void;
+    export function renameSync(oldPath: string, newPath: string): void;
+    export function copyFileSync(source: string, destination: string): void;
+    export function openSync(path: string, flags: string): number;
+    export function closeSync(fd: number): void;
+}
+declare module 'node:path' {
+    export function join(...paths: string[]): string;
+    export function resolve(...paths: string[]): string;
+    export function dirname(path: string): string;
+    export function basename(path: string, suffix?: string): string;
+    export function extname(path: string): string;
+    export function isAbsolute(path: string): boolean;
+    export function relative(from: string, to: string): string;
+    export const sep: string;
+}
+declare var process: { exitCode: number; exit(code?: number): never; env: { [name: string]: string | undefined }; argv: string[]; cwd(): string };
+"#;
 
 /// Type-check a TypeScript source against its contract, without building an executable.
 pub fn check(
@@ -333,7 +369,7 @@ pub fn build(
     }
     if selection == "scriptc" {
         return Err(format!(
-            "scriptc could not compile the TypeScript adapter:\n{native_error}"
+            "scriptc could not compile the TypeScript adapter. The generated runtime dispatches calls by name, types the host context with `any`, and redirects console output away from the protocol's stdout, which scriptc's static subset does not compile; use backend: \"bun\" or \"auto\". scriptc said:\n{native_error}"
         ));
     }
     let result = Command::new(tool(&source, "ORCH_BUN", "bun"))
@@ -356,7 +392,7 @@ pub fn build(
         "[orchestrate] TypeScript {}: Bun compiled executable{}",
         source.display(),
         if selection == "auto" {
-            " (scriptc unavailable or unsupported; see native-diagnostic.txt)"
+            " (scriptc cannot compile the generated runtime, or is not installed; see native-diagnostic.txt)"
         } else {
             ""
         }

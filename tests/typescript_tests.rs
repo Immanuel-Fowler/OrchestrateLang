@@ -379,3 +379,34 @@ orchestrator main() {
     let lines: Vec<&str> = stdout.lines().filter(|l| !l.starts_with("[orchestrate]")).collect();
     assert_eq!(lines, vec!["s!", "2", "3"], "stdout: {stdout}");
 }
+
+/// With no types of its own, a landline is checked against more of `node:fs` than the
+/// three functions the runtime uses, so one that reads a file with `readFileSync` checks;
+/// it failed with TS2724 before.
+#[test]
+fn typescript_landline_checks_against_node_fs_without_project_types() {
+    if !available() {
+        return;
+    }
+    let root = root("node_fs_types");
+    fs::write(root.join("reader.ts"), r#"
+import { readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+export default class Reader {
+    size(path: string): bigint {
+        const full = join(".", path);
+        return existsSync(full) ? BigInt(readFileSync(full, "utf8").length) : -1n;
+    }
+}
+"#).unwrap();
+    fs::write(root.join("main.orch"), r#"
+serverlet Reader via typescript(source: "reader.ts") { on size(path: string) -> int }
+orchestrator main() { let r = start Reader()  print(r.size("main.orch"))  stop_orch() }
+"#).unwrap();
+    let checked = Command::new(env!("CARGO_BIN_EXE_orchestrate"))
+        .arg("check-foreign")
+        .arg(root.join("main.orch"))
+        .output()
+        .unwrap();
+    success(&checked);
+}

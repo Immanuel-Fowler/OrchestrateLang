@@ -56,6 +56,16 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   wait is still one statement, and atomic.
 - **`load_foreign` in the entry file is refused with a message** saying foreign code goes
   in a module; it was accepted and then its functions were reported unknown.
+- **A TypeScript source is checked against more of `node:fs`, and `node:path`, when its
+  project brings no types.** The check saw only the three `node:fs` functions the
+  landline runtime itself uses, so a landline calling `readFileSync` failed with TS2724.
+  A project with a `tsconfig.json`, `@types/bun`, or `@types/node` is checked against
+  those, as before.
+- **scriptc is documented as unable to compile TypeScript landlines and FFI modules
+  today**, with why: the generated runtime dispatches calls by name, types the host
+  context with `any`, and redirects console output, all outside scriptc's static subset.
+  Every build used Bun anyway; the README said scriptc was tried first without saying it
+  never succeeds, and a forced `backend: "scriptc"` failed with only scriptc's output.
 - **`late: "latest"` is documented as per handler, with the rule it needs.** A late call
   returns the handler's most recent answer to any call, so a late `echo(2)` can return
   what `echo(1)` answered — what `latest` is for, a sampled signal whose arguments change

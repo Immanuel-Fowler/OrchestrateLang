@@ -5,6 +5,13 @@ implementation with TypeScript 7 before compiling it. The compiler first attempt
 `scriptc` for a native executable, then uses `bun build --compile` when the code or its
 wire types need Bun. The chosen backend is printed during the build.
 
+**In practice every build uses Bun today.** The generated runtime that carries calls
+between the host and your code dispatches them by name, types the host context with `any`,
+and redirects `console.log` away from the stdout the protocol uses — all outside
+scriptc's static subset (checked with scriptc 0.1.1). So `auto` tries scriptc, falls back
+to Bun, and writes scriptc's reasons to `native-diagnostic.txt`, and `backend: "scriptc"`
+fails with them. Your own code is not the obstacle; the runtime around it is.
+
 Install toolchain dependencies with Bun in the project that owns the TypeScript source:
 
 ```sh
@@ -14,6 +21,12 @@ bun add --dev typescript scriptc @types/bun
 The compiler finds `node_modules/.bin` by walking from the source directory. Set
 `ORCH_TSC`, `ORCH_SCRIPTC`, or `ORCH_BUN` to override a tool path. OrchestrateLang never
 installs packages while compiling.
+
+The TypeScript 7 check uses your project's types when it has them — a `tsconfig.json`, or
+`@types/bun` or `@types/node` installed beside the source — and otherwise a small set of
+Node declarations: `node:fs`'s file functions (`readFileSync`, `writeFileSync`,
+`existsSync`, `readdirSync`, and the like) and `node:path`. Install `@types/bun` for
+anything beyond those.
 
 The backend is chosen where the source is declared, so a file that needs Bun's runtime
 says so beside its path rather than in the environment:
