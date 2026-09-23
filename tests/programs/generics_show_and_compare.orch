@@ -1,0 +1,18 @@
+// A generic function may show, compare, or order its T: the check finds what its body
+// needs, the generated bounds say so, and a call must pass a type that has it.
+
+fn show<T>(x: T) -> string { return "<" + to_string(x) + ">" }
+fn same<T>(a: T, b: T) -> bool { return a == b }
+fn biggest<T>(xs: T[]) -> T {
+    let best = xs[0]
+    for x in xs { if x > best { best = x } }
+    return best
+}
+fn describe<T>(x: T) -> string { return show(x) }
+orchestrator main() {
+    print(show(3))
+    print(describe("hi"))
+    print(to_string(same([1, 2], [1, 2])))
+    print(to_string(biggest([3, 9, 4])))
+    stop_orch()
+}

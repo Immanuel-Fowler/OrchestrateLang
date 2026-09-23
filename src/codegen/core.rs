@@ -584,6 +584,9 @@ pub struct Codegen {
     pub struct_defs: Vec<(String, Vec<(String, Type)>)>,
     /// Each enum's payload types, by variant, for the derives that depend on them.
     pub enum_defs: Vec<(String, Vec<(String, Type)>)>,
+    /// Each enum's variants, for the crates that define their own copy: a sandbox guest
+    /// and a secret child.
+    pub enum_variants: Vec<(String, Vec<crate::ast::EnumVariant>)>,
     /// The file's sandbox struct codecs have been emitted; they are shared by every
     /// sandboxed serverlet in the file, so the first one emits them.
     pub(super) sandbox_codecs_emitted: bool,
@@ -617,6 +620,8 @@ pub struct Codegen {
     pub module_types: Vec<Stmt>,
     /// Whether any file in the program declares a serverlet with `every:`.
     pub has_cadenced: bool,
+    /// What each generic function's body needs of its type parameters, from the check.
+    pub generic_bounds: crate::typechecker::GenericBounds,
     /// The name a `let` is binding, while its value is compiled, for messages that name
     /// what they are about: a worker's restart report.
     pub(super) naming: Option<String>,
@@ -654,6 +659,7 @@ impl Codegen {
             sandbox_programs: Vec::new(),
             struct_defs: Vec::new(),
             enum_defs: Vec::new(),
+            enum_variants: Vec::new(),
             sandbox_codecs_emitted: false,
             handler_state: HashSet::new(),
             sandbox_guest_grants: None,
@@ -664,6 +670,7 @@ impl Codegen {
             top_level_handler: false,
             module_types: Vec::new(),
             has_cadenced: false,
+            generic_bounds: Default::default(),
             naming: None,
             user_functions: HashSet::new(),
         }
@@ -1518,10 +1525,16 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
             if !defs.iter().any(|(existing, _): &(String, _)| *existing == name) { defs.push((name, fields)); }
             defs
         });
-        self.enum_defs = stmts.iter().chain(if is_main { self.module_types.iter() } else { [].iter() }).filter_map(|s| match &s.node {
-            StmtNode::EnumDef { name, variants } => Some((name.clone(), variants.iter().filter_map(|v| v.payload.clone().map(|ty| (v.name.clone(), ty))).collect())),
+        self.enum_variants = stmts.iter().chain(if is_main { self.module_types.iter() } else { [].iter() }).filter_map(|s| match &s.node {
+            StmtNode::EnumDef { name, variants } => Some((name.clone(), variants.clone())),
             _ => None,
-        }).collect();
+        }).fold(Vec::new(), |mut defs, (name, variants)| {
+            if !defs.iter().any(|(existing, _): &(String, _)| *existing == name) { defs.push((name, variants)); }
+            defs
+        });
+        self.enum_defs = self.enum_variants.iter()
+            .map(|(name, variants)| (name.clone(), variants.iter().filter_map(|v| v.payload.clone().map(|ty| (v.name.clone(), ty))).collect()))
+            .collect();
         if self.has_secret {
             if self.library && !is_main {
                 // The wire impls are the root's, for every struct, since the trait is too.

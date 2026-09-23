@@ -1,0 +1,27 @@
+// A sandbox guest and a secret child are crates of their own, and get the file's structs
+// and enums — every one that means the same there: not one holding a client, which is an
+// address in this program only.
+
+enum Side { Buy, Sell }
+struct Order { side: Side, size: int }
+struct Quote { price: int, size: int }
+serverlet Book { on size() -> int { return 1 } }
+struct Desk { book: Book.client }
+serverlet Pricer sandbox(memory_limit: "8mb", timeout: "50ms") {
+    on quote(n: int) -> Quote { return Quote { price: n, size: 1 } }
+}
+orchestrator main() {
+    let o = Order { side: Side::Buy, size: 2 }
+    let p = start Pricer()
+    print(to_string(p.quote(3).price))
+    let c = start Counter()
+    print(to_string(c.side(4)))
+    stop_orch()
+}
+serverlet Counter secret {
+    on side(n: int) -> int {
+        let s = Side::Sell
+        let o = Order { side: s, size: n }
+        return o.size
+    }
+}

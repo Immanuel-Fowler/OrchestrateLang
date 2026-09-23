@@ -472,6 +472,14 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
         }
     }
 
+    // Each module's own check first: what its generic functions need of the types a call
+    // here passes is found there.
+    let checked_modules: Vec<(PathBuf, Vec<ast::Stmt>)> = modules_data.iter().map(|(_, stmts, path)| (path.clone(), stmts.clone())).collect();
+    let module_bounds = check_modules(&ast, &checked_modules)?;
+    for ((local_name, _, _), bounds) in modules_data.iter().zip(&module_bounds) {
+        type_checker.register_module_bounds(local_name, bounds);
+    }
+
     // Type checking phase (after modules are parsed and registered)
     type_checker.type_check(&ast).map_err(|e| {
         // Prefix each error line with "file:line:" so editors can make them clickable
@@ -488,9 +496,6 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
         format!("Type Error: {}", lines.join("\n"))
     })?;
 
-    let checked_modules: Vec<(PathBuf, Vec<ast::Stmt>)> = modules_data.iter().map(|(_, stmts, path)| (path.clone(), stmts.clone())).collect();
-    check_modules(&ast, &checked_modules)?;
-
     let bundle_dir = cache_dir.join("landlines");
     if bundle_dir.exists() { fs::remove_dir_all(&bundle_dir).map_err(|e| e.to_string())?; }
     stage_landlines(&ast, &bundle_dir)?;
@@ -501,8 +506,9 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
     let mut all_sandbox_programs: Vec<(String, String)> = Vec::new();
 
     let module_event_stmts = modules_data.iter().flat_map(|(_, stmts, _)| stmts.clone()).collect::<Vec<_>>();
-    for (local_name, module_stmts, module_path) in modules_data {
+    for ((local_name, module_stmts, module_path), bounds) in modules_data.into_iter().zip(module_bounds) {
         let mut generator = codegen::Codegen::new(all_tasks.clone());
+        generator.generic_bounds = bounds;
         generator.library = library.is_some();
         generator.serverlet_state_types = type_checker.serverlet_state.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         generator.host_functions = host_functions.clone();
@@ -613,6 +619,7 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
         println!("[orchestrate] host runtime needs Tokio's IO driver: {}", io_driver_users.join(", "));
     }
     let mut generator = codegen::Codegen::new(all_tasks);
+    generator.generic_bounds = type_checker.generic_bounds.clone();
     generator.library = library.is_some();
     generator.serverlet_state_types = type_checker.serverlet_state.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     generator.host_functions = host_functions;
@@ -969,16 +976,19 @@ fn library_rules(input_file: &str, ast: &[ast::Stmt], modules: &[&[ast::Stmt]], 
         // A module has no instance state of its own for a handler to reach.
         typechecker::TypeChecker::check_captured_writes(stmts, false)?;
     }
-    for stmt in ast.iter().chain(modules.iter().flat_map(|stmts| stmts.iter())) {
+    // Where each statement is, for the rules below: the entry file, or one of its modules.
+    let located = ast.iter().map(|stmt| (input_file, stmt))
+        .chain(modules.iter().flat_map(|stmts| stmts.iter().map(|stmt| ("an imported module", stmt))));
+    for (file, stmt) in located {
         if !library && matches!(&stmt.node, ast::StmtNode::Host { .. } | ast::StmtNode::OnTick { .. } | ast::StmtNode::OnFixedTick { .. }) {
-            return Err("host and on_tick require build --lib; check such a program with check --lib".into());
+            return Err(format!("{}:line {}, col {}: host and on_tick require build --lib; check such a program with check --lib", file, stmt.span.line, stmt.span.col));
         }
         if let ast::StmtNode::Serverlet { name, landline, sandbox, .. } = &stmt.node {
             let every = landline.as_ref().and_then(|c| c.every_micros).or(sandbox.as_ref().and_then(|c| c.every_micros));
             if !library && every.is_some() {
                 return Err(format!(
-                    "serverlet '{}': `every:` counts host time, the sum of the dt a library's host passes each tick, so it needs build --lib (and check --lib). In a standalone program, call it from a worker declared `automatic(every: \"...\")`, which runs on wall time",
-                    name
+                    "{}:line {}, col {}: serverlet '{}': `every:` counts host time, the sum of the dt a library's host passes each tick, so it needs build --lib (and check --lib). In a standalone program, call it from a worker declared `automatic(every: \"...\")`, which runs on wall time",
+                    file, stmt.span.line, stmt.span.col, name
                 ));
             }
         }
@@ -986,7 +996,7 @@ fn library_rules(input_file: &str, ast: &[ast::Stmt], modules: &[&[ast::Stmt]], 
             let mut seen = std::collections::HashSet::new();
             for grant in grants {
                 if !library || !seen.insert(grant) || !host_functions.iter().any(|(g,h)| format!("{}.{}", g, h.name) == *grant) {
-                    return Err(format!("Unknown or duplicate host grant '{}' (host grants require build --lib, and check --lib)", grant));
+                    return Err(format!("{}:line {}, col {}: Unknown or duplicate host grant '{}' (host grants require build --lib, and check --lib)", file, stmt.span.line, stmt.span.col, grant));
                 }
             }
         }
@@ -1060,6 +1070,7 @@ pub fn run_check(input_file: &str, library: bool) -> Result<(), String> {
 
     // Register modules for type-checking (no codegen)
     let mut modules: Vec<(PathBuf, Vec<ast::Stmt>)> = Vec::new();
+    let mut aliases: Vec<String> = Vec::new();
     for stmt in &ast {
         if let ast::StmtNode::UseModule { local_name, module_name } = &stmt.node {
             let module_path = if let Some(resolved) = prom::resolve_module(module_name)? {
@@ -1073,12 +1084,15 @@ pub fn run_check(input_file: &str, library: bool) -> Result<(), String> {
             type_checker.register_module_functions(local_name, &module_stmts);
             register_module_sidecars(&mut type_checker, local_name, &module_path, &module_stmts)?;
             modules.push((module_path, module_stmts));
+            aliases.push(local_name.clone());
         }
     }
 
+    let module_bounds = check_modules(&ast, &modules)?;
+    for (alias, bounds) in aliases.iter().zip(&module_bounds) {
+        type_checker.register_module_bounds(alias, bounds);
+    }
     type_checker.type_check(&ast).map_err(|e| type_error_in(input_file, &e))?;
-
-    check_modules(&ast, &modules)?;
 
     let module_stmts: Vec<&[ast::Stmt]> = modules.iter().map(|(_, stmts)| stmts.as_slice()).collect();
     library_rules(input_file, &ast, &module_stmts, library)?;
@@ -1092,7 +1106,7 @@ pub fn run_check(input_file: &str, library: bool) -> Result<(), String> {
 /// codegen, during a build. Its foreign functions are callable by their bare names inside
 /// it, and the entry file's `host` groups are in scope, since a module's grants name them:
 /// the build resolves them there, and so does this. `check` and the build both call it.
-fn check_modules(entry: &[ast::Stmt], modules: &[(PathBuf, Vec<ast::Stmt>)]) -> Result<(), String> {
+fn check_modules(entry: &[ast::Stmt], modules: &[(PathBuf, Vec<ast::Stmt>)]) -> Result<Vec<typechecker::GenericBounds>, String> {
     // A struct or enum is one type by name, however many files declare it, so every
     // declaration of a name must say the same thing.
     let mut declared: std::collections::HashMap<String, (String, &ast::StmtNode)> = std::collections::HashMap::new();
@@ -1115,6 +1129,7 @@ fn check_modules(entry: &[ast::Stmt], modules: &[(PathBuf, Vec<ast::Stmt>)]) -> 
             }
         }
     }
+    let mut bounds = Vec::new();
     for (module_path, module_stmts) in modules {
         let mut module_checker = typechecker::TypeChecker::new();
         register_module_sidecars(&mut module_checker, MODULE_SELF, module_path, module_stmts)?;
@@ -1124,8 +1139,9 @@ fn check_modules(entry: &[ast::Stmt], modules: &[(PathBuf, Vec<ast::Stmt>)]) -> 
         module_checker
             .type_check(module_stmts)
             .map_err(|e| type_error_in(&file.to_string_lossy(), &e))?;
+        bounds.push(module_checker.generic_bounds);
     }
-    Ok(())
+    Ok(bounds)
 }
 
 /// A C-ABI sidecar's signatures, and, for C and C++, the `[build]` section after them.

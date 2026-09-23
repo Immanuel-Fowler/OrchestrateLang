@@ -1131,6 +1131,50 @@ fn main() {
     assert_eq!(output.trim(), "[1, 5, 5, 4, 8, 5]");
 }
 
+/// A cadenced serverlet declared in a module: its instances register from the module's
+/// code, and `latest(...)` in the entry file reads them.
+#[test]
+fn library_module_serverlet_cadence() {
+    let root = root("module_cadence");
+    fs::create_dir_all(root.join("plan")).unwrap();
+    fs::write(root.join("plan/module.orch"), r#"
+serverlet Planner sandbox(memory_limit: "8mb", timeout: "50ms", every: "100ms") {
+    let n = 0
+    on tick(dt: float) -> int {
+        n = n + 1
+        return n
+    }
+}
+"#).unwrap();
+    build(&root, r#"
+use module plan: "./plan"
+host world { fn record(n: int) }
+let planner = start plan.Planner()
+on_tick(dt: float) {
+    match latest(planner.tick) {
+        result::Ok(v) => world.record(v)
+        result::Err(why) => world.record(0)
+    }
+}
+orchestrator main() {}
+"#);
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<i64>>>);
+impl scripts::Host for Host { fn world_record(&self, n: i64) -> Result<(), String> { self.0.lock().unwrap().push(n); Ok(()) } }
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let mut scripts = scripts::start(runtime.handle(), Host(recorded.clone())).unwrap();
+    scripts.ready_blocking(&runtime).unwrap();
+    for _ in 0..12 { scripts.tick_sync(&runtime, 0.02).unwrap(); }
+    scripts.shutdown_blocking(&runtime).unwrap();
+    println!("{:?}", recorded.lock().unwrap());
+}
+"#);
+    assert_eq!(output.trim(), "[1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3]");
+}
+
 /// A cadence is a divisor of the host's clock. Over 10,000 ticks of varying `dt`, a
 /// sandboxed serverlet declared `every: "100ms"`, a hook `every "250ms"`, and a hook
 /// `every 7 ticks` each run exactly as often as a schedule computed here from the same

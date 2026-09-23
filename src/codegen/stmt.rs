@@ -1,12 +1,21 @@
 use crate::ast::{Expr, ExprNode, StmtNode, Stmt, Type, Handler};
 use super::core::{Codegen, StateRewrite, pascal_case, rust_ident, runtime_preamble, SECRET_CHILD_FRAMES};
 
-fn type_params_str(type_params: &[String]) -> String {
+/// A generic function's type parameters with their bounds: what every one needs, and what
+/// its body needs of it — to be shown, compared, or ordered — as the check found.
+fn type_params_str(type_params: &[String], needs: Option<&std::collections::BTreeMap<String, std::collections::BTreeSet<&'static str>>>) -> String {
     if type_params.is_empty() {
         String::new()
     } else {
         let bounds = type_params.iter()
-            .map(|t| format!("{}: Clone + std::fmt::Debug + Send + Sync + 'static", t))
+            .map(|t| {
+                let extra = needs.and_then(|needs| needs.get(t)).map(|bounds| bounds.iter().map(|bound| match *bound {
+                    "Display" => " + std::fmt::Display",
+                    "PartialEq" => " + PartialEq",
+                    _ => " + PartialOrd",
+                }).collect::<String>()).unwrap_or_default();
+                format!("{}: Clone + std::fmt::Debug + Send + Sync + 'static{}", t, extra)
+            })
             .collect::<Vec<_>>()
             .join(", ");
         format!("<{}>", bounds)
@@ -110,7 +119,7 @@ impl Codegen {
                 }
             }
             StmtNode::FnDecl { name, params, return_type, body, type_params } => {
-                let generics = type_params_str(type_params);
+                let generics = type_params_str(type_params, self.generic_bounds.get(name.as_str()));
                 let params_str = params.iter()
                     .map(|p| format!("{}: {}", rust_ident(&p.name), self.compile_type(&p.ty)))
                     .collect::<Vec<String>>()
@@ -134,7 +143,7 @@ impl Codegen {
                 format!("{}fn {}{}({}){} {}", vis, rust_ident(name), generics, params_str, ret_str, body_str)
             }
             StmtNode::TaskDecl { name, params, return_type, body, type_params } => {
-                let generics = type_params_str(type_params);
+                let generics = type_params_str(type_params, self.generic_bounds.get(name.as_str()));
                 let params_str = params.iter()
                     .map(|p| format!("{}: {}", rust_ident(&p.name), self.compile_type(&p.ty)))
                     .collect::<Vec<String>>()
@@ -156,7 +165,7 @@ impl Codegen {
                 format!("{}async fn {}{}({}){} {}", vis, rust_ident(name), generics, params_str, ret_str, body_str)
             }
             StmtNode::ProcessDecl { name, params, return_type, body, type_params } => {
-                let generics = type_params_str(type_params);
+                let generics = type_params_str(type_params, self.generic_bounds.get(name.as_str()));
                 let params_str = params.iter()
                     .map(|p| format!("{}: {}", rust_ident(&p.name), self.compile_type(&p.ty)))
                     .collect::<Vec<String>>()
@@ -576,17 +585,7 @@ impl Codegen {
                     .join("\n");
                 format!("#[derive({})]\n#[repr(C)]\npub struct {} {{\n{}\n}}", struct_derives(name, &self.struct_defs, &self.enum_defs), rust_ident(name), fields_str)
             }
-            StmtNode::EnumDef { name, variants } => {
-                let variants_str = variants.iter().map(|v| {
-                    match &v.payload {
-                        Some(ty) => format!("    {}({}),", rust_ident(&v.name), self.compile_type(ty)),
-                        None => format!("    {},", rust_ident(&v.name)),
-                    }
-                }).collect::<Vec<_>>().join("\n");
-                // An enum compares when every payload does, so `side == Side::Buy` works.
-                let derives = if has_equality(&Type::Named(name.clone()), &self.struct_defs, &self.enum_defs) { "Clone, Debug, PartialEq" } else { "Clone, Debug" };
-                format!("#[derive({})]\npub enum {} {{\n{}\n}}", derives, rust_ident(name), variants_str)
-            }
+            StmtNode::EnumDef { name, variants } => self.enum_definition(name, variants),
         }
     }
 
@@ -1021,18 +1020,9 @@ impl Codegen {
 
         self.handler_state.clear();
 
-        // The child is its own program, so it needs the struct definitions (and wire impls)
-        // its handlers can use.
-        let structs = self.struct_defs.iter()
-            .filter(|(sname, _)| wire_supported(&Type::Named(sname.clone()), &self.struct_defs, 0))
-            .map(|(sname, fields)| {
-                let fields_str = fields.iter()
-                    .map(|(fname, fty)| format!("    pub {}: {},", rust_ident(fname), self.compile_type(fty)))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                format!("#[derive({})]\n#[repr(C)]\npub struct {} {{\n{}\n}}\n", struct_derives(sname, &self.struct_defs, &self.enum_defs), rust_ident(sname), fields_str)
-            })
-            .collect::<String>() + &wire_struct_impls(&self.struct_defs);
+        // The child is its own program, so it needs the struct and enum definitions its
+        // handlers can use, and the wire impls for the ones that cross.
+        let structs = self.standalone_type_definitions() + &wire_struct_impls(&self.struct_defs);
 
         format!(
 "// Generated by Orchestrate Compiler — secret serverlet '{name}'\n#![allow(unused_variables)]\n#![allow(dead_code)]\n#![allow(unused_imports)]\n#![allow(unused_parens)]\n#![allow(unused_mut)]\n\n{preamble}\n{frames}\n{wire}\n{structs}\nfn main() {{\n    let __stdin = std::io::stdin();\n    let mut __reader = std::io::BufReader::new(__stdin.lock());\n    let __stdout = std::io::stdout();\n    let mut __writer = std::io::BufWriter::new(__stdout.lock());\n\n{state}\n\n    let mut __hello = Vec::new();\n    ORCH_WIRE_VERSION.wire_encode(&mut __hello);\n    let __signatures: Vec<String> = vec![{sigs}];\n    __signatures.wire_encode(&mut __hello);\n    if __frame_write(&mut __writer, ORCH_KIND_HELLO, 0, &__hello).is_err() {{ return; }}\n    match __frame_read(&mut __reader) {{\n        Ok(Some(f)) if f.kind == ORCH_KIND_READY && f.call_id == 0 && f.payload.is_empty() => {{}},\n        _ => return,\n    }}\n    while let Ok(Some(__frame)) = __frame_read(&mut __reader) {{\n        if __frame.kind == ORCH_KIND_BYE {{ break; }}\n        let __result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<Vec<u8>, String> {{\n            if __frame.kind != ORCH_KIND_CALL {{ return Err(\"expected CALL\".to_string()); }}\n            let mut __pos = 0usize;\n            let __idx = i64::wire_decode(&__frame.payload, &mut __pos).ok_or_else(|| \"missing handler id\".to_string())?;\n            match __idx {{\n{arms}\n                _ => Err(\"unknown handler id\".to_string()),\n            }}\n        }}));\n        let (__kind, __payload) = match __result {{\n            Ok(Ok(value)) => (ORCH_KIND_REPLY, value),\n            Ok(Err(message)) => (ORCH_KIND_ERROR, __wire_to_bytes(&message)),\n            Err(e) => (ORCH_KIND_ERROR, __wire_to_bytes(&__panic_message(&e))),\n        }};\n        if __frame_write(&mut __writer, __kind, __frame.call_id, &__payload).is_err() {{ break; }}\n    }}\n}}\n",
@@ -1049,6 +1039,40 @@ impl Codegen {
 }
 
 impl Codegen {
+    fn enum_definition(&self, name: &str, variants: &[crate::ast::EnumVariant]) -> String {
+        let variants_str = variants.iter().map(|v| {
+            match &v.payload {
+                Some(ty) => format!("    {}({}),", rust_ident(&v.name), self.compile_type(ty)),
+                None => format!("    {},", rust_ident(&v.name)),
+            }
+        }).collect::<Vec<_>>().join("\n");
+        // An enum compares when every payload does, so `side == Side::Buy` works.
+        let derives = if has_equality(&Type::Named(name.to_string()), &self.struct_defs, &self.enum_defs) { "Clone, Debug, PartialEq" } else { "Clone, Debug" };
+        format!("#[derive({})]\npub enum {} {{\n{}\n}}\n", derives, rust_ident(name), variants_str)
+    }
+
+    /// The file's structs and enums for a crate of its own — a sandbox guest, a secret
+    /// child — which a handler body may use: each one that stands on its own there. One
+    /// holding a client, a process, a function, or a handle names something that exists
+    /// only in the program, so it is left out; a handler cannot hold one anyway.
+    fn standalone_type_definitions(&self) -> String {
+        let mut code = String::new();
+        for (name, fields) in &self.struct_defs {
+            if !stands_alone(&Type::Named(name.clone()), &self.struct_defs, &self.enum_defs) { continue; }
+            let fields_str = fields.iter()
+                .map(|(fname, fty)| format!("    pub {}: {},", rust_ident(fname), self.compile_type(fty)))
+                .collect::<Vec<_>>()
+                .join("\n");
+            code.push_str(&format!("#[derive({})]\n#[repr(C)]\npub struct {} {{\n{}\n}}\n", struct_derives(name, &self.struct_defs, &self.enum_defs), rust_ident(name), fields_str));
+        }
+        for (name, variants) in &self.enum_variants {
+            if stands_alone(&Type::Named(name.clone()), &self.struct_defs, &self.enum_defs) {
+                code.push_str(&self.enum_definition(name, variants));
+            }
+        }
+        code
+    }
+
     /// A cadenced serverlet's `start_X()`: the client it returns is also registered with the
     /// runtime, which calls its `tick` when due and keeps the answer. The registry holds the
     /// client's sender weakly, so the instance still stops when the program's last client
@@ -1567,17 +1591,9 @@ impl Codegen {
             ""
         };
 
-        // Every struct in the file, so a handler body or the state can use any of them;
-        // the codecs, for the ones that can cross.
-        let structs = self.struct_defs.iter()
-            .map(|(sname, sfields)| {
-                let fields_str = sfields.iter()
-                    .map(|(fname, fty)| format!("    pub {}: {},", rust_ident(fname), self.compile_type(fty)))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                format!("#[derive({})]\n#[repr(C)]\npub struct {} {{\n{}\n}}\n", struct_derives(sname, &self.struct_defs, &self.enum_defs), rust_ident(sname), fields_str)
-            })
-            .collect::<String>() + &sandbox_struct_codecs(&self.struct_defs);
+        // The file's structs and enums, so a handler body or the state can use them; the
+        // codecs, for the ones that can cross.
+        let structs = self.standalone_type_definitions() + &sandbox_struct_codecs(&self.struct_defs);
 
         format!(
 "// Generated by Orchestrate Compiler — sandbox guest for serverlet '{name}'\n\
@@ -1821,6 +1837,23 @@ pub(crate) fn shareable(ty: &Type) -> bool {
 /// Whether `print`, `to_string`, and `{...}` in a string can show a value of a type.
 pub(crate) fn has_display(ty: &Type) -> bool {
     matches!(ty, Type::Int | Type::Float | Type::Str | Type::Bool | Type::TypeParam(_))
+}
+
+/// Whether a type means the same in a crate of its own as in the program: data, not a
+/// client, a process, a function, or a handle.
+fn stands_alone(ty: &Type, structs: &StructDefs, enums: &StructDefs) -> bool {
+    fn go(ty: &Type, structs: &StructDefs, enums: &StructDefs, depth: usize) -> bool {
+        match ty {
+            Type::Int | Type::Float | Type::Str | Type::Bool | Type::Void => true,
+            Type::Array(inner, _) | Type::Option(inner) => go(inner, structs, enums, depth + 1),
+            Type::Result(a, b) | Type::Map(a, b) => go(a, structs, enums, depth + 1) && go(b, structs, enums, depth + 1),
+            Type::Named(name) if depth <= 32 => structs.iter().chain(enums.iter())
+                .find(|(n, _)| n == name)
+                .is_some_and(|(_, fields)| fields.iter().all(|(_, field)| go(field, structs, enums, depth + 1))),
+            _ => false,
+        }
+    }
+    go(ty, structs, enums, 0)
 }
 
 /// A struct's derives: `Default` when every field has a default, and `PartialEq` when

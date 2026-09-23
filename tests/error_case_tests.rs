@@ -136,6 +136,8 @@ fn test_error_cases() {
     assert_check_fails("diagnostics/for_over_a_map.orch", "loop over keys(m) or values(m)");
     assert_check_fails("diagnostics/method_on_a_non_client.orch", "only a serverlet client has handlers");
     assert_check_fails("diagnostics/client_to_a_secret_handler.orch", "means nothing in another");
+    // A generic function that shows its T passes that need on to its callers.
+    assert_check_fails("diagnostics/generic_shows_a_struct.orch", "describe() shows its T, and P cannot be");
     assert_check_lib_fails("latest_without_cadence.orch", "has no cadence, so nothing calls its tick");
     assert_check_lib_fails("cadenced_typed_tick.orch", "a hook with `every` cannot take an input or return a value");
     assert_check_lib_fails("library_body_writes_state.orch", "the orchestrator body assigns to 'count'");

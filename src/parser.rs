@@ -183,13 +183,14 @@ impl Parser {
             let return_type = if self.match_token(TokenKind::Arrow) { self.parse_type()? } else { Type::Void };
             if fixed && return_type != Type::Void { return Err("on_fixed_tick cannot return a value".into()); }
             let every = self.parse_hook_cadence()?;
+            // The body is read before the error is reported, so recovery resumes after it.
+            let body = self.parse_block()?;
             if every.is_some() && (input.is_some() || return_type != Type::Void) {
                 return Err(format!(
                     "line {}, col {}: a hook with `every` cannot take an input or return a value: the host passes those to the one on_tick it calls on every tick",
                     span.line, span.col
                 ));
             }
-            let body = self.parse_block()?;
             if fixed { StmtNode::OnFixedTick { param, every, body } } else { StmtNode::OnTick { param, input, return_type, every, body } }
         } else if self.match_token(TokenKind::Use) {
             self.parse_use_statement()?
@@ -1094,6 +1095,7 @@ impl Parser {
                     current_literal.clear();
                 }
                 i += 1;
+                let expr_start = i;
                 let mut expr_src = String::new();
                 let mut depth = 1usize;
                 while i < chars.len() {
@@ -1114,8 +1116,14 @@ impl Parser {
                 i += 1; // consume closing }
                 // Re-lex and re-parse the inner expression
                 let mut inner_lexer = crate::lexer::Lexer::new(&expr_src);
-                let inner_tokens = inner_lexer.tokenize()
+                let mut inner_tokens = inner_lexer.tokenize()
                     .map_err(|e| format!("Error in string interpolation at line {}: {}", base_span.line, e))?;
+                // Positions in the file, not in the snippet: the snippet starts one column
+                // past the quote plus its offset in the string, on the string's line.
+                for token in &mut inner_tokens {
+                    if token.line == 1 { token.col += base_span.col + expr_start; }
+                    token.line += base_span.line - 1;
+                }
                 let mut inner_parser = Parser::new(inner_tokens);
                 let inner_expr = inner_parser.parse_expression(Precedence::Lowest)
                     .map_err(|e| format!("Error in string interpolation at line {}: {}", base_span.line, e))?;

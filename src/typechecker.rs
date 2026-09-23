@@ -1,6 +1,18 @@
 use std::collections::{HashMap, HashSet};
 use crate::ast::{EnumVariant, ExprNode, MatchPattern, StmtNode, BinaryOp, Expr, Literal, Stmt, StringPart, Type};
 
+/// What each generic function needs of its type parameters, by function and parameter.
+pub type GenericBounds = HashMap<String, std::collections::BTreeMap<String, std::collections::BTreeSet<&'static str>>>;
+
+/// A call to a generic function: what it passed for each type parameter, and from where.
+struct GenericCall {
+    callee: String,
+    passed: HashMap<String, Type>,
+    caller: Option<String>,
+    line: usize,
+    col: usize,
+}
+
 pub struct TypeChecker {
     env: Vec<HashMap<String, Type>>,
     functions: HashMap<String, (Vec<Type>, Type)>,
@@ -24,6 +36,14 @@ pub struct TypeChecker {
     var_serverlet: HashMap<String, String>,
     /// Serverlets declared with `every:`, whose `tick` the runtime calls on a cadence.
     cadenced: HashSet<String>,
+    /// What each generic function's body needs of its type parameters — `Display` to show
+    /// one, `PartialEq` to compare with `==`, `PartialOrd` to order — for codegen's bounds
+    /// and for the calls that pass a type.
+    pub generic_bounds: GenericBounds,
+    /// The generic function whose body is being checked, and its type parameters.
+    current_generic: Option<(String, Vec<String>)>,
+    /// Calls to generic functions, checked against their bounds once every body is known.
+    generic_calls: Vec<GenericCall>,
     /// Events declared by an `on name(...)` block, so `trigger` can be checked.
     declared_events: HashMap<String, Vec<Type>>,
     /// While a sandboxed serverlet's handlers are checked: its name and the host
@@ -68,6 +88,9 @@ impl TypeChecker {
             serverlet_names: HashSet::new(),
             var_serverlet: HashMap::new(),
             cadenced: HashSet::new(),
+            generic_bounds: HashMap::new(),
+            current_generic: None,
+            generic_calls: Vec::new(),
             declared_events: HashMap::new(),
             sandbox_grants: None,
             module_aliases: HashSet::new(),
@@ -224,9 +247,88 @@ impl TypeChecker {
             }
         }
         if errors.is_empty() {
+            if let Err(e) = self.check_generic_calls() {
+                errors.push(e);
+            }
+        }
+        if errors.is_empty() {
             Ok(())
         } else {
             Err(errors.join("\n"))
+        }
+    }
+
+    /// Records that the generic function being checked needs `bound` of every type
+    /// parameter `ty` mentions.
+    fn require_bound(&mut self, ty: &Type, bound: &'static str) {
+        let Some((function, params)) = &self.current_generic else { return };
+        let mut mentioned = Vec::new();
+        Self::type_params_in(ty, &mut mentioned);
+        for param in mentioned.into_iter().filter(|p| params.contains(p)) {
+            self.generic_bounds.entry(function.clone()).or_default().entry(param).or_default().insert(bound);
+        }
+    }
+
+    fn type_params_in(ty: &Type, out: &mut Vec<String>) {
+        match ty {
+            Type::TypeParam(name) => out.push(name.clone()),
+            Type::Array(inner, _) | Type::Option(inner) => Self::type_params_in(inner, out),
+            Type::Result(a, b) | Type::Map(a, b) => { Self::type_params_in(a, out); Self::type_params_in(b, out); }
+            Type::Fn(params, ret) => { for p in params { Self::type_params_in(p, out); } Self::type_params_in(ret, out); }
+            _ => {}
+        }
+    }
+
+    /// Each call to a generic function passes types that have what its body needs: a
+    /// generic caller passing its own parameter needs the same of it, until nothing new is
+    /// learned; then a concrete type that lacks one is refused at the call.
+    fn check_generic_calls(&mut self) -> Result<(), String> {
+        loop {
+            let mut learned = false;
+            for call in &self.generic_calls {
+                let (Some(caller), Some(needs)) = (&call.caller, self.generic_bounds.get(&call.callee).cloned()) else { continue };
+                for (param, bounds) in needs {
+                    let Some(passed) = call.passed.get(&param) else { continue };
+                    let mut mentioned = Vec::new();
+                    Self::type_params_in(passed, &mut mentioned);
+                    for mentioned in mentioned {
+                        let entry = self.generic_bounds.entry(caller.clone()).or_default().entry(mentioned).or_default();
+                        for bound in &bounds {
+                            learned |= entry.insert(bound);
+                        }
+                    }
+                }
+            }
+            if !learned { break; }
+        }
+        let (structs, enums) = self.type_defs();
+        for call in &self.generic_calls {
+            let Some(needs) = self.generic_bounds.get(&call.callee) else { continue };
+            for (param, bounds) in needs {
+                let Some(passed) = call.passed.get(param) else { continue };
+                for bound in bounds {
+                    let (has, does) = match *bound {
+                        "Display" => (crate::codegen::stmt::has_display(passed), "shows"),
+                        "PartialEq" => (crate::codegen::stmt::has_equality(passed, &structs, &enums), "compares with `==`"),
+                        _ => (crate::codegen::stmt::has_order(passed), "orders"),
+                    };
+                    if !has {
+                        return Err(format!(
+                            "line {}, col {}: {}() {} its {}, and {} cannot be: pass a value that can, or show or compare a field of it",
+                            call.line, call.col, call.callee, does, param, passed.display_name()
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// What a module's generic functions need of their type parameters, as its own check
+    /// found, so a call from here passes types that have it.
+    pub fn register_module_bounds(&mut self, alias: &str, bounds: &GenericBounds) {
+        for (function, params) in bounds {
+            self.generic_bounds.insert(format!("{}::{}", alias, function), params.clone());
         }
     }
 
@@ -250,13 +352,17 @@ impl TypeChecker {
                     self.tasks.insert(full_name.clone());
                     self.functions.insert(full_name, (param_types, return_type.clone()));
                 }
-                StmtNode::Serverlet { name: serverlet_name, handlers, .. } => {
+                StmtNode::Serverlet { name: serverlet_name, handlers, landline, sandbox, .. } => {
                     for h in handlers {
                         let param_types: Vec<Type> = h.params.iter().map(|p| p.ty.clone()).collect();
                         let alias_name = format!("{}::{}", alias, h.name);
                         let direct_name = format!("{}::{}", serverlet_name, h.name);
                         self.functions.insert(alias_name, (param_types.clone(), h.return_type.clone()));
                         self.functions.insert(direct_name, (param_types, h.return_type.clone()));
+                    }
+                    // A module's cadenced serverlet, for `latest(...)` on its clients here.
+                    if landline.as_ref().and_then(|c| c.every_micros).or(sandbox.as_ref().and_then(|c| c.every_micros)).is_some() {
+                        self.cadenced.insert(format!("{}::{}", alias, serverlet_name));
                     }
                 }
                 StmtNode::EnumDef { name, variants } => {
@@ -1087,6 +1193,7 @@ impl TypeChecker {
             StmtNode::FnDecl { name, params, body, return_type, type_params, .. } => {
                 let prev_return = self.current_return_type.clone();
                 self.current_return_type = Some(return_type.clone());
+                let prev_generic = std::mem::replace(&mut self.current_generic, (!type_params.is_empty()).then(|| (name.clone(), type_params.clone())));
                 self.push_env();
                 for tp in type_params {
                     self.define_var(tp.clone(), Type::TypeParam(tp.clone()));
@@ -1094,7 +1201,9 @@ impl TypeChecker {
                 for p in params {
                     self.define_var(p.name.clone(), p.ty.clone());
                 }
-                let body_ty = self.infer_expr(body)?;
+                let body_ty = self.infer_expr(body);
+                self.current_generic = prev_generic;
+                let body_ty = body_ty?;
                 self.pop_env();
                 self.current_return_type = prev_return;
                 Self::check_body_returns("function", name, return_type, body, body_ty, stmt.span.line, stmt.span.col)?;
@@ -1111,6 +1220,7 @@ impl TypeChecker {
             StmtNode::ProcessDecl { name, params, body, return_type, type_params, .. } => {
                 let prev_return = self.current_return_type.clone();
                 self.current_return_type = Some(return_type.clone());
+                let prev_generic = std::mem::replace(&mut self.current_generic, (!type_params.is_empty()).then(|| (name.clone(), type_params.clone())));
                 self.push_env();
                 for tp in type_params {
                     self.define_var(tp.clone(), Type::TypeParam(tp.clone()));
@@ -1118,7 +1228,9 @@ impl TypeChecker {
                 for p in params {
                     self.define_var(p.name.clone(), p.ty.clone());
                 }
-                let body_ty = self.infer_expr(body)?;
+                let body_ty = self.infer_expr(body);
+                self.current_generic = prev_generic;
+                let body_ty = body_ty?;
                 self.pop_env();
                 self.current_return_type = prev_return;
                 Self::check_body_returns("task", name, return_type, body, body_ty, stmt.span.line, stmt.span.col)?;
@@ -1228,10 +1340,12 @@ impl TypeChecker {
             StmtNode::UseModule { .. } | StmtNode::Load { .. } | StmtNode::LoadForeign { .. } |
             StmtNode::StructDef { .. } | StmtNode::EnumDef { .. } => {}
             StmtNode::Serverlet { name: serverlet, state, handlers, crash_handler, landline, grants, sandbox, secret } => {
+                // The declaration's own position, for the rules about the declaration.
+                let at = |message: String| format!("line {}, col {}: {}", stmt.span.line, stmt.span.col, message);
                 let mut seen = HashSet::new();
                 for grant in grants {
                     if !seen.insert(grant) || !self.functions.contains_key(&grant.replace(".", "::")) || !self.host_groups.contains(grant.split('.').next().unwrap()) {
-                        return Err(format!("Unknown or duplicate host grant '{}'", grant));
+                        return Err(at(format!("Unknown or duplicate host grant '{}'", grant)));
                     }
                 }
                 // Two handlers with one name would be two variants of one enum in the
@@ -1239,23 +1353,23 @@ impl TypeChecker {
                 let mut names = HashSet::new();
                 for h in handlers {
                     if !names.insert(&h.name) {
-                        return Err(format!("serverlet '{}' declares handler '{}' more than once", serverlet, h.name));
+                        return Err(at(format!("serverlet '{}' declares handler '{}' more than once", serverlet, h.name)));
                     }
                     // A call that fails answers a `result` handler with `err` and a message
                     // saying why, so the error a handler carries is a string.
                     if let Type::Result(ok, error) = &h.return_type {
                         if **error != Type::Str {
-                            return Err(format!(
+                            return Err(at(format!(
                                 "serverlet '{}': handler '{}' returns {}; a handler's result carries its error as a string, which is also how a call that fails says why. Declare it `-> result<{}>` and put the error's details in the message",
                                 serverlet, h.name, h.return_type.display_name(), ok.display_name()
-                            ));
+                            )));
                         }
                     }
                 }
                 if *secret {
                     let structs = self.struct_defs.iter().map(|(n, f)| (n.clone(), f.clone())).collect::<Vec<_>>();
                     if let Some(reason) = crate::codegen::stmt::handler_wire_unsupported_reason(handlers, &structs) {
-                        return Err(format!("secret serverlet '{}': {}", serverlet, reason));
+                        return Err(at(format!("secret serverlet '{}': {}", serverlet, reason)));
                     }
                 }
                 if sandbox.is_some() {
@@ -1263,13 +1377,13 @@ impl TypeChecker {
                     // it and the report is the compiler's own.
                     let structs = self.struct_defs.iter().map(|(n, f)| (n.clone(), f.clone())).collect::<Vec<_>>();
                     if let Some(reason) = crate::codegen::stmt::sandbox_unsupported_reason(serverlet, handlers, &structs) {
-                        return Err(reason);
+                        return Err(at(reason));
                     }
                 }
                 if landline.is_some() {
                     let structs = self.struct_defs.iter().map(|(n, f)| (n.clone(), f.clone())).collect::<Vec<_>>();
                     if let Some(reason) = crate::codegen::stmt::handler_wire_unsupported_reason(handlers, &structs) {
-                        return Err(reason.replace("secret serverlets", "landline serverlets"));
+                        return Err(at(format!("landline serverlet '{}': {}", serverlet, reason.replace("secret serverlets", "landline serverlets"))));
                     }
                 }
                 // A serverlet with `every:` is called on its `tick`, with the host time since
@@ -1287,10 +1401,10 @@ impl TypeChecker {
                 let structs = self.struct_defs.iter().map(|(n, f)| (n.clone(), f.clone())).collect::<Vec<_>>();
                 for h in handlers {
                     if !crate::codegen::stmt::answers_failure(h) && !crate::codegen::stmt::has_default(&h.return_type, &structs) {
-                        return Err(format!(
+                        return Err(at(format!(
                             "serverlet '{}': handler '{}' returns {}, which has no default value to answer a call that fails with. Declare it `-> result<{}>`: its caller then gets `err` saying why when a call fails",
                             serverlet, h.name, h.return_type.display_name(), h.return_type.display_name()
-                        ));
+                        )));
                     }
                 }
                 self.push_env();
@@ -1363,8 +1477,7 @@ impl TypeChecker {
                                 }
                             }
                         });
-                        // The handler's own position: a name inside an interpolated string
-                        // carries the string's, not the file's.
+                        // The handler's own position, which says where `on_crash` is.
                         let span = handler_body.span;
                         if let Some(name) = used {
                             let (kind, place) = if *secret { ("secret", "the child") } else { ("sandboxed", "the guest") };
@@ -1383,7 +1496,9 @@ impl TypeChecker {
             }
             StmtNode::Host { functions, .. } => {
                 let structs = self.struct_defs.iter().map(|(n,f)| (n.clone(),f.clone())).collect::<Vec<_>>();
-                if let Some(reason) = crate::codegen::stmt::wire_unsupported_reason(functions, &structs) { return Err(reason); }
+                if let Some(reason) = crate::codegen::stmt::wire_unsupported_reason(functions, &structs) {
+                    return Err(format!("line {}, col {}: host function {}", stmt.span.line, stmt.span.col, reason));
+                }
             }
             StmtNode::OnTick { param, input, return_type, body, .. } => {
                 self.push_env();
@@ -1553,6 +1668,8 @@ impl TypeChecker {
                     }
                     // And a kind of thing that compares at all.
                     let ty = if matches!(lhs_ty, Type::TypeParam(_)) { &rhs_ty } else { &lhs_ty };
+                    let ty = &ty.clone();
+                    self.require_bound(ty, if [BinaryOp::Eq, BinaryOp::Ne].contains(op) { "PartialEq" } else { "PartialOrd" });
                     if [BinaryOp::Eq, BinaryOp::Ne].contains(op) {
                         let (structs, enums) = self.type_defs();
                         if !crate::codegen::stmt::has_equality(ty, &structs, &enums) {
@@ -1614,6 +1731,7 @@ impl TypeChecker {
                 }
                 if matches!(callee.as_str(), "print" | "to_string") {
                     for ty in &arg_types {
+                        self.require_bound(ty, "Display");
                         Self::check_display(callee, ty, expr.span.line, expr.span.col)?;
                     }
                 }
@@ -1751,6 +1869,13 @@ impl TypeChecker {
                             ))?;
                         }
                         let concrete_ret = self.substitute_type_params(&ret_ty, &subst);
+                        self.generic_calls.push(GenericCall {
+                            callee: callee.clone(),
+                            passed: subst,
+                            caller: self.current_generic.as_ref().map(|(name, _)| name.clone()),
+                            line: expr.span.line,
+                            col: expr.span.col,
+                        });
                         return Ok(concrete_ret);
                     }
                 }
@@ -1800,8 +1925,8 @@ impl TypeChecker {
                 for part in parts {
                     if let StringPart::Expr(e) = part {
                         let ty = self.infer_expr(e)?;
-                        // A name inside the string carries the string's position, not the file's.
-                        Self::check_display("a string's {...}", &ty, expr.span.line, expr.span.col)?;
+                        self.require_bound(&ty, "Display");
+                        Self::check_display("a string's {...}", &ty, e.span.line, e.span.col)?;
                     }
                 }
                 Ok(Type::Str)
@@ -1922,7 +2047,15 @@ impl TypeChecker {
                                 "line {}, col {}: {}.{} argument {}: {}", expr.span.line, expr.span.col, module_local_name, function, index + 1, conflict
                             ))?;
                         }
-                        return Ok(self.substitute_type_params(&ret_ty, &subst));
+                        let concrete_ret = self.substitute_type_params(&ret_ty, &subst);
+                        self.generic_calls.push(GenericCall {
+                            callee: alias_key.clone(),
+                            passed: subst,
+                            caller: self.current_generic.as_ref().map(|(name, _)| name.clone()),
+                            line: expr.span.line,
+                            col: expr.span.col,
+                        });
+                        return Ok(concrete_ret);
                     }
                     return Ok(ret_ty);
                 }

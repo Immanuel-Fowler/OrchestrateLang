@@ -1,0 +1,7 @@
+struct P { x: int }
+fn show<T>(x: T) -> string { return to_string(x) }
+fn describe<T>(x: T) -> string { return show(x) }
+orchestrator main() {
+    print(describe(P { x: 1 }))
+    stop_orch()
+}

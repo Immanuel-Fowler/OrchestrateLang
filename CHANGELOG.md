@@ -163,6 +163,25 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   write, which is why this release is a minor one.
 
 ### Fixed
+- **A generic function can show, compare, or order its `T`.** `to_string(x)` or `a == b`
+  on a type parameter passed `check` and reached rustc (E0277), since generated generic
+  functions were bound only by `Clone`, `Debug`, `Send`, and `Sync`. The check now finds
+  what a body needs of each parameter, codegen bounds it by that, a generic caller passing
+  its own parameter needs the same, and a call that passes a type without it is refused,
+  naming the function and the type. Test: `tests/programs/generics_show_and_compare.orch`;
+  corpus case `generic_shows_a_struct`.
+- **A sandbox guest and a secret child get the file's enums**, and every struct that
+  means the same outside the program. A guest took every struct and no enum, so a struct
+  holding an enum anywhere in the file broke the guest's build, as did one holding a
+  client; a secret child took only structs that cross the wire, so a handler could not
+  use an enum. Test: `tests/programs/guest_and_child_get_the_files_types.orch`.
+- **Names inside a string's `{...}` are reported where they are in the file**, not at
+  their position in the string's snippet.
+- **Diagnostics about a serverlet's declaration, a host function's types, and `host` or
+  `every:` in a standalone program give a file, line, and column.**
+- **A secret child whose start fails says how**: it exited before its handshake (with its
+  exit status), its handshake could not be read, or it sent something else. All three were
+  "it did not complete the handshake".
 - **`==` compares structs and enums**, which reached rustc (E0369): they derived only
   `Clone` and `Debug`. They derive `PartialEq` now when everything in them compares, so
   `side == Side::Buy` works; a comparison of something that cannot be compared — a client,

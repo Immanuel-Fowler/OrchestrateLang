@@ -427,7 +427,8 @@ pub fn ffi_bindings(
     } else {
         "crate::__orch_children_dir()"
     };
-    let mut code = format!("mod {module} {{\n{}\n", crate::codegen::core::WIRE_CODEC);
+    // The codec names the root's map type, as every other copy of it does.
+    let mut code = format!("mod {module} {{\n#[allow(unused_imports)]\nuse crate::OrchMap;\n{}\n", crate::codegen::core::WIRE_CODEC);
     code.push_str(include_str!("typescript_ffi.rs.txt"));
     let signatures = handlers
         .iter()
