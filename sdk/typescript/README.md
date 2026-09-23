@@ -73,7 +73,9 @@ export default class Counter {
 ```
 
 Handler methods must have the names and wire types declared in `.orch`. They may return a
-value or a `Promise`. The constructor may accept one context argument:
+value or a `Promise`. A handler declared `-> result<T>` is implemented as returning `T`:
+what it throws is its `err` (`err("Error: ...")`), and a crash or a missed budget is an
+`err` saying which, where any other handler's caller gets a default. The constructor may accept one context argument:
 
 ```ts
 type Context = {

@@ -1610,6 +1610,41 @@ let db_worker = automatic {
 orchestrator main(procs: process[]) { }
 ```
 
+#### When a Call Fails
+
+A call can fail without the handler answering: an in-process handler panics, a secret
+serverlet's child dies, a landline crashes or misses its budget, a sandboxed guest traps
+or runs past its timeout. A handler declared `-> result<T>` tells its caller so: the call
+answers `err` with a message saying what happened. Its own answers cross as themselves,
+`ok(value)` or its own `err`, so a caller can tell a real zero from a failure.
+
+```orchestrate
+serverlet Strategy sandbox(memory_limit: "16mb", timeout: "50ms") {
+    on decide(price: int, size: int) -> result<int> {
+        if size < 0 { return err("size cannot be negative") }
+        return ok(price / size)
+    }
+}
+
+orchestrator main() {
+    let strategy = start Strategy()
+    match strategy.decide(10, 0) {
+        result::Ok(order) => print("order " + to_string(order))
+        // A division by zero traps the guest: "wasm call 'Strategy::decide' failed: ..."
+        result::Err(why) => print("no order: " + why)
+    }
+    stop_orch()
+}
+```
+
+A handler that returns anything else answers a failed call with its return type's
+default — `0`, `""`, `false`, an empty array, a struct of those — and reports the failure
+on stderr and to `on_crash`. A type with no default, such as an enum, can only be returned
+as a `result`. The error a handler's `result` carries is a `string`, since that is also
+how a failed call says why. A Python or TypeScript landline implements a `result<T>`
+handler as returning `T`; what it raises or throws is its `err`. Every message, per
+boundary, is in `docs/limitations-notes.md`.
+
 #### Combining Serverlet + Loaded Sub-files
 
 Sub-files loaded into a module are available inside its serverlets. This lets you define helper logic in separate files and call it from within handlers:
@@ -1700,19 +1735,22 @@ into one directory never share a child.
 **v1 limitations:**
 
 - Handler parameters and returns support `int`, `float`, `bool`, `string`, arrays,
-  and structs declared in the same file with supported fields. Returns may also be `void`.
+  and structs declared in the same file with supported fields. Returns may also be `void`,
+  or `result<T>` of any of those.
 - Protocol v1 checks the version and ordered handler signatures at startup. Calls and
   replies carry matching IDs; closing the client sends a clean shutdown message.
-- A handler panic logs an error and returns the type’s default value. The child
-  continues serving; state mutations made before the panic are retained.
+- A handler panic logs an error and returns the type’s default value, or `err` from a
+  `result<T>` handler. The child continues serving; state mutations made before the
+  panic are retained.
 - A child that dies — killed, crashed, or exited — is noticed at the next call: `on_crash`,
   if declared, runs on the host with the reason bound, and a fresh child is started to
   serve that call. **Its state starts over**, as a restarted landline's does. A call that
-  was in flight when the child died returns its default. `on_crash` runs on the host, so it
+  was in flight when the child died returns its default, or `err` saying the child was
+  lost. `on_crash` runs on the host, so it
   cannot use the serverlet's state, which was in the child; `check` refuses that.
 - A child that cannot start — its binary missing, its handshake failed — is tried again at
   the first call after a short wait (100 ms, doubling to 5 s); calls in between return
-  their default, with a message on stderr.
+  their default, or `err` saying why it could not start, with a message on stderr.
 - A secret serverlet's handlers are self-contained: they may use built-ins and
   primitives but cannot call top-level or module functions from the parent program.
 - `print(...)` inside a secret serverlet writes to **stderr** (its stdout is the IPC
@@ -1768,18 +1806,21 @@ program, and runs each call through [wasmtime](https://wasmtime.dev).
 bounds a guest's compute, memory, and reach; it does not make its answers trustworthy.
 
 **A call that fails is contained too.** When a guest exceeds a limit or stops itself, the
-call is logged, the caller gets the return type's default, and the program keeps running.
-The guest is then replaced, because a trap abandons it mid-call rather than unwinding it
+call is logged, the caller gets the return type's default — or `err`, from a handler
+declared `-> result<T>` — and the program keeps running. The guest is then replaced, because a trap abandons it mid-call rather than unwinding it
 — which also means **a failed call resets the serverlet's state**.
 
 **Diagnostics.** The guest is given exactly two host functions, neither a capability: one
 that carries its own stderr out, so a panic or an allocation failure is reported as
 `[orchestrate] sandbox guest: ...`, and one that lets it stop itself. They exist so a
-contained failure can say what it was.
+contained failure can say what it was. A guest with a `result<T>` handler also imports a
+third, `orch_guest.answer_err`, which hands the host the message of an `err` the handler
+answered; it reaches nothing either.
 
 **What crosses the boundary.** Handler parameters and returns carry `int`, `float`,
 `bool`, `string`, `int[]`, `float[]`, `bool[]`, and structs whose fields are numbers,
-booleans, or such structs; a handler may also return nothing. That is the set the C ABI
+booleans, or such structs; a handler may also return nothing, or `result<T>` of any of
+those. That is the set the C ABI
 carries, under the same rules: an array crosses as a pointer and a count into the guest's
 memory, a struct as its `#[repr(C)]` bytes, and a string as a pointer and a length. What
 the host writes into the guest for a call, the host frees after the call; what the guest
@@ -1915,10 +1956,30 @@ the failed call, and restarts with fresh state. A startup failure is logged and 
 again after a backoff — 100 ms, doubling to 5 s — with calls in between answered by
 their default. There are no configurable restart policies for landlines yet.
 
+A handler declared `-> result<T>` answers each of those with `err` instead of a default
+(see [When a Call Fails](#when-a-call-fails)). Its implementation returns `T`; what it
+raises (`ValueError: size cannot be negative`) or throws (`Error: ...`) is its `err`, and
+is not logged, since it is the handler's answer:
+
+```orchestrate
+serverlet Strategy via python(source: "strategy.py", budget: "5ms") {
+    on decide(price: int, size: int) -> result<int>
+}
+```
+
+```python
+class Strategy(landline.Serverlet):
+    def decide(self, price: int, size: int) -> int:
+        if size <= 0:
+            raise ValueError("size must be positive")
+        return price // size
+```
+
 `budget: "2ms"` (units `us`, `ms`, `s`) bounds how long each call waits. A call with no
 reply in time returns right away: with `late: "drop"` (the default) it returns the
-default value, and with `late: "latest"` it returns the handler's most recent completed
-result, which a late reply replaces. A queued call whose caller has already given up is
+default value, or for a `result<T>` handler `err` saying it missed its budget, and with
+`late: "latest"` it returns the handler's most recent completed result, which a late
+reply replaces (`err` if there is none yet). A queued call whose caller has already given up is
 not sent. `late` requires `budget`. Pass arrays to handle many items in one call.
 
 **`latest` is per handler, not per argument.** It is the most recent answer the handler

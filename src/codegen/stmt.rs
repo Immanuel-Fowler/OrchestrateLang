@@ -351,6 +351,11 @@ impl Codegen {
                     // what runs the actor.
                     let await_expr = if h.return_type == Type::Void {
                         "let _ = self.actor.reply(reply_rx).await;".to_string()
+                    } else if answers_failure(h) {
+                        format!(
+                            "self.actor.reply(reply_rx).await.unwrap_or_else(|_| Err({:?}.to_string()))",
+                            format!("serverlet '{}' stopped before it answered '{}'", name, h.name)
+                        )
                     } else {
                         format!("self.actor.reply(reply_rx).await.unwrap_or_default()")
                     };
@@ -358,11 +363,18 @@ impl Codegen {
                     let budget = landline.as_ref().and_then(|config| config.budget_micros);
                     let body = if let Some(micros) = budget {
                         // A budgeted call returns early instead of waiting past its deadline.
+                        let missed = format!(
+                            "{:?}.to_string()",
+                            format!("landline '{}' handler '{}' missed its budget of {}", name, h.name, crate::ast::display_micros(micros))
+                        );
                         let fallback = match landline.as_ref().map(|config| config.late) {
+                            Some(crate::ast::LatePolicy::Latest) if answers_failure(h) => {
+                                format!("self.latest.{}.lock().unwrap().clone().unwrap_or_else(|| Err({}))", rust_ident(&h.name), missed)
+                            }
                             Some(crate::ast::LatePolicy::Latest) if h.return_type != Type::Void => {
                                 format!("self.latest.{}.lock().unwrap().clone().unwrap_or_default()", rust_ident(&h.name))
                             }
-                            _ => "Default::default()".to_string(),
+                            _ => failure_reply(h, &missed),
                         };
                         // A deterministic run ignores the budget, since a result that depends
                         // on wall time cannot replay; a host can also lift budgets itself.
@@ -421,10 +433,13 @@ impl Codegen {
 
                     let handler_name_str = &h.name;
 
+                    // The panic's own message, which `on_crash` binds and a `result` handler's
+                    // caller gets as its `err`.
+                    let failed = failure_reply(h, &format!("format!(\"serverlet '{name}' handler '{handler_name_str}' panicked: {{}}\", __panic_text)"));
                     let crash_recovery = if let Some((err_name, crash_body)) = crash_handler {
                         let crash_body_str = self.compile_expr(crash_body);
                         format!(
-                            "Err(__panic_err) => {{\n                    let {err_name} = format!(\"{{:?}}\", __panic_err);\n                    eprintln!(\"[orchestrate] serverlet '{name}' handler '{handler_name_str}' panicked: {{}}\", {err_name});\n                    {crash_body_str};\n                    let _ = reply_to.send(Default::default());\n                }}",
+                            "Err(__panic_err) => {{\n                    let __panic_text = __orch_panic_text(&*__panic_err);\n                    let {err_name} = __panic_text.clone();\n                    eprintln!(\"[orchestrate] serverlet '{name}' handler '{handler_name_str}' panicked: {{}}\", {err_name});\n                    {crash_body_str};\n                    let _ = reply_to.send({failed});\n                }}",
                             err_name = rust_ident(err_name),
                             name = name,
                             handler_name_str = handler_name_str,
@@ -432,15 +447,15 @@ impl Codegen {
                         )
                     } else {
                         format!(
-                            "Err(__panic_err) => {{\n                    eprintln!(\"[orchestrate] serverlet '{name}' handler '{handler_name_str}' panicked: {{:?}}\", __panic_err);\n                    let _ = reply_to.send(Default::default());\n                }}",
+                            "Err(__panic_err) => {{\n                    let __panic_text = __orch_panic_text(&*__panic_err);\n                    eprintln!(\"[orchestrate] serverlet '{name}' handler '{handler_name_str}' panicked: {{}}\", __panic_text);\n                    let _ = reply_to.send({failed});\n                }}",
                             name = name,
                             handler_name_str = handler_name_str,
                         )
                     };
 
                     match_arms.push(format!(
-                        "                {}Msg::{} {{ {} }} => {{\n                    #[allow(unused_mut)]\n                    let mut __handler = std::panic::AssertUnwindSafe(|| {{ {} }});\n                    match std::panic::catch_unwind(__handler) {{\n                        Ok(res) => {{ let _ = reply_to.send(res); }}\n                        {}\n                    }}\n                }}",
-                        name, variant_name, bindings_str, body_str, crash_recovery
+                        "                {}Msg::{} {{ {} }} => {{\n                    #[allow(unused_mut)]\n                    let mut __handler = std::panic::AssertUnwindSafe(||{} {{ {} }});\n                    match std::panic::catch_unwind(__handler) {{\n                        Ok(res) => {{ let _ = reply_to.send(res); }}\n                        {}\n                    }}\n                }}",
+                        name, variant_name, bindings_str, self.handler_return_annotation(h), body_str, crash_recovery
                     ));
                 }
 
@@ -505,7 +520,7 @@ impl Codegen {
                     .map(|(fname, fty)| format!("    pub {}: {},", rust_ident(fname), self.compile_type(fty)))
                     .collect::<Vec<_>>()
                     .join("\n");
-                format!("#[derive(Clone, Debug, Default)]\n#[repr(C)]\npub struct {} {{\n{}\n}}", rust_ident(name), fields_str)
+                format!("#[derive({})]\n#[repr(C)]\npub struct {} {{\n{}\n}}", struct_derives(name, &self.struct_defs), rust_ident(name), fields_str)
             }
             StmtNode::EnumDef { name, variants } => {
                 let variants_str = variants.iter().map(|v| {
@@ -799,7 +814,7 @@ impl Codegen {
     /// the first call after it dies — killed, crashed, or exited — with `on_crash`, if
     /// declared, run on the host each time it is lost. Its state starts over when it does.
     fn compile_secret_mirror(&mut self, name: &str, handlers: &[Handler], crash_handler: &Option<(String, Box<Expr>)>, state: &[Stmt]) -> String {
-        if let Some(reason) = wire_unsupported_reason(handlers, &self.struct_defs) {
+        if let Some(reason) = handler_wire_unsupported_reason(handlers, &self.struct_defs) {
             return format!("compile_error!(\"secret serverlet '{}': {}\");\n", name, reason);
         }
         // `on_crash` runs on the host, after the child is gone, with the reason bound; the
@@ -836,26 +851,35 @@ impl Codegen {
                 .map(|p| format!("                    {}.wire_encode(&mut __payload);\n", rust_ident(&p.name)))
                 .collect::<String>();
 
+            // A reply the host cannot read is a failed call, not an answer.
+            let unreadable = failure_reply(h, &format!("{:?}.to_string()", format!("secret serverlet '{}' handler '{}' answered with a reply that could not be read", name, h.name)));
             let decode = if h.return_type == Type::Void {
                 "()".to_string()
+            } else if answers_failure(h) {
+                format!("{{ let mut __p = 0usize; <{} as OrchWire>::wire_decode(&__f.payload, &mut __p).unwrap_or_else(|| {}) }}", self.compile_type(&h.return_type), unreadable)
             } else {
                 format!("{{ let mut __p = 0usize; <{} as OrchWire>::wire_decode(&__f.payload, &mut __p).unwrap_or_default() }}", self.compile_type(&h.return_type))
             };
+            // The child reports a handler that panicked, or a call it could not make, with
+            // an error frame; the child itself is fine.
+            let failed = failure_reply(h, &format!("format!(\"secret serverlet '{}' handler '{}' failed: {{}}\", __msg)", name, h.name));
+            let lost = failure_reply(h, "__why.clone()");
+            let not_running = failure_reply(h, &format!("format!(\"secret serverlet '{}' is not running: it could not start ({{}})\", __start_error)", name));
 
             arms.push(format!(
 "                {n}Msg::{v} {{ {b} }} => {{
                     __next_call = __next_call.wrapping_add(1);
                     let mut __payload = Vec::new();
                     {k}i64.wire_encode(&mut __payload);
-{args}                    let __call: Result<Option<_>, String> = async {{
+{args}                    let __call: Result<_, String> = async {{
                         __secret_write_frame(&mut *__cin, ORCH_KIND_CALL, __next_call, &__payload).await.map_err(|e| format!(\"it is not reachable: {{}}\", e))?;
                         match __secret_read_frame(&mut *__cout).await {{
-                            Ok(Some(__f)) if __f.kind == ORCH_KIND_REPLY && __f.call_id == __next_call => Ok(Some({dec})),
+                            Ok(Some(__f)) if __f.kind == ORCH_KIND_REPLY && __f.call_id == __next_call => Ok({dec}),
                             Ok(Some(__f)) if __f.kind == ORCH_KIND_ERROR && __f.call_id == __next_call => {{
                                 let mut __p = 0usize;
                                 let __msg: String = OrchWire::wire_decode(&__f.payload, &mut __p).unwrap_or_default();
                                 eprintln!(\"[orchestrate] secret serverlet '{n}' handler '{h}' failed: {{}}\", __msg);
-                                Ok(None)
+                                Ok({failed})
                             }}
                             Ok(None) => Err(\"it exited during the call\".to_string()),
                             Ok(Some(_)) => Err(\"it answered out of turn\".to_string()),
@@ -863,16 +887,17 @@ impl Codegen {
                         }}
                     }}.await;
                     match __call {{
-                        Ok(__value) => {{ let _ = reply_to.send(__value.unwrap_or_default()); }}
+                        Ok(__value) => {{ let _ = reply_to.send(__value); }}
                         Err(__detail) => {{
-                            let _ = reply_to.send(Default::default());
-                            __lost = Some(format!(\"secret serverlet '{n}' was lost during a call to '{h}': {{}}\", __detail));
+                            let __why = format!(\"secret serverlet '{n}' was lost during a call to '{h}': {{}}\", __detail);
+                            let _ = reply_to.send({lost});
+                            __lost = Some(__why);
                         }}
                     }}
                 }}",
-                n = name, v = variant, b = binding, k = k, h = h.name, args = encode_args, dec = decode
+                n = name, v = variant, b = binding, k = k, h = h.name, args = encode_args, dec = decode, failed = failed, lost = lost
             ));
-            default_arms.push(format!("                    {name}Msg::{variant} {{ reply_to, .. }} => {{ let _ = reply_to.send(Default::default()); }}"));
+            default_arms.push(format!("                    {name}Msg::{variant} {{ reply_to, .. }} => {{ let _ = reply_to.send({not_running}); }}"));
         }
 
         include_str!("secret_mirror.rs.txt")
@@ -896,7 +921,7 @@ impl Codegen {
     }
 
     fn compile_secret_program(&mut self, name: &str, state: &[Stmt], handlers: &[Handler]) -> String {
-        if let Some(reason) = wire_unsupported_reason(handlers, &self.struct_defs) {
+        if let Some(reason) = handler_wire_unsupported_reason(handlers, &self.struct_defs) {
             return format!("compile_error!(\"secret serverlet '{}': {}\");\n", name, reason);
         }
 
@@ -924,14 +949,16 @@ impl Codegen {
                 ));
             }
             let body = self.compile_handler_body(h);
+            // A `result<T>` handler's answer crosses whole, `ok` or `err`: an error frame
+            // is left to mean the call itself failed.
             let finish = if h.return_type == Type::Void {
                 "                        __handler();\n                        Ok(Vec::new())".to_string()
             } else {
                 "                        let __r = __handler();\n                        Ok(__wire_to_bytes(&__r))".to_string()
             };
             arms.push(format!(
-"                    {k}i64 => {{\n{args}\n                        if __pos != __frame.payload.len() {{ return Err(\"trailing arguments\".to_string()); }}\n                        #[allow(unused_mut)]\n                        let mut __handler = || {{ {body} }};\n{finish}\n                    }}",
-                k = k, args = arg_lets.join("\n"), body = body, finish = finish
+"                    {k}i64 => {{\n{args}\n                        if __pos != __frame.payload.len() {{ return Err(\"trailing arguments\".to_string()); }}\n                        #[allow(unused_mut)]\n                        let mut __handler = ||{returns} {{ {body} }};\n{finish}\n                    }}",
+                k = k, args = arg_lets.join("\n"), returns = self.handler_return_annotation(h), body = body, finish = finish
             ));
         }
 
@@ -946,7 +973,7 @@ impl Codegen {
                     .map(|(fname, fty)| format!("    pub {}: {},", rust_ident(fname), self.compile_type(fty)))
                     .collect::<Vec<_>>()
                     .join("\n");
-                format!("#[derive(Clone, Debug, Default)]\n#[repr(C)]\npub struct {} {{\n{}\n}}\n", rust_ident(sname), fields_str)
+                format!("#[derive({})]\n#[repr(C)]\npub struct {} {{\n{}\n}}\n", struct_derives(sname, &self.struct_defs), rust_ident(sname), fields_str)
             })
             .collect::<String>() + &wire_struct_impls(&self.struct_defs);
 
@@ -965,6 +992,12 @@ impl Codegen {
 }
 
 impl Codegen {
+    /// The return type a handler's closure is declared with, when inference needs it: a
+    /// `result` handler's body can use `?`, which cannot infer the type it returns from.
+    fn handler_return_annotation(&self, h: &Handler) -> String {
+        if answers_failure(h) { format!(" -> {}", self.compile_type(&h.return_type)) } else { String::new() }
+    }
+
     /// A serverlet handler's body: its final value is the reply, or, for a handler that
     /// returns nothing, discarded.
     fn compile_handler_body(&mut self, h: &Handler) -> String {
@@ -1015,10 +1048,10 @@ impl Codegen {
             }
             None => String::new(),
         };
-        let bail = format!("{{ eprintln!(\"[orchestrate] {{}}\", __error); __guest.reset();{crash} let _ = reply_to.send(Default::default()); continue; }}");
-        let bail = bail.as_str();
         let mut arms = Vec::new();
         for h in handlers {
+            let bail = format!("{{ eprintln!(\"[orchestrate] {{}}\", __error); __guest.reset();{crash} let _ = reply_to.send({}); continue; }}", failure_reply(h, "__error"));
+            let bail = bail.as_str();
             let variant = pascal_case(&h.name);
             let bindings = h
                 .params
@@ -1081,7 +1114,8 @@ impl Codegen {
                     }
                 }
             }
-            let results = match h.return_type {
+            let answered = answered_type(&h.return_type);
+            let results = match answered {
                 Type::Void => "()",
                 Type::Float => "f64",
                 Type::Bool => "i32",
@@ -1096,7 +1130,7 @@ impl Codegen {
                 1 => format!("{},", arguments[0]),
                 _ => arguments.join(", "),
             };
-            let convert = match &h.return_type {
+            let mut convert = match answered {
                 Type::Bool => "                    let __value = __value != 0;\n".to_string(),
                 Type::Str => format!("                    let __value = match __guest.read_string(__value) {{ Ok(__text) => __text, Err(__error) => {bail} }};\n"),
                 Type::Array(inner, _) => format!(
@@ -1109,6 +1143,10 @@ impl Codegen {
                 ),
                 _ => String::new(),
             };
+            // A `result` handler that answered `err` said so before returning.
+            if answers_failure(h) {
+                convert.push_str("                    let __value = match __guest.store.data_mut().answered_err.take() { Some(__why) => Err(__why), None => Ok(__value) };\n");
+            }
 
             arms.push(format!(
                 "                {name}Msg::{variant} {{ {bindings} }} => {{\n                    \
@@ -1383,7 +1421,8 @@ impl Codegen {
                     _ => params.push(format!("{}: {}", rust_ident(&p.name), self.compile_type(&p.ty))),
                 }
             }
-            let (returns, open, close) = match &h.return_type {
+            let answered = answered_type(&h.return_type);
+            let (returns, open, close) = match answered {
                 Type::Void => (String::new(), String::new(), String::new()),
                 Type::Str => (" -> i64".to_string(), "__orch_pack(".to_string(), ")".to_string()),
                 Type::Array(_, _) => (" -> i64".to_string(), "__orch_pack_array(".to_string(), ")".to_string()),
@@ -1395,21 +1434,39 @@ impl Codegen {
                 Type::Bool => (" -> i32".to_string(), "(".to_string(), ") as i32".to_string()),
                 other => (format!(" -> {}", self.compile_type(other)), String::new(), String::new()),
             };
+            // A `result<T>` handler returns its `T` as any handler would; an `err` is handed
+            // to the host first, and a default stands in for the value it did not have.
+            let run = if answers_failure(h) {
+                format!(
+                    "match __orch_state(|__state|{} {{ {} }}) {{ Ok(__answer) => __answer, Err(__why) => {{ __orch_answer_err(&__why); <{} as Default>::default() }} }}",
+                    self.handler_return_annotation(h), body, self.compile_type(answered)
+                )
+            } else {
+                format!("__orch_state(|__state| {{ {} }})", body)
+            };
             exports.push(format!(
-                "#[unsafe(export_name = {export:?})]\npub extern \"C\" fn {hname}({params}){returns} {{\n{unpack}    {open}__orch_state(|__state| {{ {body} }}){close}\n}}",
+                "#[unsafe(export_name = {export:?})]\npub extern \"C\" fn {hname}({params}){returns} {{\n{unpack}    {open}{run}{close}\n}}",
                 export = h.name,
                 hname = rust_ident(&h.name),
                 params = params.join(", "),
                 returns = returns,
                 unpack = unpack,
                 open = open,
-                body = body,
+                run = run,
                 close = close,
             ));
         }
 
         self.handler_state.clear();
         self.sandbox_guest_grants = None;
+        // The one import a `result` handler needs, and not a capability: it tells the host
+        // about the call it is answering, and reaches nothing.
+        let answer_err = if handlers.iter().any(answers_failure) {
+            "#[link(wasm_import_module = \"orch_guest\")]\nunsafe extern \"C\" {\n    #[link_name = \"answer_err\"]\n    fn __orch_import_answer_err(pointer: i32, length: i32);\n}\n\
+             fn __orch_answer_err(why: &str) {\n    unsafe { __orch_import_answer_err(why.as_ptr() as i32, why.len() as i32) }\n}\n\n"
+        } else {
+            ""
+        };
 
         // Every struct in the file, so a handler body or the state can use any of them;
         // the codecs, for the ones that can cross.
@@ -1419,7 +1476,7 @@ impl Codegen {
                     .map(|(fname, fty)| format!("    pub {}: {},", rust_ident(fname), self.compile_type(fty)))
                     .collect::<Vec<_>>()
                     .join("\n");
-                format!("#[derive(Clone, Debug, Default)]\n#[repr(C)]\npub struct {} {{\n{}\n}}\n", rust_ident(sname), fields_str)
+                format!("#[derive({})]\n#[repr(C)]\npub struct {} {{\n{}\n}}\n", struct_derives(sname, &self.struct_defs), rust_ident(sname), fields_str)
             })
             .collect::<String>() + &sandbox_struct_codecs(&self.struct_defs);
 
@@ -1435,7 +1492,7 @@ struct __OrchState {{\n{fields}\n}}\n\
 impl __OrchState {{\n    fn new() -> __OrchState {{\n{initializers}\n        __OrchState {{ {names} }}\n    }}\n}}\n\
 thread_local! {{ static __ORCH_STATE: std::cell::RefCell<__OrchState> = std::cell::RefCell::new(__OrchState::new()); }}\n\
 fn __orch_state<R>(body: impl FnOnce(&mut __OrchState) -> R) -> R {{\n    __ORCH_STATE.with(|cell| body(&mut cell.borrow_mut()))\n}}\n\n\
-{marshal}\n{grants_code}{exports}\n",
+{marshal}\n{grants_code}{answer_err}{exports}\n",
             name = name,
             preamble = runtime_preamble(true, false, false),
             pod = super::core::WASM_POD,
@@ -1445,6 +1502,7 @@ fn __orch_state<R>(body: impl FnOnce(&mut __OrchState) -> R) -> R {{\n    __ORCH
             names = names.iter().map(|n| rust_ident(n)).collect::<Vec<_>>().join(", "),
             marshal = SANDBOX_GUEST_MARSHAL,
             grants_code = grants_code,
+            answer_err = answer_err,
             exports = exports.join("\n\n")
         )
     }
@@ -1547,10 +1605,23 @@ pub(super) fn literal_type(value: &crate::ast::Expr) -> Option<Type> {
 
 type StructDefs = [(String, Vec<(String, Type)>)];
 
-/// Returns Some(reason) if a handler uses a type the serverlet wire codec can't carry:
-/// int, float, bool, string, arrays of carryable types, and structs declared in the same
-/// file whose fields are carryable. Returns may also be void.
+/// Returns Some(reason) if a function uses a type the wire codec can't carry: int, float,
+/// bool, string, arrays of carryable types, and structs declared in the same file whose
+/// fields are carryable. Returns may also be void. A host function or an FFI function is
+/// held to this; a serverlet handler to `handler_wire_unsupported_reason`.
 pub(crate) fn wire_unsupported_reason(handlers: &[Handler], structs: &StructDefs) -> Option<String> {
+    if let Some(h) = handlers.iter().find(|h| answers_failure(h)) {
+        return Some(format!(
+            "'{}' returns {}, which does not cross this boundary: only a serverlet handler can answer with a result, since only its caller is told when the call fails",
+            h.name, h.return_type.display_name()
+        ));
+    }
+    handler_wire_unsupported_reason(handlers, structs)
+}
+
+/// `wire_unsupported_reason` for a serverlet's handlers, which may also return `result<T>`
+/// of a carryable `T`.
+pub(crate) fn handler_wire_unsupported_reason(handlers: &[Handler], structs: &StructDefs) -> Option<String> {
     for h in handlers {
         for p in &h.params {
             if !wire_supported(&p.ty, structs, 0) {
@@ -1560,14 +1631,55 @@ pub(crate) fn wire_unsupported_reason(handlers: &[Handler], structs: &StructDefs
                 ));
             }
         }
-        if h.return_type != Type::Void && !wire_supported(&h.return_type, structs, 0) {
+        if h.return_type != Type::Void && !wire_supported(answered_type(&h.return_type), structs, 0) {
             return Some(format!(
-                "handler '{}' uses an unsupported return type; secret serverlets support int, float, bool, string, arrays, structs declared in the same file, and void",
+                "handler '{}' uses an unsupported return type; secret serverlets support int, float, bool, string, arrays, structs declared in the same file, result<T> of any of those, and void",
                 h.name
             ));
         }
     }
     None
+}
+
+/// What a handler answers with when it answers: `T` for a `result<T>` handler, whose
+/// failure crosses as an error rather than as a value, and the return type otherwise.
+pub(crate) fn answered_type(ty: &Type) -> &Type {
+    match ty {
+        Type::Result(ok, error) if **error == Type::Str => ok,
+        other => other,
+    }
+}
+
+/// Whether a type has a default value: what a failed call to a handler that cannot answer
+/// `err` answers with, and what a struct needs of every field to have one itself. An enum
+/// has none — no variant is a neutral answer — and neither has a `result` or a function.
+pub(crate) fn has_default(ty: &Type, structs: &StructDefs) -> bool {
+    fn go(ty: &Type, structs: &StructDefs, depth: usize) -> bool {
+        match ty {
+            Type::Int | Type::Float | Type::Str | Type::Bool | Type::Void | Type::Array(_, _) | Type::Option(_) => true,
+            Type::Named(name) if depth <= 32 => structs.iter()
+                .find(|(n, _)| n == name)
+                .is_some_and(|(_, fields)| fields.iter().all(|(_, field)| go(field, structs, depth + 1))),
+            _ => false,
+        }
+    }
+    go(ty, structs, 0)
+}
+
+/// A struct's derives: `Default` too when every field has a default.
+fn struct_derives(name: &str, structs: &StructDefs) -> &'static str {
+    if has_default(&Type::Named(name.to_string()), structs) { "Clone, Debug, Default" } else { "Clone, Debug" }
+}
+
+/// Whether a failed call to this handler answers `err` rather than the type's default.
+pub(crate) fn answers_failure(h: &Handler) -> bool {
+    matches!(&h.return_type, Type::Result(_, error) if **error == Type::Str)
+}
+
+/// The reply a handler gets when its call failed: `err(why)` for a `result<T>` handler,
+/// and the return type's default for any other. `why` is a Rust `String` expression.
+pub(crate) fn failure_reply(h: &Handler, why: &str) -> String {
+    if answers_failure(h) { format!("Err({})", why) } else { "Default::default()".to_string() }
 }
 
 fn wire_supported(ty: &Type, structs: &StructDefs, depth: usize) -> bool {
@@ -1600,7 +1712,7 @@ pub(crate) fn wire_struct_impls(structs: &StructDefs) -> String {
 }
 
 /// What crosses a sandbox boundary, in the words the diagnostics use.
-const SANDBOX_TYPES: &str = "a sandboxed serverlet carries int, float, bool, string, int[], float[], bool[], and structs whose fields are those numbers, booleans, or such structs";
+const SANDBOX_TYPES: &str = "a sandboxed serverlet carries int, float, bool, string, int[], float[], bool[], and structs whose fields are those numbers, booleans, or such structs, and a handler may return result<T> of any of them";
 
 /// Returns Some(reason) if a handler uses a type the sandbox boundary cannot carry: the
 /// C ABI's set (0.14.0), so the fastest boundary and the contained one carry the same
@@ -1615,7 +1727,7 @@ pub(crate) fn sandbox_unsupported_reason(name: &str, handlers: &[Handler], struc
                 ));
             }
         }
-        if h.return_type != Type::Void && !sandbox_type_supported(&h.return_type, structs) {
+        if h.return_type != Type::Void && !sandbox_type_supported(answered_type(&h.return_type), structs) {
             return Some(format!(
                 "sandboxed serverlet '{}': handler '{}' returns {}, which does not cross the sandbox boundary; {}",
                 name, h.name, h.return_type.display_name(), SANDBOX_TYPES

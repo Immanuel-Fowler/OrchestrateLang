@@ -410,3 +410,65 @@ orchestrator main() { let r = start Reader()  print(r.size("main.orch"))  stop_o
         .unwrap();
     success(&checked);
 }
+
+#[test]
+fn typescript_result_handlers_say_a_call_failed() {
+    // What a handler throws is its `err`, and a process that dies during a call is an
+    // `err` saying so; a zero the handler returned is `ok(0)`.
+    if !available() {
+        return;
+    }
+    let root = root("result_failures");
+    fs::write(
+        root.join("strategy.ts"),
+        r#"
+declare const process: { exit(code: number): never };
+export default class Strategy {
+    calls = 0n;
+    decide(price: bigint, size: bigint): bigint {
+        this.calls += 1n;
+        if (size < 0n) throw new Error("size cannot be negative");
+        return price / size;
+    }
+    crash(): bigint { process.exit(7); }
+    count(): bigint { return this.calls; }
+}
+"#,
+    )
+    .unwrap();
+    let src = r#"
+serverlet Strategy via typescript(source: "strategy.ts") {
+    on decide(price: int, size: int) -> result<int>
+    on crash() -> result<int>
+    on count() -> result<int>
+}
+fn describe(answer: result<int>) -> string {
+    match answer {
+        result::Ok(v) => "ok " + to_string(v)
+        result::Err(e) => "err: " + e
+    }
+}
+orchestrator main() {
+    let s = start Strategy()
+    print(describe(s.decide(0, 4)))
+    print(describe(s.decide(10, 0 - 1)))
+    print(describe(s.count()))
+    print(describe(s.crash()))
+    print(describe(s.count()))
+    stop_orch()
+}
+"#;
+    let stdout = success(&compile(&root, src, false, "bun"));
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.starts_with("[orchestrate]")).collect();
+    assert_eq!(
+        lines,
+        vec![
+            "ok 0",
+            "err: Error: size cannot be negative",
+            "ok 2",
+            "err: landline 'Strategy' crashed during a call to 'crash': process exited",
+            "ok 0",
+        ],
+        "stdout: {stdout}"
+    );
+}

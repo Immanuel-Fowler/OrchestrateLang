@@ -18,8 +18,10 @@ version of the claim.
 | struct of numbers and booleans | yes | yes | yes | yes (since this branch) |
 | struct with a `string` field | yes | yes | yes | **no** |
 | `string[]`, array of structs, array of arrays | yes | yes | yes | **no** |
-| `option<T>`, `result<T>`, closures | yes | no | no | no |
+| `result<T>` as a handler's return, of a `T` above | yes | yes | yes: the implementation returns `T`, and raising or throwing is its `err` | yes |
+| `option<T>`, closures, `result` anywhere else | yes | no | no | no |
 | `handle` | yes | no | no | no |
+| an enum, or a struct holding one, as a handler's return | only as `result<T>` | no | no | no |
 
 - The sandbox carries exactly what the C ABI carries, by design: one ownership rule
   (borrowed parameters, callee-allocated returns copied and freed) rather than a second
@@ -27,6 +29,32 @@ version of the claim.
   The three process-based boundaries use the wire codec instead, which nests freely.
 - A `check` names the offending handler and type for the sandbox; for a secret or landline
   serverlet the same class of error is also the compiler's own.
+
+**What a caller learns when a call fails.** A handler declared `-> result<T>` answers
+`err` with a message saying why; any other handler answers with its return type's
+default, as before, and the failure goes to stderr and `on_crash`. A zero the handler
+computed is `ok(0)`, so the two can no longer be confused. Each row is a runtime test that
+makes the callee fail and checks the caller sees `err`:
+`serverlet_result_says_a_call_failed` (in-process and secret),
+`python_result_handlers_say_a_call_failed`, `typescript_result_handlers_say_a_call_failed`,
+and `runtime_sandbox_result_says_a_call_failed`.
+
+| What happened | In-process | Secret | Python / TypeScript landline | Sandboxed (WASM) |
+|---|---|---|---|---|
+| The handler said no | its own `err(...)` | its own `err(...)` | what it raised or threw: `err("ValueError: ...")` | its own `err(...)` |
+| The handler panicked or trapped | `serverlet 'S' handler 'h' panicked: ...` | `secret serverlet 'S' handler 'h' failed: ...` | (a raise is the handler's answer, above) | `wasm call 'S::h' failed: ...`, for a trap, the timeout, or the memory cap |
+| The process died during the call | n/a | `secret serverlet 'S' was lost during a call to 'h': ...` | `landline 'S' crashed during a call to 'h': ...` | n/a |
+| It could not start | n/a | `secret serverlet 'S' is not running: it could not start (...)` | `landline 'S' is not running: its startup failed (...)` | `serverlet 'S' stopped before it answered 'h'` |
+| The call missed its budget | n/a | n/a | `landline 'S' handler 'h' missed its budget of 5ms`; with `late: "latest"`, the latest answer instead, `ok` or `err` | n/a: the timeout is a trap |
+
+- A process-based boundary that could not start is tried again, with backoff, at a later
+  call; until then each call fails at once rather than waiting.
+- A handler that does not return `result` still cannot say it failed: a program that must
+  tell, and that uses any boundary but in-process, declares `result<T>`. Nothing warns
+  about a handler that could have.
+- A foreign function (`load_foreign`) has no `result` return. A TypeScript FFI function
+  that throws, or whose process dies, panics in its caller, as a C or Rust function that
+  panics does.
 
 **Host reach per boundary**, after the grants branch:
 
@@ -159,6 +187,17 @@ named in `CHANGELOG.md`.
 - **`check` refused a valid module grant** that the build accepted.
 - **A write from a worker, a handler, or a closure to a binding outside it** reached
   rustc, or, for a closure, compiled and was lost. It is now a `check` error.
+- **No out-of-process call could say it failed.** A trap, a crash, a dead child, and a
+  missed budget all answered with the return type's default, which a caller could not
+  tell from a real answer. A handler declared `-> result<T>` now answers `err`, on every
+  boundary; the table above says what each failure reads as.
+- **A struct holding an enum did not compile anywhere**, since every struct derived
+  `Default` and an enum has none; **nor did a serverlet handler returning an enum**, whose
+  failed call had no default to answer with. Found while adding `result<T>` handlers. A
+  struct derives `Default` now only when its fields have one, and a handler returning a
+  type without one is a `check` error that says to declare `result<T>`.
+- **An in-process `on_crash` bound `Any { .. }`**, the panic payload's debug form, rather
+  than the panic's message.
 
 ## Found, not fixed
 

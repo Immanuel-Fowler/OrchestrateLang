@@ -1,0 +1,3 @@
+host world { fn lookup(n: int) -> result<int> }
+on_tick(dt: float) { let found = world.lookup(1) }
+orchestrator main() {}

@@ -625,6 +625,78 @@ orchestrator main() {
 }
 
 #[test]
+fn runtime_sandbox_result_says_a_call_failed() {
+    // A `result<T>` handler in a guest answers `err` when the guest traps or runs past its
+    // timeout, and a guest's own `err` crosses as itself; a zero it computed is `ok(0)`.
+    let test_name = "sandbox_result";
+    let _ = fs::remove_dir_all(std::env::temp_dir().join(format!("orch_runtime_{}", test_name)));
+    let stdout = run_orch(test_name, r#"
+struct Quote { price: int, size: int }
+serverlet Plugin sandbox(memory_limit: "16mb", timeout: "300ms") {
+    let calls = 0
+    on decide(price: int, size: int) -> result<int> {
+        calls = calls + 1
+        if size < 0 { return err("size cannot be negative") }
+        return ok(price / size)
+    }
+    on spin() -> result<int> {
+        while true { calls = calls + 1 }
+        return ok(calls)
+    }
+    on label(n: int) -> result<string> {
+        if n < 0 { return err("no label for " + to_string(n)) }
+        return ok("n" + to_string(n))
+    }
+    on quote(n: int) -> result<Quote> {
+        if n < 0 { return err("no quote") }
+        return ok(Quote { price: n, size: n * 2 })
+    }
+    on count() -> int { return calls }
+}
+fn describe(answer: result<int>) -> string {
+    match answer {
+        result::Ok(v) => "ok " + to_string(v)
+        result::Err(e) => "err: " + e
+    }
+}
+orchestrator main() {
+    let p = start Plugin()
+    print(describe(p.decide(0, 4)))
+    print(describe(p.decide(10, 0 - 1)))
+    print(to_string(p.count()))
+    print(describe(p.decide(10, 0)))
+    // The trap replaced the guest, so its state started over.
+    print(to_string(p.count()))
+    print(describe(p.spin()))
+    match p.label(3) {
+        result::Ok(v) => print("ok " + v)
+        result::Err(e) => print("err: " + e)
+    }
+    match p.label(0 - 3) {
+        result::Ok(v) => print("ok " + v)
+        result::Err(e) => print("err: " + e)
+    }
+    match p.quote(2) {
+        result::Ok(q) => print("ok " + to_string(q.price) + " " + to_string(q.size))
+        result::Err(e) => print("err: " + e)
+    }
+    match p.quote(0 - 2) {
+        result::Ok(q) => print("ok " + to_string(q.price))
+        result::Err(e) => print("err: " + e)
+    }
+    stop_orch()
+}
+"#);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 10, "stdout: {}", stdout);
+    assert_eq!(&lines[..3], ["ok 0", "err: size cannot be negative", "2"], "stdout: {}", stdout);
+    assert!(lines[3].starts_with("err: wasm call 'Plugin::decide' failed: "), "stdout: {}", stdout);
+    assert_eq!(lines[4], "0", "stdout: {}", stdout);
+    assert_eq!(lines[5], "err: wasm call 'Plugin::spin' failed: the guest ran past its timeout", "stdout: {}", stdout);
+    assert_eq!(&lines[6..], ["ok n3", "err: no label for -3", "ok 2 4", "err: no quote"], "stdout: {}", stdout);
+}
+
+#[test]
 fn runtime_secret_serverlet_state_persists() {
     // The body runs in a separate process; state must survive across calls,
     // proving the child is long-lived and reused.

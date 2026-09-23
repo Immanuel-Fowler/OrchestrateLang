@@ -114,7 +114,12 @@ pub fn runtime_preamble(print_to_stderr: bool, include_process_ref: bool, librar
          /// Aborts a task when dropped: a worker's supervisor holds its current run in one, so\n\
          /// stopping the worker stops the run too.\n\
          struct __OrchAbortOnDrop(tokio::task::AbortHandle);\n\
-         impl Drop for __OrchAbortOnDrop {{\n    fn drop(&mut self) {{ self.0.abort(); }}\n}}\n\n")
+         impl Drop for __OrchAbortOnDrop {{\n    fn drop(&mut self) {{ self.0.abort(); }}\n}}\n\n\
+         /// What a panic said: its message, when it carried one.\n\
+         fn __orch_panic_text(payload: &(dyn std::any::Any + Send)) -> String {{\n    \
+             payload.downcast_ref::<&str>().map(|text| text.to_string())\n        \
+                 .or_else(|| payload.downcast_ref::<String>().cloned())\n        \
+                 .unwrap_or_else(|| \"it panicked without a message\".to_string())\n}}\n\n")
     } else {
         String::new()
     };
@@ -385,6 +390,23 @@ impl<T: OrchWire> OrchWire for Vec<T> {
         let mut items = Vec::with_capacity(count.min(4096));
         for _ in 0..count { items.push(T::wire_decode(buf, pos)?); }
         Some(items)
+    }
+}
+
+// A `result<T>` handler's answer: a flag byte, then the value or the handler's error.
+impl<T: OrchWire> OrchWire for Result<T, String> {
+    fn wire_encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Ok(value) => { out.push(0); value.wire_encode(out); }
+            Err(error) => { out.push(1); error.wire_encode(out); }
+        }
+    }
+    fn wire_decode(buf: &[u8], pos: &mut usize) -> Option<Self> {
+        match __wire_take(buf, pos, 1)?[0] {
+            0 => Some(Ok(T::wire_decode(buf, pos)?)),
+            1 => Some(Err(String::wire_decode(buf, pos)?)),
+            _ => None,
+        }
     }
 }
 

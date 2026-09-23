@@ -8,7 +8,8 @@
 > the guest and persists between calls. Arrays of numbers and booleans, and structs of
 > those, cross as of the branch after 0.14.0, under the C ABI's ownership and layout
 > rules. Step 7, a `grant` as a narrow, mediated host function, shipped after 0.14.0
-> too, along with `on_crash` on the host side of a trap.
+> too, along with `on_crash` on the host side of a trap. Since 0.16 a handler declared
+> `-> result<T>` answers `err` when its call traps, rather than its type's default.
 
 ---
 

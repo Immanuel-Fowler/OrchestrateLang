@@ -61,10 +61,24 @@ Exceptions produce an error diagnostic and the return type's default value;
 the process and any prior state mutations survive. An EOF or transport failure
 during a call invokes the `.orch` `on_crash` hook and restarts the process for
 subsequent calls. The failed call receives a default and is never replayed;
-restart creates fresh Python state. Startup/interface failures close the client
-with a diagnostic and do not retry. Startup has a 10-second timeout, and an idle
-process failure is detected on the next call. There is no configurable restart
-policy yet.
+restart creates fresh Python state. A startup or interface failure is reported and
+tried again after a backoff (100 ms, doubling to 5 s); calls in between receive their
+default. Startup has a 10-second timeout, and an idle process failure is detected on
+the next call. There is no configurable restart policy yet.
+
+A handler declared `-> result<T>` in `.orch` tells its caller about each of these
+instead of answering with a default. Implement it as returning `T`: a value you return
+is `ok(value)`, and an exception you raise is `err("ValueError: ...")`, not logged,
+since it is the handler's answer. A crash, a failed start, or a missed budget is an
+`err` saying which.
+
+```python
+class Strategy(landline.Serverlet):
+    def decide(self, price: int, size: int) -> int:   # on decide(...) -> result<int>
+        if size <= 0:
+            raise ValueError("size must be positive")
+        return price // size
+```
 
 Add `budget` to bound how long each call waits, and `late` to choose what a call that
 misses it returns:

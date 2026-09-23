@@ -1,0 +1,12 @@
+enum Failure { Empty, Negative }
+serverlet S {
+    on decide(n: int) -> result<int, Failure> {
+        if n < 0 { return err(Failure::Negative) }
+        return ok(n)
+    }
+}
+orchestrator main() {
+    let s = start S()
+    let decided = s.decide(1)
+    stop_orch()
+}

@@ -41,11 +41,12 @@ pub fn start_@NAME@() -> @NAME@Client {
             let (mut __child, mut __cin, mut __cout) = match __startup {
                 Ok(started) => { __failed_starts = 0; __orch_child("@NAME@", started.0.id()); started }
                 Err(__error) => {
-                    // Not closed for good: calls are answered with their default until the
-                    // next try, which comes sooner than a caller would give up waiting.
+                    // Not closed for good: calls fail — a `result` handler answers `err`, any
+                    // other its default — until the next try, which comes sooner than a
+                    // caller would give up waiting.
                     __failed_starts += 1;
                     let __delay = (100u64 << __failed_starts.min(6)).min(5000);
-                    eprintln!("[orchestrate] landline '@NAME@' startup failed: {}; calls return their default until it is tried again in {} ms", __error, __delay);
+                    eprintln!("[orchestrate] landline '@NAME@' startup failed: {}; calls fail until it is tried again in {} ms", __error, __delay);
                     let __retry_at = std::time::Instant::now() + std::time::Duration::from_millis(__delay);
                     loop {
                         let __wait = __retry_at.saturating_duration_since(std::time::Instant::now());

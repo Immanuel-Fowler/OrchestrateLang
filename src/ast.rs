@@ -160,6 +160,17 @@ pub struct LandlineConfig {
     pub backend: Option<String>,
 }
 
+/// A duration in microseconds as a program would have written it: `5ms`, `250us`, `2s`.
+pub fn display_micros(micros: u64) -> String {
+    if micros % 1_000_000 == 0 {
+        format!("{}s", micros / 1_000_000)
+    } else if micros % 1_000 == 0 {
+        format!("{}ms", micros / 1_000)
+    } else {
+        format!("{}us", micros)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LatePolicy {
     /// Return the default value and discard the reply when it arrives.

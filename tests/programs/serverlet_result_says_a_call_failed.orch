@@ -1,0 +1,54 @@
+// A handler that returns result<T> tells its caller when a call failed, instead of
+// answering with a default that looks like a real answer: a zero the handler computed is
+// `ok(0)`, and a handler that panicked, or a child process that died, is `err(why)`.
+
+serverlet Strategy {
+    let calls = 0
+    on decide(price: int, size: int) -> result<int> {
+        calls = calls + 1
+        if size < 0 { return err("size cannot be negative") }
+        return ok(price / size)
+    }
+    on count() -> int { return calls }
+}
+
+serverlet Remote secret {
+    let calls = 0
+    on decide(price: int, size: int) -> result<int> {
+        calls = calls + 1
+        if size < 0 { return err("size cannot be negative") }
+        return ok(price / size)
+    }
+    on count() -> result<int> { return ok(calls) }
+    // Ends the child in the middle of a call.
+    on vanish() -> result<int> {
+        stop_orch()
+        return ok(1)
+    }
+}
+
+fn describe(answer: result<int>) -> string {
+    match answer {
+        result::Ok(v) => "ok " + to_string(v)
+        result::Err(e) => "err: " + e
+    }
+}
+
+orchestrator main() {
+    let local = start Strategy()
+    print(describe(local.decide(0, 4)))
+    print(describe(local.decide(10, 0 - 1)))
+    print(describe(local.decide(10, 0)))
+    // The serverlet survived the panic, and kept its state.
+    print("local calls: " + to_string(local.count()))
+
+    let remote = start Remote()
+    print(describe(remote.decide(0, 4)))
+    print(describe(remote.decide(10, 0 - 1)))
+    print(describe(remote.decide(10, 0)))
+    print(describe(remote.count()))
+    print(describe(remote.vanish()))
+    // The next call starts a fresh child, whose state starts over.
+    print(describe(remote.count()))
+    stop_orch()
+}

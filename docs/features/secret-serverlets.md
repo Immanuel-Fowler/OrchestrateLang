@@ -237,7 +237,9 @@ syntax lands with serverlet-files.
    Since 0.16 the mirror also restarts it: a child that died is noticed at the next call
    (or during one), `on_crash` runs on the host with the reason, and a fresh child —
    with fresh state — serves the next call. A child that cannot start is retried with a
-   backoff instead of closing the serverlet for the rest of the run.
+   backoff instead of closing the serverlet for the rest of the run. A handler declared
+   `-> result<T>` answers `err` for each of these — the child lost, a panic in it, a
+   child that could not start — saying which, where any other answers its default.
 
 5. ✅ **Marshaling.** Length-prefixed framing (dependency-free, handles arbitrary
    bytes including newlines). `int`, `float`, `bool`, `string` params/returns and

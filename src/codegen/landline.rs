@@ -10,7 +10,7 @@ impl Codegen {
         grants: &[String],
         config: &crate::ast::LandlineConfig,
     ) -> String {
-        if let Some(reason) = super::stmt::wire_unsupported_reason(handlers, &self.struct_defs) {
+        if let Some(reason) = super::stmt::handler_wire_unsupported_reason(handlers, &self.struct_defs) {
             return format!("compile_error!({:?});", reason);
         }
         let signatures = handlers
@@ -22,9 +22,11 @@ impl Codegen {
                     .map(|p| p.ty.display_name())
                     .collect::<Vec<_>>()
                     .join(",");
+                // A `result<T>` handler answers with a `T` or fails: in Python or
+                // TypeScript, failing is raising, so the implementation declares `T`.
                 format!(
                     "{:?}.to_string()",
-                    format!("{}({})->{}", h.name, params, h.return_type.display_name())
+                    format!("{}({})->{}", h.name, params, super::stmt::answered_type(&h.return_type).display_name())
                 )
             })
             .collect::<Vec<_>>()
@@ -43,11 +45,22 @@ impl Codegen {
             let mut bindings = h.params.iter().map(|p| rust_ident(&p.name)).collect::<Vec<_>>();
             bindings.push("reply_to".into());
             let encode = h.params.iter().map(|p| format!("{}.wire_encode(&mut __payload);", rust_ident(&p.name))).collect::<Vec<_>>().join("\n");
+            let answers_failure = super::stmt::answers_failure(h);
             let decode = if h.return_type == Type::Void {
                 "if !f.payload.is_empty() { return Err(\"unexpected void reply payload\".to_string()); } ()".into()
             } else {
-                format!("let mut pos = 0; let value = <{} as OrchWire>::wire_decode(&f.payload, &mut pos).ok_or(\"invalid reply value\")?; if pos != f.payload.len() {{ return Err(\"trailing reply data\".to_string()); }} value", self.compile_type(&h.return_type))
+                let answered = self.compile_type(super::stmt::answered_type(&h.return_type));
+                let value = if answers_failure { "Ok(value)" } else { "value" };
+                format!("let mut pos = 0; let value = <{} as OrchWire>::wire_decode(&f.payload, &mut pos).ok_or(\"invalid reply value\")?; if pos != f.payload.len() {{ return Err(\"trailing reply data\".to_string()); }} {}", answered, value)
             };
+            // What the handler raised is its `err`; a handler that cannot say so reports it
+            // and answers its default.
+            let raised = if answers_failure {
+                "return Ok(Err(error));".to_string()
+            } else {
+                format!("eprintln!(\"[orchestrate] landline '{}' handler '{}' failed: {{}}\", error);\n                        return Ok(Default::default());", name, h.name)
+            };
+            let crashed = super::stmt::failure_reply(h, &format!("format!(\"landline '{}' crashed during a call to '{}': {{}}\", __error)", name, h.name));
             // With a budget, a call whose caller already stopped waiting is not sent.
             let skip = if config.budget_micros.is_some() { "if reply_to.is_closed() { continue; }" } else { "" };
             // `late: "latest"` keeps each handler's most recent result for timed-out callers.
@@ -75,8 +88,7 @@ impl Codegen {
                     if f.kind == ORCH_KIND_ERROR {{
                         let mut pos = 0;
                         let error = String::wire_decode(&f.payload, &mut pos).ok_or("invalid error reply")?;
-                        eprintln!("[orchestrate] landline '{name}' handler '{handler}' failed: {{}}", error);
-                        return Ok(Default::default());
+                        {raised}
                     }}
                     if f.kind != ORCH_KIND_REPLY {{ return Err("expected REPLY".into()); }}
                     Ok({{ {decode} }})
@@ -88,14 +100,17 @@ impl Codegen {
                         let _ = __child.kill().await;
                         __orch_child("{name}", None);
                         {recovery}
-                        let _ = reply_to.send(Default::default());
+                        let _ = reply_to.send({crashed});
                         continue 'restart;
                     }}
                 }}
-            }}"#, name=name, variant=pascal_case(&h.name), bindings=bindings.join(", "), id=id, encode=encode, handler=h.name, decode=decode, recovery=recovery, skip=skip, remember=remember, kind=kind, header=header)
+            }}"#, name=name, variant=pascal_case(&h.name), bindings=bindings.join(", "), id=id, encode=encode, decode=decode, recovery=recovery, skip=skip, remember=remember, kind=kind, header=header, raised=raised, crashed=crashed)
         }).collect::<Vec<_>>().join("\n");
         let default_arms = handlers.iter()
-            .map(|h| format!("                                {name}Msg::{} {{ reply_to, .. }} => {{ let _ = reply_to.send(Default::default()); }}", pascal_case(&h.name)))
+            .map(|h| {
+                let failed = super::stmt::failure_reply(h, &format!("format!(\"landline '{}' is not running: its startup failed ({{}})\", __error)", name));
+                format!("                                {name}Msg::{} {{ reply_to, .. }} => {{ let _ = reply_to.send({}); }}", pascal_case(&h.name), failed)
+            })
             .collect::<Vec<_>>()
             .join("\n");
         let mut code = include_str!("python_mirror.rs.txt")

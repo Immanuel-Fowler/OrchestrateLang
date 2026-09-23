@@ -1,0 +1,39 @@
+// A struct may hold an enum, or a result: it has no default then, and needs none unless
+// something asks for one.
+
+enum Side { Buy, Sell }
+struct Order { side: Side, size: int, filled: result<int> }
+
+serverlet Book {
+    let orders = 0
+    on place(side: Side, size: int) -> result<Order> {
+        orders = orders + 1
+        if size <= 0 { return err("size must be positive") }
+        return ok(Order { side: side, size: size, filled: ok(size) })
+    }
+}
+
+fn describe(order: Order) -> string {
+    let side = match order.side {
+        Side::Buy => "buy"
+        Side::Sell => "sell"
+    }
+    let filled = match order.filled {
+        result::Ok(n) => to_string(n)
+        result::Err(e) => e
+    }
+    return side + " " + to_string(order.size) + " filled " + filled
+}
+
+orchestrator main() {
+    let book = start Book()
+    match book.place(Side::Sell, 3) {
+        result::Ok(order) => print(describe(order))
+        result::Err(e) => print("err: " + e)
+    }
+    match book.place(Side::Buy, 0) {
+        result::Ok(order) => print(describe(order))
+        result::Err(e) => print("err: " + e)
+    }
+    stop_orch()
+}

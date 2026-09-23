@@ -1127,10 +1127,20 @@ impl TypeChecker {
                     if !names.insert(&h.name) {
                         return Err(format!("serverlet '{}' declares handler '{}' more than once", serverlet, h.name));
                     }
+                    // A call that fails answers a `result` handler with `err` and a message
+                    // saying why, so the error a handler carries is a string.
+                    if let Type::Result(ok, error) = &h.return_type {
+                        if **error != Type::Str {
+                            return Err(format!(
+                                "serverlet '{}': handler '{}' returns {}; a handler's result carries its error as a string, which is also how a call that fails says why. Declare it `-> result<{}>` and put the error's details in the message",
+                                serverlet, h.name, h.return_type.display_name(), ok.display_name()
+                            ));
+                        }
+                    }
                 }
                 if *secret {
                     let structs = self.struct_defs.iter().map(|(n, f)| (n.clone(), f.clone())).collect::<Vec<_>>();
-                    if let Some(reason) = crate::codegen::stmt::wire_unsupported_reason(handlers, &structs) {
+                    if let Some(reason) = crate::codegen::stmt::handler_wire_unsupported_reason(handlers, &structs) {
                         return Err(format!("secret serverlet '{}': {}", serverlet, reason));
                     }
                 }
@@ -1144,8 +1154,19 @@ impl TypeChecker {
                 }
                 if landline.is_some() {
                     let structs = self.struct_defs.iter().map(|(n, f)| (n.clone(), f.clone())).collect::<Vec<_>>();
-                    if let Some(reason) = crate::codegen::stmt::wire_unsupported_reason(handlers, &structs) {
+                    if let Some(reason) = crate::codegen::stmt::handler_wire_unsupported_reason(handlers, &structs) {
                         return Err(reason.replace("secret serverlets", "landline serverlets"));
+                    }
+                }
+                // Any other handler answers a failed call with its type's default. After the
+                // boundaries' own rules, so a type none of them carries is reported as that.
+                let structs = self.struct_defs.iter().map(|(n, f)| (n.clone(), f.clone())).collect::<Vec<_>>();
+                for h in handlers {
+                    if !crate::codegen::stmt::answers_failure(h) && !crate::codegen::stmt::has_default(&h.return_type, &structs) {
+                        return Err(format!(
+                            "serverlet '{}': handler '{}' returns {}, which has no default value to answer a call that fails with. Declare it `-> result<{}>`: its caller then gets `err` saying why when a call fails",
+                            serverlet, h.name, h.return_type.display_name(), h.return_type.display_name()
+                        ));
                     }
                 }
                 self.push_env();

@@ -37,10 +37,13 @@ struct __OrchGuestLimits {
     /// Bytes the guest has written but not finished a line with. A guest writes its
     /// diagnostics in whatever pieces it likes, so they are joined before being logged.
     partial_line: Vec<u8>,
+    /// The `err` a `result` handler answered the current call with, if it did.
+    answered_err: Option<String>,
 }
 
-/// The only two host functions a guest gets, and neither is a capability: one carries the
-/// guest's own diagnostics out, the other lets it stop itself.
+/// The host functions every guest gets, and none is a capability: one carries the guest's
+/// own diagnostics out, one lets it stop itself, and one lets a `result` handler answer
+/// `err` for the call it is running. The environment calls answer with nothing.
 ///
 /// A guest compiled from Rust writes its panic and abort messages to stderr and then calls
 /// `proc_exit`. With nothing answering those, a guest that panics or runs out of memory
@@ -146,6 +149,26 @@ fn __orch_wasm_diagnostics(linker: &mut wasmtime::Linker<__OrchGuestLimits>) -> 
         "environ_get",
         |_caller: wasmtime::Caller<'_, __OrchGuestLimits>, _environ: i32, _buffer: i32| -> i32 { 0 },
     )?;
+    // The bytes are the guest's, so they are range-checked and capped like `fd_write`'s;
+    // an `err` the host cannot read is still an `err`, saying so.
+    linker.func_wrap(
+        "orch_guest",
+        "answer_err",
+        |mut caller: wasmtime::Caller<'_, __OrchGuestLimits>, pointer: i32, length: i32| {
+            const LIMIT: usize = 1 << 16;
+            let text = caller
+                .get_export("memory")
+                .and_then(|export| export.into_memory())
+                .and_then(|memory| {
+                    let data = memory.data(&caller);
+                    let start = pointer as u32 as usize;
+                    let end = start.checked_add((length as u32 as usize).min(LIMIT))?;
+                    data.get(start..end).map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+                })
+                .unwrap_or_else(|| "the guest answered err with a message outside its memory".to_string());
+            caller.data_mut().answered_err = Some(text);
+        },
+    )?;
     Ok(())
 }
 
@@ -205,7 +228,7 @@ fn __orch_wasm_instantiate(
     if let Some(bytes) = memory_bytes {
         builder = builder.memory_size(bytes);
     }
-    let mut store = wasmtime::Store::new(engine, __OrchGuestLimits { limits: builder.build(), timeout, started: std::time::Instant::now(), partial_line: Vec::new() });
+    let mut store = wasmtime::Store::new(engine, __OrchGuestLimits { limits: builder.build(), timeout, started: std::time::Instant::now(), partial_line: Vec::new(), answered_err: None });
     store.limiter(|state| &mut state.limits);
     // Each tick, a call with a timeout is asked how long it has run: past its timeout it
     // is interrupted, and otherwise it gets another tick. So the timeout is a duration
@@ -272,6 +295,7 @@ impl __OrchGuest {
     /// the guest — so each call gets the whole timeout, measured from its own start.
     fn begin(&mut self) {
         self.store.data_mut().started = std::time::Instant::now();
+        self.store.data_mut().answered_err = None;
         self.store.set_epoch_deadline(if self.timeout.is_some() { 1 } else { __ORCH_WASM_NO_DEADLINE });
     }
 

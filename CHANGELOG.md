@@ -10,6 +10,21 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 ## [Unreleased]
 
 ### Added
+- **A serverlet handler declared `-> result<T>` tells its caller when a call failed.** A
+  sandbox trap, a landline crash, a missed budget, and a dead secret child all answered
+  with the return type's default, so a caller could not tell "the plugin said 0" from
+  "the plugin died": a backtest read a trapped strategy's `0` as "go flat" and sent an
+  order. Such a handler now answers `err` with a message saying which failure happened,
+  on every boundary — a panic in-process, a panic or a lost child in a secret serverlet,
+  a crash, a failed start, or a missed budget in a Python or TypeScript landline, and a
+  trap, the timeout, or the memory cap in a sandbox — and its own answer crosses as
+  itself: `ok(v)`, or its `err`. A Python or TypeScript implementation returns `T` and
+  raises or throws for `err`. Other handlers answer with their default, as before. The
+  per-boundary table in `docs/limitations-notes.md` says what each failure reads as;
+  tests: `serverlet_result_says_a_call_failed` (in-process and secret),
+  `python_result_handlers_say_a_call_failed`,
+  `typescript_result_handlers_say_a_call_failed`,
+  `runtime_sandbox_result_says_a_call_failed`.
 - **Deterministic replay covers serverlets, on every boundary.** `StartOptions {
   deterministic: true }` refused any serverlet or landline, so the guarantee covered the
   part of a program that needs no isolation and none of the part that does — a sandboxed
@@ -109,6 +124,19 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   write, which is why this release is a minor one.
 
 ### Fixed
+- **A struct holding an enum or a `result` compiles.** Every struct derived `Default`,
+  which an enum has not, so `struct Order { side: Side }` reached rustc (E0277) in any
+  program. A struct derives it now only when every field has one. Test:
+  `tests/programs/struct_with_enum_field.orch`.
+- **A serverlet handler returning an enum is refused by `check`**, saying to declare
+  `-> result<T>`; it reached rustc, since a failed call answers with the return type's
+  default and an enum has none. A handler's `result` carries its error as a string, which
+  is also how a failed call says why; `-> result<T, E>` with another `E` is refused the
+  same way, and a host function returning `result` with a message saying only a handler
+  can. Corpus cases: `serverlet_handler_returns_enum`,
+  `serverlet_result_error_not_string`, `host_fn_returns_result`.
+- **An in-process serverlet's `on_crash` binds the panic's message.** It bound
+  `Any { .. }`, the payload's debug form, and printed that too.
 - **`restart: N` is a limit, and `restart: never` means never.** The orchestrator's
   liveness monitor restarted every finished worker once a second with a fresh count,
   including one that had just spent its restarts, so every policy meant `always`. The

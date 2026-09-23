@@ -227,10 +227,10 @@ naive design fails, so they get explicit rules. Budgets are implemented (§8 ste
    }
    ```
 
-   - `late: "drop"` (default): the call returns the default value, and the reply is
-     discarded when it arrives.
+   - `late: "drop"` (default): the call returns the default value — `err` for a handler
+     declared `-> result<T>` — and the reply is discarded when it arrives.
    - `late: "latest"`: the call returns the handler's most recent completed result (the
-     default until one exists), and a late reply becomes that result, so a slow answer
+     default, or `err`, until one exists), and a late reply becomes that result, so a slow answer
      is used on the next tick instead of stalling this one. The result is the handler's,
      not the arguments': a late `think(b)` returns what `think(a)` answered. So a handler
      under `latest` must return an answer that is valid for any caller. Keyed per
@@ -345,8 +345,12 @@ by name; this handshake does not compare the fields of same-named structs.
 Values: `int` as i64, `float` as f64, `bool` as u8, `string` as u32 length + UTF-8,
 arrays as u32 count + elements, and structs as fields in declaration order.
 
-Secret serverlets currently log handler errors and return the return type’s default value;
-state mutations before a panic persist.
+Secret serverlets log handler errors and return the return type’s default value; state
+mutations before a panic persist. A `result<T>` handler's REPLY carries its whole answer
+— a flag byte, then the value or its own error string — so an ERROR frame means only that
+the call failed, and the caller gets `err` saying so. A Python or TypeScript handler for
+`result<T>` replies with a plain `T`: its HELLO signature names `T`, and an exception it
+raises is an ERROR frame the caller reads as that `err`.
 
 In library mode, a Python or TypeScript landline handler named `tick` is called with TICK
 instead of CALL. Its payload starts with the i64 tick number and the f64 `dt`, followed by
@@ -443,7 +447,8 @@ fixed: invoke `on_crash`, return a default for the failed call without replaying
 and restart for subsequent calls. Configurable restart policies remain future work. A
 landline whose startup fails — the interpreter missing, the handshake failed or timed
 out — is tried again after a backoff (100 ms, doubling to 5 s) rather than closed for the
-rest of the run; calls in between return their default.
+rest of the run; calls in between return their default. A handler declared
+`-> result<T>` answers `err` instead of a default in each of these cases, saying which.
 See the [Python SDK guide](../../sdk/python/README.md) and
 [TypeScript SDK guide](../../sdk/typescript/README.md) for current limits.
 

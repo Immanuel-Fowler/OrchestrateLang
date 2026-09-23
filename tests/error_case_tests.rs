@@ -116,6 +116,13 @@ fn test_error_cases() {
     assert_check_fails("diagnostics/worker_appends_to_outer_binding.orch", "this `automatic` block appends to 'seen'");
     assert_check_fails("diagnostics/closure_writes_outer_binding.orch", "this closure assigns to 'total'");
     assert_check_fails("diagnostics/closure_writes_outer_binding.orch", "return the new value instead");
+    // A failed call answers with the handler's default, or with `err` from a `result<T>`
+    // handler; a type with neither is refused, pointing at the one that works.
+    assert_check_fails("diagnostics/serverlet_handler_returns_enum.orch", "handler 'pick' returns Signal, which has no default value");
+    assert_check_fails("diagnostics/serverlet_handler_returns_enum.orch", "Declare it `-> result<Signal>`");
+    assert_check_fails("diagnostics/serverlet_result_error_not_string.orch", "carries its error as a string");
+    assert_check_fails("diagnostics/serverlet_result_error_not_string.orch", "Declare it `-> result<int>`");
+    assert_check_fails("diagnostics/host_fn_returns_result.orch", "only a serverlet handler can answer with a result");
     assert_check_lib_fails("library_body_writes_state.orch", "the orchestrator body assigns to 'count'");
     assert_check_lib_fails("library_body_writes_state.orch", "write it from a hook");
     assert_check_lib_fails("library_handler_in_process_set.orch", "'pinger' is an event handler");

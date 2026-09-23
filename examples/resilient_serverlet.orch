@@ -16,6 +16,13 @@ serverlet Calculator {
         return a / b
     }
 
+    // The same division, declared to say when it fails: its caller gets err instead of
+    // a 0 it could not tell from a real answer.
+    on checked_divide(a: int, b: int) -> result<int> {
+        request_count = request_count + 1
+        return ok(a / b)
+    }
+
     on get_total() -> int {
         return total
     }
@@ -41,6 +48,12 @@ orchestrator main() {
     // This would normally panic (divide by zero), but on_crash handles it
     let r3 = calc.divide(10, 0)
     print("divide recovered, got: " + to_string(r3))
+
+    // A handler that returns result says the call failed, and why
+    match calc.checked_divide(10, 0) {
+        result::Ok(v) => print("checked divide: " + to_string(v))
+        result::Err(why) => print("checked divide failed: " + why)
+    }
 
     // Calculator is still alive after the panic
     let total = calc.get_total()

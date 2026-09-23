@@ -152,6 +152,13 @@ impl Drop for __OrchAbortOnDrop {
     fn drop(&mut self) { self.0.abort(); }
 }
 
+/// What a panic said: its message, when it carried one.
+fn __orch_panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+    payload.downcast_ref::<&str>().map(|text| text.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "it panicked without a message".to_string())
+}
+
 async fn __secret_write_frame<W: tokio::io::AsyncWriteExt + Unpin>(w: &mut W, kind: u8, call_id: u32, payload: &[u8]) -> std::io::Result<()> {
     w.write_all(&((payload.len() + 5) as u32).to_le_bytes()).await?;
     w.write_all(&[kind]).await?;
@@ -249,6 +256,23 @@ impl<T: OrchWire> OrchWire for Vec<T> {
         let mut items = Vec::with_capacity(count.min(4096));
         for _ in 0..count { items.push(T::wire_decode(buf, pos)?); }
         Some(items)
+    }
+}
+
+// A `result<T>` handler's answer: a flag byte, then the value or the handler's error.
+impl<T: OrchWire> OrchWire for Result<T, String> {
+    fn wire_encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Ok(value) => { out.push(0); value.wire_encode(out); }
+            Err(error) => { out.push(1); error.wire_encode(out); }
+        }
+    }
+    fn wire_decode(buf: &[u8], pos: &mut usize) -> Option<Self> {
+        match __wire_take(buf, pos, 1)?[0] {
+            0 => Some(Ok(T::wire_decode(buf, pos)?)),
+            1 => Some(Err(String::wire_decode(buf, pos)?)),
+            _ => None,
+        }
     }
 }
 

@@ -159,6 +159,8 @@ fn stage_and_check(
             ));
         }
     }
+    // A `result<T>` handler is implemented as returning `T`: throwing is its `err`.
+    let answered = |h: &Handler| crate::codegen::stmt::answered_type(&h.return_type).clone();
     let contract = handlers
         .iter()
         .map(|h| {
@@ -170,13 +172,13 @@ fn stage_and_check(
                     .map(|p| Ok(format!("{}: {}", p.name, ts_type(&p.ty)?)))
                     .collect::<Result<Vec<_>, String>>()?
                     .join(","),
-                ts_type(&h.return_type)?,
-                ts_type(&h.return_type)?
+                ts_type(&answered(h))?,
+                ts_type(&answered(h))?
             ))
         })
         .collect::<Result<Vec<_>, String>>()?
         .join("\n");
-    let methods = handlers.iter().map(|h| serde_json::json!({"name": h.name, "args": h.params.iter().map(|p| p.ty.display_name()).collect::<Vec<_>>(), "result":h.return_type.display_name()})).collect::<Vec<_>>();
+    let methods = handlers.iter().map(|h| serde_json::json!({"name": h.name, "args": h.params.iter().map(|p| p.ty.display_name()).collect::<Vec<_>>(), "result": answered(h).display_name()})).collect::<Vec<_>>();
     fs::write(
         work.join("landline.ts"),
         include_str!("../sdk/typescript/landline.ts"),

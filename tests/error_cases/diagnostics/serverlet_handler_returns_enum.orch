@@ -1,0 +1,9 @@
+enum Signal { Buy, Sell(int) }
+serverlet S {
+    on pick(n: int) -> Signal { if n > 0 { return Signal::Sell(n) } return Signal::Buy }
+}
+orchestrator main() {
+    let s = start S()
+    let picked = s.pick(1)
+    stop_orch()
+}

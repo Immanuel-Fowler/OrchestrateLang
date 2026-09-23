@@ -438,3 +438,89 @@ landline.serve(Echo)
     );
     assert_eq!(stdout, "s!\n2\n3", "{}", stderr);
 }
+
+/// A `result<T>` handler tells its caller when a call failed. What the handler raised is
+/// its `err`; a process that died during the call, a call that missed its budget, and a
+/// call made while the process could not start are `err` too, each saying which. A zero
+/// the handler returned is `ok(0)`, so the two cannot be confused.
+#[test]
+fn python_result_handlers_say_a_call_failed() {
+    let dir = directory("result_failures");
+    let marker = dir.join("fail_first_start");
+    fs::write(&marker, "").unwrap();
+    let (stdout, stderr) = run(
+        &dir,
+        r#"
+serverlet Strategy via python(source: "impl.py") {
+    on decide(price: int, size: int) -> result<int>
+    on slow() -> result<int>
+    on crash() -> result<int>
+    on count() -> result<int>
+}
+serverlet Hurried via python(source: "impl.py", budget: "200ms") {
+    on decide(price: int, size: int) -> result<int>
+    on slow() -> result<int>
+    on crash() -> result<int>
+    on count() -> result<int>
+}
+fn describe(answer: result<int>) -> string {
+    match answer {
+        result::Ok(v) => "ok " + to_string(v)
+        result::Err(e) => "err: " + e
+    }
+}
+orchestrator main() {
+    let s = start Strategy()
+    // The first start exits before its handshake.
+    print(describe(s.count()))
+    sleep(1500)
+    print(describe(s.decide(0, 4)))
+    print(describe(s.decide(10, 0 - 1)))
+    print(describe(s.crash()))
+    // A fresh process, whose state starts over.
+    print(describe(s.count()))
+    let h = start Hurried()
+    sleep(1500)
+    print(describe(h.slow()))
+    stop_orch()
+}
+"#,
+        &format!(r#"
+import os
+import time
+from orchestratelang import landline
+MARKER = {:?}
+if os.path.exists(MARKER):
+    os.remove(MARKER)
+    raise SystemExit(1)
+class Strategy(landline.Serverlet):
+    def __init__(self): self.calls = 0
+    def decide(self, price: int, size: int) -> int:
+        self.calls += 1
+        if size < 0:
+            raise ValueError("size cannot be negative")
+        return price // size
+    def slow(self) -> int:
+        time.sleep(3)
+        return 1
+    def crash(self) -> int: os._exit(7)
+    def count(self) -> int: return self.calls
+landline.serve(Strategy)
+"#, marker.display().to_string()),
+    );
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 6, "{}\n{}", stdout, stderr);
+    assert!(lines[0].starts_with("err: landline 'Strategy' is not running: its startup failed ("), "{}\n{}", stdout, stderr);
+    assert_eq!(
+        &lines[1..],
+        [
+            "ok 0",
+            "err: ValueError: size cannot be negative",
+            "err: landline 'Strategy' crashed during a call to 'crash': process exited",
+            "ok 0",
+            "err: landline 'Hurried' handler 'slow' missed its budget of 200ms",
+        ],
+        "{}",
+        stderr
+    );
+}

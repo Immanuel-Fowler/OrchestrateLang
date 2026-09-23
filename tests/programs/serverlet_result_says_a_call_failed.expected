@@ -1,0 +1,10 @@
+ok 0
+err: size cannot be negative
+err: serverlet 'Strategy' handler 'decide' panicked: attempt to divide by zero
+local calls: 3
+ok 0
+err: size cannot be negative
+err: secret serverlet 'Remote' handler 'decide' failed: attempt to divide by zero
+ok 3
+err: secret serverlet 'Remote' was lost during a call to 'vanish': it exited during the call
+ok 0
