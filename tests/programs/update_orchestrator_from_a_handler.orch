@@ -1,0 +1,29 @@
+// The language reference's §4.6 form: a handler swaps the active worker set. It reached
+// rustc (E0382) from a handler, and every other form but a top-level statement did too.
+shared let a_runs = 0
+shared let b_runs = 0
+shared let c_runs = 0
+
+let worker_a = automatic { a_runs = a_runs + 1  sleep(20) }
+let worker_b = automatic { b_runs = b_runs + 1  sleep(20) }
+let worker_c = automatic { c_runs = c_runs + 1  sleep(20) }
+
+let trim_handler = on trim_workers() {
+    // Remove worker_b: only a and c continue.
+    trigger update_orchestrator([worker_a, worker_c])
+}
+
+orchestrator main(procs: process[worker_a, worker_b, worker_c]) {
+    sleep(100)
+    trigger trim_workers()
+    sleep(100)
+    let b_at_trim = b_runs
+    sleep(200)
+    let b_later = b_runs
+    let a_later = a_runs
+    let c_later = c_runs
+    if b_later == b_at_trim { print("worker_b stopped") }
+    if a_later > 10 { print("worker_a still running") }
+    if c_later > 10 { print("worker_c still running") }
+    stop_orch()
+}

@@ -212,7 +212,8 @@ impl Codegen {
                 format!("{}({})", start_fn, args_str)
             }
             ExprNode::AutomaticBlock { body, restart_policy, backoff_ms, crash_handler } => {
-                let worker = self.naming.take().map(|name| format!(" '{name}'")).unwrap_or_default();
+                let own_name = self.naming.take();
+                let worker = own_name.as_ref().map(|name| format!(" '{name}'")).unwrap_or_default();
                 let mut free_vars = HashSet::new();
                 self.get_free_vars_expr(expr, &mut HashSet::new(), &mut free_vars);
                 // In name order: set order changes between runs, and so would the output.
@@ -221,12 +222,15 @@ impl Codegen {
                 // never captured — capturing it would copy the value and lose the sharing.
                 free_vars.retain(|name| !self.is_shared(name));
                 free_vars.sort();
+                // A worker that names itself — to keep itself in a set it swaps in — reaches
+                // its own handle through a slot filled once it exists.
+                let (self_slot, self_bind) = self.self_reference(own_name.as_deref(), &mut free_vars);
 
                 let mut capture_code = String::new();
                 // The worker's copies are taken once, when it is declared; each start of
                 // the worker, and each restart, copies them again, so the closure can be
                 // called any number of times and every run gets what the first one got.
-                let mut recapture = String::new();
+                let mut recapture = self_bind;
                 for var in &free_vars {
                     capture_code.push_str(&format!("let {} = {}.clone();\n    ", rust_ident(var), self.read_name(var)));
                     recapture.push_str(&format!("let {0} = {0}.clone(); ", rust_ident(var)));
@@ -293,7 +297,7 @@ impl Codegen {
                     format!("// Serverlet setup — once per process lifetime\n                {}\n                ", setup_inner)
                 };
 
-                format!(
+                let worker_code = format!(
                     r#"{{
     {capture}std::sync::Arc::new(move || {{
         {recapture}tokio::spawn(async move {{
@@ -332,7 +336,8 @@ impl Codegen {
                     worker = worker,
                     spent = spent,
                     delay = delay,
-                )
+                );
+                Self::fill_self_slot(worker_code, &self_slot)
             }
             ExprNode::TriggeredBlock { event_name, params, body } => {
                 // A library's top-level handler runs inside a tick, one at a time, so it
@@ -576,6 +581,34 @@ impl Codegen {
                 }
             }
         }
+    }
+
+    /// For a process declared as `let name = automatic { ... }` whose body names `name`:
+    /// removes it from the captures and returns the code for a slot that holds a weak
+    /// handle to the process, filled once the process exists — weak, so the process does
+    /// not keep itself alive — and the binding that reads it at the start of each run.
+    /// Both are empty for a process that does not name itself.
+    fn self_reference(&self, own_name: Option<&str>, free_vars: &mut Vec<String>) -> (bool, String) {
+        let Some(name) = own_name else { return (false, String::new()) };
+        let Some(position) = free_vars.iter().position(|v| v == name) else { return (false, String::new()) };
+        free_vars.remove(position);
+        let bind = format!(
+            "let {}: ProcessRef = __orch_self.get().and_then(std::sync::Weak::upgrade).expect(\"a process reached its own handle before it existed\"); let __orch_self = __orch_self.clone(); ",
+            rust_ident(name)
+        );
+        (true, bind)
+    }
+
+    /// The process `code` builds, with its self slot around it when it has one: made
+    /// before the process, captured by it, and filled with the process once it exists.
+    fn fill_self_slot(code: String, has_slot: &bool) -> String {
+        if !has_slot { return code; }
+        format!(
+            "{{ let __orch_self: std::sync::Arc<std::sync::OnceLock<std::sync::Weak<dyn Fn() -> tokio::task::JoinHandle<()> + Send + Sync + 'static>>> = std::sync::Arc::new(std::sync::OnceLock::new()); \
+             let __orch_self_slot = __orch_self.clone(); \
+             let __orch_process: ProcessRef = {code}; \
+             let _ = __orch_self_slot.set(std::sync::Arc::downgrade(&__orch_process)); __orch_process }}"
+        )
     }
 
     /// The names a match pattern binds, which shadow program fields in its arm.

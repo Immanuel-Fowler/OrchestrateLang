@@ -624,10 +624,10 @@ impl Codegen {
     get_registry_update_orchestrator().lock().unwrap().push(tx);
     let state_clone = state.clone();
     tokio::spawn(async move {{
+        // One set at a time, in the order they were triggered.
         while let Some(msg) = rx.recv().await {{
             let new_procs = (*msg).clone();
-            let state_clone = state_clone.clone();
-            tokio::spawn(async move {{
+            {{
                 let mut locked = state_clone.lock().unwrap();
                 let mut to_keep = Vec::new();
                 for (p, handle) in locked.handles.drain(..) {{
@@ -638,7 +638,8 @@ impl Codegen {
                             break;
                         }}
                     }}
-                    if found {{
+                    // A worker that has stopped and is named again starts afresh.
+                    if found && !handle.is_finished() {{
                         to_keep.push((p, handle));
                     }} else {{
                         handle.abort();
@@ -659,7 +660,7 @@ impl Codegen {
                     }}
                 }}
                 locked.procs = new_procs;
-            }});
+            }}
         }}
     }});
 

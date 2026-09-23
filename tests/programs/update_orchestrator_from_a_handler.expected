@@ -1,0 +1,3 @@
+worker_b stopped
+worker_a still running
+worker_c still running

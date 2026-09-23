@@ -1194,6 +1194,52 @@ orchestrator main(procs: process[never_worker, three_worker, always_worker, defa
     assert_eq!(out.trim(), "1 4 8 2");
 }
 
+/// The active worker set changes while the program runs, from the orchestrator body, a
+/// worker, and twice in a row, and a worker keeps itself in a set it swaps in by naming
+/// itself. Each of these reached rustc, and a worker could not name itself at all.
+#[test]
+fn runtime_worker_set_swaps_from_body_and_worker() {
+    let out = run_orch("update_orchestrator_swaps", r#"
+shared let a_runs = 0
+shared let b_runs = 0
+shared let c_runs = 0
+shared let swapped = false
+
+let b = automatic { b_runs = b_runs + 1  sleep(10) }
+let c = automatic { c_runs = c_runs + 1  sleep(10) }
+let a = automatic {
+    a_runs = a_runs + 1
+    let runs = a_runs
+    // From inside a worker, naming itself: a keeps running, c joins.
+    if runs == 5 { trigger update_orchestrator([a, c]) }
+    sleep(10)
+}
+
+orchestrator main(procs: process[a]) {
+    sleep(200)
+    // Twice from the body, the second from a set built in a variable: only b is left.
+    trigger update_orchestrator([a, b])
+    let only_b = [b]
+    sleep(100)
+    trigger update_orchestrator(only_b)
+    sleep(50)
+    let a_then = a_runs
+    let c_then = c_runs
+    let b_then = b_runs
+    sleep(200)
+    let a_now = a_runs
+    let c_now = c_runs
+    let b_now = b_runs
+    print("c joined: {c_then > 0}")
+    print("a stopped: {a_now == a_then}")
+    print("c stopped: {c_now == c_then}")
+    print("b running: {b_now > b_then}")
+    stop_orch()
+}
+"#);
+    assert_eq!(out.trim(), "c joined: true\na stopped: true\nc stopped: true\nb running: true");
+}
+
 /// Builds `source` into a scratch directory and runs it, calling `during` with the
 /// running process's id after `after`, then collects everything it printed.
 #[cfg(unix)]

@@ -400,6 +400,48 @@ fn main() {
     assert_eq!(output.trim(), "[41, 42]");
 }
 
+/// A hook swaps a library's worker set: `on_tick` names both workers from instance state,
+/// which reached rustc (E0507) because the set moved them out of the program.
+#[test]
+fn library_tick_swaps_the_worker_set() {
+    let root = root("tick_swaps_workers");
+    build(&root, r#"
+host world { fn record(n: int) }
+let a = automatic { world.record(1)  sleep(10) }
+let b = automatic { world.record(2)  sleep(10) }
+let ticks = 0
+on_tick(dt: float) {
+    ticks = ticks + 1
+    if ticks == 2 { trigger update_orchestrator([b]) }
+}
+orchestrator main(procs: process[a]) {}
+"#);
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<i64>>>);
+impl scripts::Host for Host { fn world_record(&self, n: i64) -> Result<(), String> { self.0.lock().unwrap().push(n); Ok(()) } }
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let mut scripts = scripts::start(runtime.handle(), Host(recorded.clone())).unwrap();
+    scripts.ready_blocking(&runtime).unwrap();
+    let pause = |ms| runtime.block_on(async move { tokio::time::sleep(std::time::Duration::from_millis(ms)).await });
+    scripts.tick_sync(&runtime, 0.016).unwrap();
+    pause(100);
+    let before: Vec<i64> = recorded.lock().unwrap().drain(..).collect();
+    scripts.tick_sync(&runtime, 0.016).unwrap();
+    pause(50);
+    recorded.lock().unwrap().clear();
+    pause(100);
+    let after: Vec<i64> = recorded.lock().unwrap().drain(..).collect();
+    scripts.shutdown_blocking(&runtime).unwrap();
+    println!("before: a {} b {}", before.contains(&1), before.contains(&2));
+    println!("after: a {} b {}", after.contains(&1), after.contains(&2));
+}
+"#);
+    assert_eq!(output.trim(), "before: a true b false\nafter: a false b true");
+}
+
 #[test]
 fn library_secret_and_drop_shutdown() {
     let root = root("secret");

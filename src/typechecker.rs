@@ -871,6 +871,11 @@ impl TypeChecker {
                 if let ExprNode::StartServerlet { name: serverlet, .. } = &value.node {
                     self.var_serverlet.insert(name.clone(), serverlet.clone());
                 }
+                // A worker may name itself — to keep itself in a set it swaps in — so its
+                // own name is a process inside its body.
+                if matches!(value.node, ExprNode::AutomaticBlock { .. }) && self.lookup_var(name).is_none() {
+                    self.define_var(name.clone(), Type::Process);
+                }
                 let val_ty = self.infer_expr(value)?;
                 if *shared {
                     let bound = ty.clone().unwrap_or_else(|| val_ty.clone());

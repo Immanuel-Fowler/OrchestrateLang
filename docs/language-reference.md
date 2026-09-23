@@ -834,7 +834,9 @@ let timer = automatic {
 
 ### 4.6 The Built-in `update_orchestrator` Trigger
 
-When using `process[]`, any code can fire `trigger update_orchestrator([...])` to hot-swap the active process set:
+When using `process[]`, any code — an event handler, a worker, the orchestrator body, or a
+library's hook — can fire `trigger update_orchestrator([...])` to hot-swap the active
+process set:
 
 ```orchestrate
 let worker_a = automatic { print("A") sleep(500) }
@@ -846,9 +848,21 @@ let trim_handler = on trim_workers() {
     trigger update_orchestrator([worker_a, worker_c])
 }
 
-orchestrator main(procs: process[]) {
-    // All three start automatically
-    // When trim_workers fires, worker_b is aborted
+orchestrator main(procs: process[worker_a, worker_b, worker_c]) {
+    // All three start with the orchestrator
+    sleep(2000)
+    trigger trim_workers()   // worker_b is stopped
+}
+```
+
+The set is a value like any other: it can be built in a variable, and one worker can be
+named in more than one set. A worker can name itself, to keep itself in a set it swaps
+in:
+
+```orchestrate
+let supervisor = automatic {
+    if overloaded() { trigger update_orchestrator([supervisor, spare]) }
+    sleep(1000)
 }
 ```
 
@@ -867,9 +881,9 @@ orchestrator main(procs: process[]) { }
 ```
 
 **Rules:**
-- Processes **absent** from the new array → aborted immediately
-- Processes **new** to the array → spawned as fresh Tokio tasks
-- Processes in **both** → continue running, completely unaffected
+- Processes **absent** from the new array → stopped immediately, with their current run
+- Processes **new** to the array, or listed again after they stopped → started fresh
+- Processes in **both** and still running → continue, completely unaffected
 
 ---
 

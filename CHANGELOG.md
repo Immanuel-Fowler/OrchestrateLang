@@ -36,6 +36,13 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   so once. The count was also off by one: `restart: 1` restarted nothing. Stopping a
   worker, by `update_orchestrator`, now stops its current run too, which kept going
   before.
+- **`update_orchestrator` works from wherever the reference says.** Every form but a
+  top-level statement, which ran once at boot, reached rustc: from an event handler — the
+  reference's own example — (E0382), the orchestrator body (E0425), a worker (E0525), or a
+  library hook (E0507); naming one worker in two sets, or building a set in a variable,
+  (E0382). All of them work now, and a worker can name itself, to keep itself in a set it
+  swaps in. A stopped worker named in a new set is started again. The reference's example
+  now lists the workers it says start, and triggers the trim it describes.
 - **A crash while holding the shared-state lock no longer takes every worker down.** A
   statement that panicked with the lock held — a worker dividing by zero inside an `if`
   that reads shared state — poisoned the mutex, and every later statement that touched
