@@ -73,12 +73,39 @@ Variables are mutable by default. Reassign with `=`:
 count = count + 1
 ```
 
+A binding holds a **value**, not a reference to one. `let b = a`, passing `a` to a
+function or a serverlet, storing it in an array or a struct, or sending it with an event
+copies it, so `a` is unchanged afterwards and still usable:
+
+```orchestrate
+let xs = [1, 2]
+let ys = xs
+append(ys, 3)
+print(length(xs))    // 2 — ys is a copy
+```
+
+A number copies for free; a string, an array, or a struct is copied. A function's final
+value and a `return` hand a local back without copying it, since the function is done
+with it.
+
 #### `shared let`
 
-A top-level `let` belongs to the instance, and only hooks — `on_tick`, `on_start`,
-`on_stop`, and event handlers — can reach it. That is deliberate: a spawned worker can run
-while a tick holds that state, so letting both touch it would be a data race. A `fn`,
-`task`, or `process` that names one is a compile error.
+A top-level `let` belongs to the instance. Who reaches it, and how, depends on what runs
+where:
+
+| Code | Reaches a top-level `let` |
+|---|---|
+| `on_tick`, `on_fixed_tick`, `on_start`, `on_stop` | Directly: reads and writes |
+| A top-level event handler, in a library | Directly: it runs inside a tick's event drain, one at a time, so a write is seen by the next tick |
+| The orchestrator body, in a standalone program | Directly: it runs in place, in `main` |
+| The orchestrator body in a library, a worker (`automatic`), a standalone event handler, a closure | A **copy**, taken when it is declared: it may read it, and a write to it is a compile error, because the write would land on the copy and be lost |
+| A `fn`, `task`, or `process` | Not at all: pass it in as a parameter |
+
+That is deliberate: a spawned worker can run while a tick holds that state, so letting
+both touch it would be a data race. A serverlet client is a handle rather than data —
+every copy reaches the one serverlet, which takes calls one at a time — so a client
+declared at the top level can be called from anywhere, and every call reaches the same
+state.
 
 When several concurrent things genuinely need the same value, mark it `shared`:
 
@@ -98,6 +125,10 @@ may touch shared state** even though it may not call a serverlet.
 One rule follows from the lock: **a statement may wait, or touch shared state, not both.**
 Holding the lock across a wait would block every other reader, so
 `total = total + fetch()`, where `fetch` is a task, is refused and asks you to split it.
+
+A change made in place — `xs[i] = v`, `p.field = v`, `append`, `remove` — changes the
+shared binding itself, under the same lock, and reading one element reads it where it
+lives rather than copying the whole array first.
 
 `int`, `float`, `bool`, `string`, arrays, options and structs can be shared. A serverlet
 client, a process, or a closure cannot — the first two are already safe to use
@@ -308,6 +339,11 @@ print("Posts: " + posts)
 Under the hood this compiles to `tokio::join!`, so all three tasks run on the async runtime simultaneously.
 
 ### 2.8 Array Literals
+
+`[1, 2, 3]` is an `int[]`. An empty literal, `[]`, has no elements to say what it holds,
+so it takes its type from where it goes — an annotation, a struct field, a parameter, a
+return type — and fits any array there: `let xs: float[] = []`. With nothing to say,
+`let xs = []` is an `int[]`.
 
 Arrays of process handles can be written inline using `[` `]`. This is used with the built-in `update_orchestrator` trigger to dynamically change which processes are running:
 
@@ -575,7 +611,15 @@ let on_error = on service_error(code: int, message: string) {
 }
 ```
 
-Triggered blocks **auto-register themselves on boot**. They start listening immediately — no setup code needed in `main`.
+Triggered blocks **auto-register themselves on boot**, before the orchestrator body — and
+its `on_start` — runs, so an event the body triggers is handled. No setup code is needed in
+`main`.
+
+A handler bound to a name, like `on_error` above, is also a process. Name it in a process
+set — `process[...]` or `update_orchestrator` — and it runs while it is in the active set
+instead: removing it from the set stops it handling events. Named in none, it is
+registered for the program's lifetime, like a handler with no name. In a library a handler
+runs inside the ticks for the library's lifetime and cannot be named in a process set.
 
 Fire an event from anywhere — an automatic block, another triggered block, or the orchestrator body:
 
@@ -705,7 +749,9 @@ You can declare `on_start` and `on_stop` blocks inside the orchestrator body to 
 
 #### `on_start`
 
-`on_start` runs **before** process blocks start or triggered blocks register. Use it for setup tasks like initializing shared resources:
+`on_start` runs first in the orchestrator body, **before** the orchestrator's workers start.
+Event handlers are registered before it, so an event `on_start` triggers is handled. Use it
+for setup tasks like initializing shared resources:
 
 ```orchestrate
 orchestrator main() {

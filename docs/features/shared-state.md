@@ -94,11 +94,15 @@ The guard is taken once at the start of such a statement and dropped at its end.
 updates silently, and a design with no guarantee at all would be a footgun wearing a
 capability marker.
 
-**Reads clone.** The original proposal said a read would borrow, because the guard spans
-the statement. It cannot: a read produces a value, and a value cannot be moved out of a
-mutex guard. For a number the clone is a copy and costs nothing; for a string or an array
-it is the copy the reader was going to get anyway. Writes are still places, so
-`hits = hits + 1` reads a copy, adds, and writes back under one lock.
+**A value read is a copy; everything else is a place.** A read that produces a value —
+`let n = hits`, an argument — cannot move out of a mutex guard, so it is a copy: for a
+number that costs nothing, and for a string or an array it is the copy the reader was
+going to get anyway. Everything else reaches the binding where it lives, under the
+statement's lock: an assignment's target (`hits = hits + 1`, `xs[i] = v`,
+`p.field = v`), the array `append` and `remove` change, the array an index reads one
+element from, an operand, a value being printed. Until 0.16 the in-place changes were
+made to a copy that was then dropped — the program built, ran, and did nothing — and
+reading one element copied the whole array first.
 
 ### Waiting and holding are separate
 

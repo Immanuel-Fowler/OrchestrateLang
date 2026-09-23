@@ -56,8 +56,15 @@ the host when there are no host functions.
   deterministic cleanup and error reporting, before dropping the Tokio runtime.
 
 Lifecycle hooks and host declarations belong in the entry file. Top-level bindings
-are shared by its lifecycle hooks. The `main` orchestrator accepts no parameters or
-one `process[]` parameter for worker supervision. Event registries, owned tasks,
+are the instance's state, shared by its lifecycle hooks and its top-level event handlers:
+a handler runs inside the tick that drains its event, one at a time, so it may write that
+state and the next tick reads what it wrote. `on_start` and `on_stop` written inside the
+orchestrator body are the same hooks as top-level ones. The orchestrator body itself runs
+beside the ticks, so, like a worker, it holds copies of the top-level bindings it names,
+taken before the first tick; it may read them and call a serverlet client through them,
+and a write to one is a compile error. The `main` orchestrator accepts no parameters or
+one `process[]` parameter for worker supervision; a process set lists workers, since a
+handler here runs for the library's lifetime rather than as a process. Event registries, owned tasks,
 assets, host implementations, and stop flags are isolated per instance.
 
 ### Start options
@@ -301,7 +308,9 @@ TypeScript or restrict their OS permissions.
 A **sandboxed serverlet** takes the same `grant call` lines, and there a grant is the
 only way the guest can reach the host at all: each one is a single import defined in the
 guest's wasmtime linker, and a handler that calls an ungranted host function is refused
-by `orchestrate check`. The host method runs on the host, synchronously, while the guest
+by `orchestrate check`. A sandboxed serverlet declared in an imported module grants
+functions of the entry file's `host` groups by the same names, and `check` resolves them
+there, as the build does. The host method runs on the host, synchronously, while the guest
 waits inside its call, so its time counts against the serverlet's `timeout`. A host error
 or panic fails that one call inside the guest, which logs it and continues with the
 return type's default.

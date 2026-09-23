@@ -134,6 +134,32 @@ version of the claim.
   error naming the argument. Covered by `diagnostics_never_leak_rustc`; `KNOWN_LEAKS.txt`
   is empty.
 
+## Found and fixed for 0.16
+
+Three programs written against 0.15.1 — a backtest engine, a control loop, and a
+multi-tenant workflow runtime — turned up the defects below. Each has a regression test
+named in `CHANGELOG.md`.
+
+- **In-place changes to a `shared let` were lost.** Element and field assignment,
+  `append`, and `remove` changed a copy of the binding that was then dropped; a program
+  built, ran, and did nothing, with no sign anywhere. The worst kind: a control loop lost
+  every sensor reading this way and produced a plausible, wrong result on every tick.
+- **Value semantics held only at serverlet calls.** Everywhere else a binding whose value
+  was taken was moved, so ordinary programs — `print(a)` twice on a string, `let b = a`
+  on an array — reached rustc. One helper, `compile_value`, now copies at every such
+  position; `diagnostics_never_leak_rustc` cannot catch this class, since the programs
+  are valid, so `tests/programs/value_semantics.orch` holds it, with its output checked.
+- **A top-level serverlet client was usable only where it was started**, the design
+  document's example did not compile, **and a bare standalone `on` handler was never
+  registered**, so its events went nowhere, silently.
+- **A library's event handler could not write instance state**, which the reference said
+  it could.
+- **A struct named in two files was two types**, and a C sidecar's struct declared only
+  in its module did not build.
+- **`check` refused a valid module grant** that the build accepted.
+- **A write from a worker, a handler, or a closure to a binding outside it** reached
+  rustc, or, for a closure, compiled and was lost. It is now a `check` error.
+
 ## Found, not fixed
 
 - **Struct layout across the sandbox assumes a little-endian host.** Struct bytes are
@@ -191,7 +217,8 @@ version of the claim.
 
 ## Diagnostics corpus: what still reaches rustc
 
-Nothing. 89 invalid programs; all 89 rejected by `orchestrate check`, none by the build,
+Nothing. The counts below are 0.15.1's; `benchmarks/results/diagnostics_coverage.md` has
+the current run. 89 invalid programs; all 89 rejected by `orchestrate check`, none by the build,
 none by rustc, none accepted (`benchmarks/results/diagnostics_coverage.md`), and
 `tests/error_cases/diagnostics/KNOWN_LEAKS.txt` is empty.
 

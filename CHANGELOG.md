@@ -9,6 +9,85 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+### Changed
+- **A worker, a handler, or a closure that writes a binding declared outside it is a
+  compile error.** Each works on copies of what it names from outside — a worker and a
+  standalone handler run on tasks of their own, and a closure captures when it is made —
+  so the write landed on the copy and was lost. A worker's or a handler's reached rustc
+  (E0594); a closure's compiled and silently did nothing. `check` now names the binding
+  and says what to do instead: declare it `shared let`, keep it inside, or return the new
+  value. In a library the orchestrator body, which runs beside the ticks, is refused the
+  same way, and a top-level event handler is not: it runs inside a tick and writes
+  instance state itself (below). Breaking for a program that relied on a closure's lost
+  write, which is why this release is a minor one.
+
+### Fixed
+- **A change made in place reaches a `shared let`.** `xs[i] = v`, `p.field = v`,
+  `append`, and `remove` on a shared binding were made to a copy that was then dropped:
+  the program built, ran, and quietly did nothing. They now change the binding itself,
+  under the statement's lock, and reading one element no longer copies the whole array
+  first. A nested element assignment, `grid[i][j] = v`, lost its write the same way for
+  any array and is fixed with it. `for x in xs` over a shared array and a `while` whose
+  condition reads shared state reached rustc; each now takes the lock just for that read.
+- **A binding whose value is taken is copied, not moved.** OrchestrateLang has value
+  semantics and Rust moves, and only serverlet call arguments were copied (0.15.0). Now
+  every place a value is taken copies a binding or a field: `let`, assignment, call
+  arguments — foreign, module, task, host, and a guest's grant imports — `append`, array
+  and struct literals, variant payloads, event payloads, and a `match` that binds. Each
+  of these reached rustc as a use of a moved value: `print(a)` twice on a string,
+  `let b = a` on an array, instance state passed to a foreign function or copied into a
+  local in a hook, `append(xs, t)` and then `t`, a struct assigned into a `shared let`. A
+  function's final value and a `return` still move a local out. A closure captures copies
+  of what it names, so it can be called more than once, and a closure's `return` is
+  checked against the closure's own type rather than the enclosing function's.
+- **An `if` without `else` is a statement**, so a value-producing call as its last
+  statement — `if go { s.bump() }`, `if n > 2 { remove(xs, 0) }` — no longer becomes the
+  `if`'s value and reaches rustc (E0308). Loop bodies and void handler bodies discard
+  their last value the same way, and `remove` is void, as the language types it.
+- **A top-level serverlet client is usable everywhere the program runs.** It could be
+  used only where it was started: the orchestrator body could not see it (E0425), an
+  event handler moved it (E0382), a worker's closure became `FnOnce` (E0525), and a
+  library's handlers and workers moved it out of an `Fn` (E0507). The example in
+  `docs/design/concurrency-is-the-structure.md` reached rustc. A client is now captured
+  like any binding, and a worker or handler takes fresh copies for each start, restart,
+  and event; every call still reaches the one serverlet. The orchestrator body runs where
+  the top-level bindings are in scope — in place in a standalone `main`, and in a library
+  as a future owning copies. The design document's example is now run by the test suite,
+  taken from the document itself.
+- **A standalone `on` handler is registered, and before the orchestrator body runs.** A
+  bare `on name(...) { }` at the top level was never registered at all; a named one was
+  registered only after the orchestrator body finished, so an event the body triggered
+  was lost. Both register at startup now, before the body and its `on_start`. A named
+  handler listed in a process set starts and stops with that set; one listed in none is
+  registered for the program's lifetime. A trigger drops a stopped handler's closed
+  channel quietly instead of warning that it is full.
+- **A library's event handler writes instance state.** `docs/language-reference.md`
+  said top-level `let`s are reachable from event handlers; a handler got a copy, so a
+  write was refused by rustc (E0594) or lost. A top-level handler now runs inside the
+  tick's event drain, one at a time, and reaches instance state as the tick does, so the
+  next tick reads what it wrote. `on_start` and `on_stop` written inside the orchestrator
+  body are the library's hooks and reach it too (E0425 before). A handler named in a
+  library's process set is refused by name, since a library's handlers run for its
+  lifetime and are not processes.
+- **A struct or enum is one type, whichever files declare it.** One declared in a module
+  and again in the entry file were two Rust types (E0308 on `m::Pair` against `Pair`), a
+  C sidecar's struct declared only in its module named the entry file's (E0425), and an
+  enum declared only in a module could not be named from the entry file. Every struct and
+  enum is now defined once, at the crate root, and a module re-exports it. Two
+  declarations of one name that differ are refused, naming both files.
+- **`check` resolves a module's grants against the entry file's `host` groups.** 0.15.1
+  checked each module in a scope with none, so a sandboxed serverlet in a module that
+  granted the entry file's host function failed `check` while `build --lib` accepted it
+  and it ran. The module check now has the entry file's host groups, as the build does,
+  so the valid grant passes and an ungranted call inside a module is a `check` error. The
+  build runs the same module check, so the two cannot drift.
+- **An empty array literal takes its type from where it goes.** `let xs: float[] = []`
+  was refused with "expected float[], found int[]". `[]` now fits any array an
+  annotation, a field, a parameter, or a return type asks for; unannotated, it is still
+  `int[]`.
+- **`length(xs) < n` compiles in a sandboxed handler.** It was emitted as
+  `xs.len() as i64 < n`, which Rust parses as generic arguments.
+
 ## [0.15.1] - 2026-09-21
 
 Everything the build used to catch, `check` catches first.
