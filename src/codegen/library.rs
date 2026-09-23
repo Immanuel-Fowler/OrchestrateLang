@@ -3,11 +3,11 @@ use crate::ast::{Expr, ExprNode, MatchPattern, Stmt, StmtNode, StringPart, Type}
 use std::collections::HashSet;
 
 /// One field of the program struct: a top-level `let`, in declaration order.
-struct StateField {
-    name: String,
+pub(super) struct StateField {
+    pub(super) name: String,
     rust_type: String,
     /// A closure has no nameable type, so its field boxes it.
-    boxed: bool,
+    pub(super) boxed: bool,
     /// No type could be derived; emitted as a compile_error! beside the struct.
     error: Option<String>,
 }
@@ -110,11 +110,17 @@ impl Codegen {
     /// startup — moved into the process list, say — is unaffected. A name declared twice
     /// keeps its first position and takes the type of its last declaration, which is the
     /// binding that gets packed.
-    fn state_fields(&self) -> Vec<StateField> {
+    pub(super) fn state_fields(&self) -> Vec<StateField> {
         let mut referenced = HashSet::new();
-        for stmt in &self.local_stmts {
+        for stmt in self.local_stmts.iter().chain(self.body_hooks.iter()) {
             match &stmt.node {
                 StmtNode::OnTick { body, .. } | StmtNode::OnFixedTick { body, .. } | StmtNode::OnStop(body) => {
+                    Self::hook_names(body, &mut referenced)
+                }
+                // A top-level event handler runs inside a tick and reaches state the
+                // same way a tick does.
+                StmtNode::Expr(Expr { node: ExprNode::TriggeredBlock { body, .. }, .. })
+                | StmtNode::Let { value: Expr { node: ExprNode::TriggeredBlock { body, .. }, .. }, .. } => {
                     Self::hook_names(body, &mut referenced)
                 }
                 _ => {}
@@ -245,12 +251,13 @@ impl Codegen {
         runtime
     }
 
+    /// `main_future` is the orchestrator body as a future that owns what it names; it is
+    /// awaited in place in deterministic mode and spawned beside the ticks otherwise.
     pub(super) fn library_entry(
         &mut self,
-        helper: &str,
+        main_future: &str,
         declarations: &str,
         execution: &str,
-        args: &str,
     ) -> String {
         let fields = self.state_fields();
         let rewrite_fields: std::collections::BTreeMap<String, bool> =
@@ -261,7 +268,8 @@ impl Codegen {
         let mut fixed = String::new();
         // Every hook body runs with `__context` and `__host` bound once, in scope.
         self.context_bound = true;
-        for stmt in self.local_stmts.clone() {
+        let hooks = self.local_stmts.iter().chain(self.body_hooks.iter()).cloned().collect::<Vec<_>>();
+        for stmt in hooks {
             match stmt.node {
                 StmtNode::OnStart(body) => {
                     start.push_str(&format!("{};\n", self.compile_expr(&body)))
@@ -316,20 +324,19 @@ impl Codegen {
         format!(
             r#"{errors}/// The top-level bindings the hooks reach, owned by the instance rather than by a task.
 {program_struct}
-{helper}
 async fn __orch_run_tick(__context: &OrchContext, __program: &mut __OrchProgram, __dt: f64{input_param}) -> {output} {{
     __context.advance_time(__dt);
-    if __context.events_pending() {{ __context.drain_events().await; }}
+    if __context.events_pending() {{ __context.drain_events_with(__program).await; }}
     let __host = &*__context.host;
     let __output = async {{ {tick} }}.await;
-    if __context.events_pending() {{ __context.drain_events().await; }}
+    if __context.events_pending() {{ __context.drain_events_with(__program).await; }}
     __output
 }}
 async fn __orch_run_fixed_tick(__context: &OrchContext, __program: &mut __OrchProgram, __dt: f64) {{
-    if __context.events_pending() {{ __context.drain_events().await; }}
+    if __context.events_pending() {{ __context.drain_events_with(__program).await; }}
     let __host = &*__context.host;
     {fixed}
-    if __context.events_pending() {{ __context.drain_events().await; }}
+    if __context.events_pending() {{ __context.drain_events_with(__program).await; }}
 }}
 async fn __orch_entry(mut commands: tokio::sync::mpsc::UnboundedReceiver<OrchCommand>, ready: tokio::sync::oneshot::Sender<()>) {{
     {declarations}
@@ -340,7 +347,8 @@ async fn __orch_entry(mut commands: tokio::sync::mpsc::UnboundedReceiver<OrchCom
         tokio::select! {{ biased; _ = __shutdown.changed() => {{}}, _ = async {{ {start} }} => {{}} }}
     }}
     {execution}
-    let __main = if __context.options.deterministic {{ orchestrator_main({args}).await; None }} else {{ Some(tokio::spawn(async move {{ orchestrator_main({args}).await; }})) }};
+    let __main_future = {main_future};
+    let __main = if __context.options.deterministic {{ __main_future.await; None }} else {{ Some(tokio::spawn(__main_future)) }};
     *__context.program.enter().await = Some({pack});
     let _ = ready.send(());
     while !*__shutdown.borrow() {{

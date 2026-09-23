@@ -222,8 +222,13 @@ impl Codegen {
                 free_vars.sort();
 
                 let mut capture_code = String::new();
+                // The worker's copies are taken once, when it is declared; each start of
+                // the worker, and each restart, copies them again, so the closure can be
+                // called any number of times and every run gets what the first one got.
+                let mut recapture = String::new();
                 for var in &free_vars {
                     capture_code.push_str(&format!("let {} = {}.clone();\n    ", rust_ident(var), self.read_name(var)));
+                    recapture.push_str(&format!("let {0} = {0}.clone(); ", rust_ident(var)));
                 }
                 // Inside the closure every captured name is the clone above, not a program field.
                 self.push_scope();
@@ -291,10 +296,10 @@ impl Codegen {
                 format!(
                     r#"{{
     {capture}std::sync::Arc::new(move || {{
-        tokio::spawn(async move {{
+        {recapture}tokio::spawn(async move {{
             {bind}let mut __restart_count: u32 = 0;
             loop {{
-                {setup}let __inner_handle = tokio::spawn(async move {{
+                {setup}{recapture}let __inner_handle = tokio::spawn(async move {{
                     {bind}loop {{
                         {loop_body}
                     }}
@@ -313,6 +318,7 @@ impl Codegen {
     }}) as ProcessRef
 }}"#,
                     capture = capture_code,
+                    recapture = recapture,
                     bind = bind,
                     setup = setup_block,
                     loop_body = loop_inner,
@@ -321,18 +327,37 @@ impl Codegen {
                 )
             }
             ExprNode::TriggeredBlock { event_name, params, body } => {
+                // A library's top-level handler runs inside a tick, one at a time, so it
+                // reaches instance state where the tick does rather than holding a copy.
+                let reaches_program = self.library && std::mem::take(&mut self.top_level_handler);
                 let mut free_vars = HashSet::new();
                 self.get_free_vars_expr(expr, &mut HashSet::new(), &mut free_vars);
                 let mut free_vars: Vec<String> = free_vars.into_iter().collect();
                 // A `shared let` is reached through the lock wherever it is used, so it is
                 // never captured — capturing it would copy the value and lose the sharing.
                 free_vars.retain(|name| !self.is_shared(name));
+                if reaches_program {
+                    free_vars.retain(|name| !self.program_fields.contains_key(name));
+                }
                 free_vars.sort();
 
+                // Copies taken when the handler is declared, and again for each
+                // registration and each event, so every run gets what the first one got.
                 let mut capture_code = String::new();
+                let mut recapture = String::new();
                 for var in &free_vars {
                     capture_code.push_str(&format!("let {} = {}.clone();\n    ", rust_ident(var), self.read_name(var)));
+                    recapture.push_str(&format!("let {0} = {0}.clone(); ", rust_ident(var)));
                 }
+                let outer_rewrite = if reaches_program {
+                    self.state_rewrite.replace(super::core::StateRewrite {
+                        fields: self.program_fields.clone(),
+                        scopes: Vec::new(),
+                        receiver: "(*__context.program_ptr())",
+                    })
+                } else {
+                    None
+                };
                 self.push_scope();
                 for var in &free_vars { self.define_local(var); }
                 for p in params { self.define_local(&p.name); }
@@ -361,18 +386,26 @@ impl Codegen {
                 let handler = self.library && event_name != "update_orchestrator";
                 let bound = std::mem::replace(&mut self.context_bound, handler);
                 let deferred = self.enter_deferred_body();
-                let body_str = self.compile_expr(body);
+                let body_str = self.compile_statement_body(body);
                 self.leave_deferred_body(deferred);
                 self.context_bound = bound;
                 self.pop_scope();
+                if reaches_program {
+                    self.state_rewrite = outer_rewrite;
+                }
                 if handler {
-                    let clones = capture_code.clone();
-                    return format!("{{ {capture_code} std::sync::Arc::new(move || {{ {clones} crate::{func_name}().lock().unwrap().push(std::sync::Arc::new(move |msg: {arc_type_str}| {{ {clones} Box::pin(async move {{ let __context = crate::__orch_context(); let __host = &*__context.host; let {bindings} = (*msg).clone(); {body_str}; }}) as crate::OrchEvent }})); }}) }}");
+                    // Instance state is reached through a pointer the tick sets while it
+                    // drains events, and only then: see `OrchContext::program_ptr`.
+                    let body_str = if reaches_program { format!("#[allow(unused_unsafe)] unsafe {body_str}") } else { body_str };
+                    return format!("{{ {capture_code} std::sync::Arc::new(move || {{ {recapture} crate::{func_name}().lock().unwrap().push(std::sync::Arc::new(move |msg: {arc_type_str}| {{ {recapture} Box::pin(async move {{ let __context = crate::__orch_context(); let __host = &*__context.host; let {bindings} = (*msg).clone(); {body_str}; }}) as crate::OrchEvent }})); }}) }}");
                 }
 
+                // A process: starting it registers the handler and spawns its receive loop,
+                // whose handle is the process's, so stopping it ends the loop; its sender
+                // then reads as closed and a trigger drops it.
                 format!(
-                    "{{\n    {}std::sync::Arc::new(move || {{\n        let (tx, mut rx) = tokio::sync::mpsc::channel::<{}>(100);\n        {}().lock().unwrap().push(tx);\n        tokio::spawn(async move {{\n            while let Some(msg) = rx.recv().await {{\n                let {} = (*msg).clone();\n                tokio::spawn(async move {{\n                    {}\n                }});\n            }}\n        }});\n    }})\n}}",
-                    capture_code, arc_type_str, func_name, bindings, body_str
+                    "{{\n    {capture}std::sync::Arc::new(move || {{\n        {recapture}let (tx, mut rx) = tokio::sync::mpsc::channel::<{ty}>(100);\n        {registry}().lock().unwrap().push(tx);\n        tokio::spawn(async move {{\n            while let Some(msg) = rx.recv().await {{\n                let {bindings} = (*msg).clone();\n                {recapture}tokio::spawn(async move {body});\n            }}\n        }})\n    }}) as ProcessRef\n}}",
+                    capture = capture_code, recapture = recapture, ty = arc_type_str, registry = func_name, bindings = bindings, body = body_str
                 )
             }
             ExprNode::StartProcess { target } => {

@@ -402,6 +402,15 @@ pub struct Codegen {
     /// a local there moves out. Taken by the first block compiled, so no nested block
     /// sees it.
     pub(super) tail_moves: bool,
+    /// In a library, the `on_start` and `on_stop` written inside the orchestrator body:
+    /// they are the library's hooks, compiled beside the top-level ones.
+    pub(super) body_hooks: Vec<Stmt>,
+    /// In a library, the top-level bindings the hooks and handlers reach: fields of the
+    /// program struct, and whether each boxes a closure.
+    pub(super) program_fields: std::collections::BTreeMap<String, bool>,
+    /// Set while a top-level event handler is compiled. In a library such a handler runs
+    /// inside a tick, one at a time, and reaches instance state through it.
+    pub(super) top_level_handler: bool,
 }
 
 impl Codegen {
@@ -438,6 +447,9 @@ impl Codegen {
             sandbox_guest_grants: None,
             closure_depth: 0,
             tail_moves: false,
+            body_hooks: Vec::new(),
+            program_fields: std::collections::BTreeMap::new(),
+            top_level_handler: false,
         }
     }
 
@@ -613,7 +625,12 @@ impl Codegen {
                 self.get_free_vars_expr(then_branch, local_env, free_vars);
                 if let Some(eb) = else_branch { self.get_free_vars_expr(eb, local_env, free_vars); }
             }
-            ExprNode::ModuleCall { args, .. } => {
+            ExprNode::ModuleCall { module_local_name, args, .. } => {
+                // `s.get()` names `s` when `s` is a binding — a serverlet client — rather
+                // than a module or a host group, so a body that calls it captures it.
+                if self.is_binding_receiver(module_local_name) && !local_env.contains(module_local_name) {
+                    free_vars.insert(module_local_name.clone());
+                }
                 for a in args { self.get_free_vars_expr(a, local_env, free_vars); }
             }
             ExprNode::StartServerlet { args, .. } => {
@@ -648,7 +665,17 @@ impl Codegen {
             }
             ExprNode::Match { value, arms } => {
                 self.get_free_vars_expr(value, local_env, free_vars);
-                for arm in arms { self.get_free_vars_expr(&arm.body, local_env, free_vars); }
+                for arm in arms {
+                    // A name the pattern binds is the arm's own, in its guard and its body.
+                    let mut arm_env = local_env.clone();
+                    let mut bound = Vec::new();
+                    Self::pattern_bindings(&arm.pattern, &mut bound);
+                    arm_env.extend(bound);
+                    if let crate::ast::MatchPattern::Guard { condition, .. } = &arm.pattern {
+                        self.get_free_vars_expr(condition, &mut arm_env, free_vars);
+                    }
+                    self.get_free_vars_expr(&arm.body, &mut arm_env, free_vars);
+                }
             }
             ExprNode::EnumVariantLiteral { payload, .. } => {
                 if let Some(p) = payload { self.get_free_vars_expr(p, local_env, free_vars); }
@@ -707,6 +734,11 @@ impl Codegen {
             }
             _ => {}
         }
+    }
+
+    /// The receiver of `x.f()` is a binding, not a module alias or a host group.
+    pub(super) fn is_binding_receiver(&self, name: &str) -> bool {
+        !self.modules.contains(name) && !self.host_functions.iter().any(|(group, _)| group == name)
     }
 
     pub fn functions_and_tasks_contain(&self, name: &str) -> bool {

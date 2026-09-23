@@ -1075,6 +1075,78 @@ orchestrator main(procs: process[worker]) {
     assert_eq!(last, Some("total 60 left 2 count 1 names 1 cell 9"), "{out}");
 }
 
+/// One top-level client, reached from the orchestrator body, an event handler, and two
+/// workers: every call lands on the one serverlet, which takes them one at a time. Each of
+/// these forms reached rustc before (E0425, E0382, E0525), and a bare `on` handler was
+/// never registered at all.
+#[test]
+fn runtime_top_level_client_is_shared_by_body_handler_and_workers() {
+    let out = run_orch("client_everywhere", r#"
+serverlet Counter {
+    let n = 0
+    let busy = false
+    let overlaps = 0
+    on bump(who: int) -> int {
+        if busy { overlaps = overlaps + 1 }
+        busy = true
+        let spin = 0
+        for i in range(2000) { spin = spin + i }
+        n = n + 1
+        busy = false
+        return n
+    }
+    on report() -> string { return "{n} calls, {overlaps} overlapping" }
+}
+
+let counter = start Counter()
+
+let a = automatic {
+    for i in range(50) { counter.bump(1) }
+    sleep(100000)
+}
+let b = automatic {
+    for i in range(50) { counter.bump(2) }
+    sleep(100000)
+}
+on poke(times: int) {
+    for i in range(times) { counter.bump(3) }
+}
+
+orchestrator main(procs: process[a, b]) {
+    trigger poke(50)
+    for i in range(50) { counter.bump(4) }
+    sleep(1500)
+    print(counter.report())
+    stop_orch()
+}
+"#);
+    assert_eq!(out.trim(), "200 calls, 0 overlapping");
+}
+
+/// The example in docs/design/concurrency-is-the-structure.md, taken from the document
+/// itself so the two cannot drift: it reached rustc from v0.14 to v0.15.1. It never
+/// stops on its own, so it runs for a while and is then stopped.
+#[test]
+fn runtime_design_document_example_runs() {
+    let doc = fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs/design/concurrency-is-the-structure.md")).unwrap();
+    let start = doc.find("```orchestrate\n").expect("an orchestrate block") + "```orchestrate\n".len();
+    let source = &doc[start..start + doc[start..].find("```").unwrap()];
+    let scratch = Scratch::new("design_doc_example");
+    let src_file = scratch.path().join("example.orch");
+    fs::write(&src_file, source).unwrap();
+    let binary = scratch.path().join("example_bin");
+    let built = Command::new(orchestrate_bin())
+        .args(["build", src_file.to_str().unwrap(), "-o", binary.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut child = Command::new(&binary).stdout(std::process::Stdio::piped()).spawn().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    child.kill().unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "created 42: Mina");
+}
+
 /// Arrays and structs across the C ABI. An array parameter is a pointer and a count; an
 /// array return is a `malloc`'d pointer plus a count written through an out-parameter,
 /// which the wrapper copies and frees — the same ownership rule strings follow. A struct

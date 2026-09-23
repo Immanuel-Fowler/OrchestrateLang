@@ -82,16 +82,16 @@ async fn add(a: i64, b: i64) -> i64 {
 }
 
 // orch:5:1
-async fn orchestrator_main() {
-    // orch:6:5
-        let mut result = add(3, 4).await;
-        // orch:7:5
-        print_val(to_string(&result));
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    orchestrator_main().await;
+    {
+        async {
+            // orch:6:5
+                let mut result = add(3, 4).await;
+                // orch:7:5
+                print_val(to_string(&result));
+        }.await;
+    }
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
     }

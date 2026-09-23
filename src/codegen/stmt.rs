@@ -171,199 +171,7 @@ impl Codegen {
             }
             StmtNode::OrchestratorDecl { name, params, return_type, body } => {
                 if name == "main" {
-                    let mut decl_code = Vec::new();
-                    let mut exec_code = Vec::new();
-                    let local_stmts = self.local_stmts.clone();
-                    for s in &local_stmts {
-                        if self.library && matches!(&s.node, StmtNode::OnStart(_) | StmtNode::OnStop(_) | StmtNode::OnTick { .. } | StmtNode::OnFixedTick { .. }) { continue; }
-                        let mut compiled = self.compile_stmt(s);
-
-                        let mut is_auto_let = false;
-                        let mut auto_name = String::new();
-                        if let StmtNode::Let { name, value, .. } = &s.node {
-                            if let ExprNode::TriggeredBlock { .. } = &value.node {
-                                is_auto_let = true;
-                                auto_name = name.clone();
-                            }
-                        }
-
-                        if let StmtNode::Expr(crate::ast::Spanned { node: ExprNode::TriggeredBlock { .. }, .. }) = &s.node {
-                            compiled = if self.library { format!("({})();", compiled) } else { format!("({});", compiled) };
-                        } else if !compiled.ends_with(';') && !compiled.ends_with('}') {
-                            compiled.push(';');
-                        }
-
-                        match &s.node {
-                            StmtNode::Let { .. } => {
-                                decl_code.push(compiled);
-                                if is_auto_let {
-                                    decl_code.push(format!("{}();", auto_name));
-                                }
-                            }
-                            _ => { exec_code.push(compiled); }
-                        }
-                    }
-                    let decl_body_str = decl_code.join("\n");
-                    let exec_body_str = exec_code.join("\n");
-
-                    let params_str = params.iter()
-                        .map(|p| format!("{}: {}", rust_ident(&p.name), self.compile_type(&p.ty)))
-                        .collect::<Vec<String>>()
-                        .join(", ");
-
-                    let mut has_process_array = false;
-                    let mut param_name = String::new();
-                    let mut initial_procs = Vec::new();
-                    if params.len() == 1 {
-                        if let Type::Array(inner, init_vals) = &params[0].ty {
-                            if *inner.as_ref() == Type::Process {
-                                has_process_array = true;
-                                param_name = params[0].name.clone();
-                                initial_procs = init_vals.clone();
-                            }
-                        }
-                    }
-
-                    let body_str = if let ExprNode::Block(_) = &body.node {
-                        self.compile_block_inner(body, true)
-                    } else {
-                        self.compile_expr(body)
-                    };
-
-                    let helper_fn_body = if has_process_array {
-                        format!(
-                            r#"struct ActiveState {{
-        procs: Vec<ProcessRef>,
-        handles: Vec<(ProcessRef, tokio::task::JoinHandle<()>)>,
-    }}
-    let state = std::sync::Arc::new(std::sync::Mutex::new(ActiveState {{
-        procs: {param}.clone(),
-        handles: Vec::new(),
-    }}));
-    {{
-        let init_procs = {{
-            let locked = state.lock().unwrap();
-            locked.procs.clone()
-        }};
-        let mut handles = Vec::new();
-        for p in &init_procs {{
-            let handle = p();
-            handles.push((p.clone(), handle));
-        }}
-        let mut locked = state.lock().unwrap();
-        locked.handles = handles;
-    }}
-
-    // Liveness monitor: restart processes that exit unexpectedly
-    let state_monitor = state.clone();
-    tokio::spawn(async move {{
-        loop {{
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            let mut locked = state_monitor.lock().unwrap();
-            let mut to_restart = Vec::new();
-            locked.handles.retain(|(p, h)| {{
-                if h.is_finished() {{
-                    to_restart.push(p.clone());
-                    false
-                }} else {{
-                    true
-                }}
-            }});
-            for p in to_restart {{
-                eprintln!("[orchestrate] process exited unexpectedly — restarting");
-                let handle = p();
-                locked.handles.push((p, handle));
-            }}
-        }}
-    }});
-
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<std::sync::Arc<Vec<ProcessRef>>>(100);
-    get_registry_update_orchestrator().lock().unwrap().push(tx);
-    let state_clone = state.clone();
-    tokio::spawn(async move {{
-        while let Some(msg) = rx.recv().await {{
-            let new_procs = (*msg).clone();
-            let state_clone = state_clone.clone();
-            tokio::spawn(async move {{
-                let mut locked = state_clone.lock().unwrap();
-                let mut to_keep = Vec::new();
-                for (p, handle) in locked.handles.drain(..) {{
-                    let mut found = false;
-                    for np in &new_procs {{
-                        if std::sync::Arc::ptr_eq(&p, np) {{
-                            found = true;
-                            break;
-                        }}
-                    }}
-                    if found {{
-                        to_keep.push((p, handle));
-                    }} else {{
-                        handle.abort();
-                    }}
-                }}
-                locked.handles = to_keep;
-                for np in &new_procs {{
-                    let mut already_running = false;
-                    for (p, _) in &locked.handles {{
-                        if std::sync::Arc::ptr_eq(p, np) {{
-                            already_running = true;
-                            break;
-                        }}
-                    }}
-                    if !already_running {{
-                        let handle = np();
-                        locked.handles.push((np.clone(), handle));
-                    }}
-                }}
-                locked.procs = new_procs;
-            }});
-        }}
-    }});
-
-    {body}"#,
-                            param = param_name,
-                            body = body_str
-                        )
-                    } else {
-                        body_str
-                    };
-
-                    let helper_fn = format!(
-                        "async fn orchestrator_main({}) {{\n    {}\n}}",
-                        params_str,
-                        helper_fn_body.replace("\n", "\n    ")
-                    );
-
-                    let mut args_str = params.iter().map(|p| p.name.clone()).collect::<Vec<String>>().join(", ");
-                    if has_process_array {
-                        if initial_procs.is_empty() {
-                            args_str = "vec![]".to_string();
-                        } else {
-                            let procs_list = initial_procs.join(", ");
-                            args_str = format!("vec![{}]", procs_list);
-                        }
-                    }
-
-                    if self.library {
-                        return self.library_entry(&helper_fn, &decl_body_str, &exec_body_str, &args_str);
-                    }
-                    let mut main_body = String::new();
-                    if !decl_body_str.is_empty() {
-                        main_body.push_str(&decl_body_str);
-                        main_body.push('\n');
-                    }
-                    main_body.push_str(&format!("orchestrator_main({}).await;\n", args_str));
-                    if !exec_body_str.is_empty() {
-                        main_body.push_str(&exec_body_str);
-                        main_body.push('\n');
-                    }
-                    main_body.push_str("loop {\n    tokio::time::sleep(std::time::Duration::from_secs(3600)).await;\n}");
-
-                    format!(
-                        "{}\n\n#[tokio::main]\nasync fn main() -> Result<(), Box<dyn std::error::Error>> {{\n    {}\n}}",
-                        helper_fn,
-                        main_body.replace("\n", "\n    ")
-                    )
+                    return self.compile_main_orchestrator(params, body);
                 } else {
                     let params_str = params.iter()
                         .map(|p| format!("{}: {}", rust_ident(&p.name), self.compile_type(&p.ty)))
@@ -401,8 +209,10 @@ impl Codegen {
                     }
                     return format!("let context = crate::__orch_context(); let value = std::sync::Arc::new({payload}); let handlers = {func_name}().lock().unwrap().clone(); for handler in handlers {{ context.queue_event(handler(value.clone())); }}");
                 }
+                // A subscriber that has stopped — a handler taken out of the active set —
+                // has a closed channel, and is dropped here rather than warned about.
                 format!(
-                    "let payload_eval = std::sync::Arc::new({});\nif let Ok(handlers) = {}().lock() {{\n    for tx in handlers.iter() {{\n        if tx.try_send(std::sync::Arc::clone(&payload_eval)).is_err() {{\n            eprintln!(\"[orchestrate] warning: dropped event '{}' — subscriber channel full\");\n        }}\n    }}\n}}",
+                    "{{\n    let payload_eval = std::sync::Arc::new({});\n    if let Ok(mut handlers) = {}().lock() {{\n        handlers.retain(|tx| !tx.is_closed());\n        for tx in handlers.iter() {{\n            if let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) = tx.try_send(std::sync::Arc::clone(&payload_eval)) {{\n                eprintln!(\"[orchestrate] warning: dropped event '{}' — subscriber channel full\");\n            }}\n        }}\n    }}\n}}",
                     payload, func_name, event_name
                 )
             }
@@ -692,6 +502,252 @@ impl Codegen {
                 format!("#[derive(Clone, Debug)]\npub enum {} {{\n{}\n}}", rust_ident(name), variants_str)
             }
         }
+    }
+
+    /// `orchestrator main`: the program's entry. Its body runs where the top-level bindings
+    /// are in scope, so it reaches a client, a worker, or state declared beside it. In a
+    /// standalone program that is `main` itself, which runs the body in place; in a library
+    /// the body runs beside the ticks, as a future that owns copies of what it names.
+    ///
+    /// Event handlers are registered before the body runs, so an event the body — or an
+    /// `on_start` — triggers is handled.
+    fn compile_main_orchestrator(&mut self, params: &[crate::ast::Param], body: &Expr) -> String {
+        let process_names = Self::process_names(&self.local_stmts, params, body);
+
+        // The hooks written inside the body: `on_start` runs first, before the workers
+        // start; `on_stop` is armed for Ctrl+C. In a library both are the library's hooks.
+        let (hooks, rest): (Vec<Stmt>, Vec<Stmt>) = match &body.node {
+            ExprNode::Block(stmts) => stmts.iter().cloned().partition(|s| matches!(s.node, StmtNode::OnStart(_) | StmtNode::OnStop(_))),
+            _ => (Vec::new(), Vec::new()),
+        };
+        let body = match &body.node {
+            ExprNode::Block(_) => crate::ast::Spanned { span: body.span, node: ExprNode::Block(rest) },
+            _ => body.clone(),
+        };
+        if self.library {
+            self.body_hooks = hooks.clone();
+            // Instance state is known before any handler is compiled, since a handler
+            // reaches it through the tick rather than capturing a copy.
+            self.program_fields = self.state_fields().iter().map(|f| (f.name.clone(), f.boxed)).collect();
+        }
+
+        let mut decl_code = Vec::new();
+        let mut exec_code = Vec::new();
+        let local_stmts = self.local_stmts.clone();
+        for s in &local_stmts {
+            if self.library && matches!(&s.node, StmtNode::OnStart(_) | StmtNode::OnStop(_) | StmtNode::OnTick { .. } | StmtNode::OnFixedTick { .. }) { continue; }
+            let is_handler = matches!(&s.node, StmtNode::Expr(crate::ast::Spanned { node: ExprNode::TriggeredBlock { .. }, .. }))
+                || matches!(&s.node, StmtNode::Let { value: crate::ast::Spanned { node: ExprNode::TriggeredBlock { .. }, .. }, .. });
+            self.top_level_handler = is_handler;
+            let compiled = self.compile_stmt(s);
+            self.top_level_handler = false;
+            match &s.node {
+                // A handler bound to a name is a process. Named in a process set, it runs
+                // while it is in the active set; named in none, it is registered at start
+                // for the program's lifetime, like one that has no name.
+                StmtNode::Let { name, value, .. } if matches!(value.node, ExprNode::TriggeredBlock { .. }) => {
+                    decl_code.push(compiled);
+                    if self.library || !process_names.contains(name) {
+                        decl_code.push(format!("{}();", rust_ident(name)));
+                    }
+                }
+                StmtNode::Expr(crate::ast::Spanned { node: ExprNode::TriggeredBlock { .. }, .. }) => {
+                    decl_code.push(format!("({})();", compiled));
+                }
+                StmtNode::Let { .. } => decl_code.push(Self::terminated(compiled)),
+                _ => exec_code.push(Self::terminated(compiled)),
+            }
+        }
+
+        let mut start_hooks = String::new();
+        if !self.library {
+            for hook in &hooks {
+                start_hooks.push_str(&Self::terminated(self.compile_stmt(hook)));
+                start_hooks.push('\n');
+            }
+        }
+
+        let process_param = match params {
+            [param] => match &param.ty {
+                Type::Array(inner, initial) if **inner == Type::Process => Some((param.name.clone(), initial.clone())),
+                _ => None,
+            },
+            _ => None,
+        };
+        // The parameters are bound from the top-level declarations of the same names: a
+        // process set from the workers it lists.
+        let mut bind_params = String::new();
+        for p in params {
+            match &process_param {
+                Some((name, initial)) if *name == p.name => {
+                    let procs = initial.iter().map(|w| format!("{}.clone()", rust_ident(w))).collect::<Vec<_>>().join(", ");
+                    bind_params.push_str(&format!("let {}: Vec<ProcessRef> = vec![{}];\n", rust_ident(name), procs));
+                }
+                _ => bind_params.push_str(&format!("let {0} = {0}.clone();\n", rust_ident(&p.name))),
+            }
+        }
+
+        let body_str = self.compile_block_inner(&body, true);
+        let run = match &process_param {
+            Some((name, _)) => format!(
+                r#"struct ActiveState {{
+        procs: Vec<ProcessRef>,
+        handles: Vec<(ProcessRef, tokio::task::JoinHandle<()>)>,
+    }}
+    let state = std::sync::Arc::new(std::sync::Mutex::new(ActiveState {{
+        procs: {param}.clone(),
+        handles: Vec::new(),
+    }}));
+    {{
+        let init_procs = {{
+            let locked = state.lock().unwrap();
+            locked.procs.clone()
+        }};
+        let mut handles = Vec::new();
+        for p in &init_procs {{
+            let handle = p();
+            handles.push((p.clone(), handle));
+        }}
+        let mut locked = state.lock().unwrap();
+        locked.handles = handles;
+    }}
+
+    // Liveness monitor: restart processes that exit unexpectedly
+    let state_monitor = state.clone();
+    tokio::spawn(async move {{
+        loop {{
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let mut locked = state_monitor.lock().unwrap();
+            let mut to_restart = Vec::new();
+            locked.handles.retain(|(p, h)| {{
+                if h.is_finished() {{
+                    to_restart.push(p.clone());
+                    false
+                }} else {{
+                    true
+                }}
+            }});
+            for p in to_restart {{
+                eprintln!("[orchestrate] process exited unexpectedly — restarting");
+                let handle = p();
+                locked.handles.push((p, handle));
+            }}
+        }}
+    }});
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<std::sync::Arc<Vec<ProcessRef>>>(100);
+    get_registry_update_orchestrator().lock().unwrap().push(tx);
+    let state_clone = state.clone();
+    tokio::spawn(async move {{
+        while let Some(msg) = rx.recv().await {{
+            let new_procs = (*msg).clone();
+            let state_clone = state_clone.clone();
+            tokio::spawn(async move {{
+                let mut locked = state_clone.lock().unwrap();
+                let mut to_keep = Vec::new();
+                for (p, handle) in locked.handles.drain(..) {{
+                    let mut found = false;
+                    for np in &new_procs {{
+                        if std::sync::Arc::ptr_eq(&p, np) {{
+                            found = true;
+                            break;
+                        }}
+                    }}
+                    if found {{
+                        to_keep.push((p, handle));
+                    }} else {{
+                        handle.abort();
+                    }}
+                }}
+                locked.handles = to_keep;
+                for np in &new_procs {{
+                    let mut already_running = false;
+                    for (p, _) in &locked.handles {{
+                        if std::sync::Arc::ptr_eq(p, np) {{
+                            already_running = true;
+                            break;
+                        }}
+                    }}
+                    if !already_running {{
+                        let handle = np();
+                        locked.handles.push((np.clone(), handle));
+                    }}
+                }}
+                locked.procs = new_procs;
+            }});
+        }}
+    }});
+
+    {body}"#,
+                param = rust_ident(name),
+                body = body_str
+            ),
+            None => body_str,
+        };
+        let run = format!("{start_hooks}{run}");
+
+        if self.library {
+            // The body runs beside the ticks, so it owns copies of what it names, taken
+            // before the top-level state is handed to the hooks.
+            let mut free = std::collections::HashSet::new();
+            let mut bound: std::collections::HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+            self.get_free_vars_expr(&body, &mut bound, &mut free);
+            let mut free: Vec<String> = free.into_iter().filter(|n| !self.is_shared(n) && !params.iter().any(|p| p.name == *n)).collect();
+            free.sort();
+            let captures = free.iter().map(|n| format!("let {0} = {0}.clone();\n", rust_ident(n))).collect::<String>();
+            let future = format!("{{\n{bind_params}{captures}async move {{\n    {}\n}}\n}}", run.replace("\n", "\n    "));
+            return self.library_entry(&future, &decl_code.join("\n"), &exec_code.join("\n"));
+        }
+
+        let mut main_body = String::new();
+        if !decl_code.is_empty() {
+            main_body.push_str(&decl_code.join("\n"));
+            main_body.push('\n');
+        }
+        // In place, borrowing `main`'s bindings; an async block so a `return` in the body
+        // ends the body, not the program.
+        let inline = format!("{bind_params}async {{\n    {}\n}}.await;", run.replace("\n", "\n    "));
+        main_body.push_str(&format!("{{\n    {}\n}}\n", inline.replace("\n", "\n    ")));
+        if !exec_code.is_empty() {
+            main_body.push_str(&exec_code.join("\n"));
+            main_body.push('\n');
+        }
+        main_body.push_str("loop {\n    tokio::time::sleep(std::time::Duration::from_secs(3600)).await;\n}");
+        format!(
+            "#[tokio::main]\nasync fn main() -> Result<(), Box<dyn std::error::Error>> {{\n    {}\n}}",
+            main_body.replace("\n", "\n    ")
+        )
+    }
+
+    /// A compiled statement with its terminating semicolon.
+    fn terminated(compiled: String) -> String {
+        if compiled.ends_with(';') || compiled.ends_with('}') { compiled } else { format!("{compiled};") }
+    }
+
+    /// Every name the program uses as a process: the workers the main orchestrator's
+    /// process set lists, and those in any `update_orchestrator` set.
+    fn process_names(stmts: &[Stmt], params: &[crate::ast::Param], body: &Expr) -> std::collections::HashSet<String> {
+        let mut names = std::collections::HashSet::new();
+        for p in params {
+            if let Type::Array(inner, initial) = &p.ty {
+                if **inner == Type::Process { names.extend(initial.iter().cloned()); }
+            }
+        }
+        let mut visit = |node: crate::ast::Node| {
+            let crate::ast::Node::Stmt(Stmt { node: StmtNode::Trigger { event_name, args }, .. }) = node else { return };
+            if event_name != "update_orchestrator" { return; }
+            for arg in args {
+                if let ExprNode::ArrayLiteral(items) = &arg.node {
+                    names.extend(items.iter().filter_map(|item| match &item.node {
+                        ExprNode::Identifier(name) => Some(name.clone()),
+                        _ => None,
+                    }));
+                }
+            }
+        };
+        crate::ast::walk_expr(body, &mut visit);
+        for stmt in stmts { crate::ast::walk_stmt(stmt, &mut visit); }
+        names
     }
 
     fn compile_secret_mirror(&mut self, name: &str, handlers: &[Handler]) -> String {

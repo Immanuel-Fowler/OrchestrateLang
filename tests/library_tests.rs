@@ -294,6 +294,68 @@ fn main() {
     assert_eq!(output.trim(), "[4]");
 }
 
+/// A top-level client is usable from a hook, an event handler, a worker, and the
+/// orchestrator body, and every call reaches the one serverlet. A handler writes
+/// instance state — a number and an array — inside the tick that drains it, and the next
+/// tick reads what it wrote; `on_start` written in the orchestrator body writes it too,
+/// and a hook copies state into a local without taking it from the instance. Each of
+/// these reached rustc before (E0507, E0525, E0594, E0425).
+#[test]
+fn library_clients_and_instance_state_from_every_context() {
+    let root = root("clients_everywhere");
+    build(&root, r#"
+host world { fn record(n: int) }
+serverlet Counter {
+    let n = 0
+    on bump(k: int) -> int {
+        n = n + k
+        return n
+    }
+}
+let counter = start Counter()
+let count = 0
+let names: string[] = []
+let seed = 0
+on hit(k: int) {
+    count = count + k
+    append(names, "hit")
+    world.record(counter.bump(k))
+}
+let worker = automatic {
+    counter.bump(100)
+    sleep(100000)
+}
+on_tick(dt: float) {
+    let copy = names
+    world.record(count)
+    world.record(length(copy))
+    world.record(seed)
+    trigger hit(1)
+}
+orchestrator main(procs: process[worker]) {
+    on_start { seed = 7 }
+    counter.bump(1000)
+}
+"#);
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<i64>>>);
+impl scripts::Host for Host { fn world_record(&self, n: i64) -> Result<(), String> { self.0.lock().unwrap().push(n); Ok(()) } }
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let mut scripts = scripts::start(runtime.handle(), Host(recorded.clone())).unwrap();
+    scripts.ready_blocking(&runtime).unwrap();
+    // The worker and the orchestrator body run beside the ticks; let both call first.
+    runtime.block_on(async { tokio::time::sleep(std::time::Duration::from_millis(200)).await });
+    for _ in 0..3 { scripts.tick_sync(&runtime, 0.016).unwrap(); }
+    scripts.shutdown_blocking(&runtime).unwrap();
+    println!("{:?}", recorded.lock().unwrap());
+}
+"#);
+    assert_eq!(output.trim(), "[0, 0, 7, 1101, 1, 1, 7, 1102, 2, 2, 7, 1103]");
+}
+
 #[test]
 fn library_secret_and_drop_shutdown() {
     let root = root("secret");

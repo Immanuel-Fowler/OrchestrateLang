@@ -82,16 +82,16 @@ fn double(x: i64) -> i64 {
 }
 
 // orch:5:1
-async fn orchestrator_main() {
-    // orch:6:5
-        let mut r = double(5);
-        // orch:7:5
-        print_val(to_string(&r));
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    orchestrator_main().await;
+    {
+        async {
+            // orch:6:5
+                let mut r = double(5);
+                // orch:7:5
+                print_val(to_string(&r));
+        }.await;
+    }
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
     }

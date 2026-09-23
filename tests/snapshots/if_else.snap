@@ -88,16 +88,16 @@ fn max(a: i64, b: i64) -> i64 {
 }
 
 // orch:9:1
-async fn orchestrator_main() {
-    // orch:10:5
-        let mut m = max(3, 7);
-        // orch:11:5
-        print_val(to_string(&m));
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    orchestrator_main().await;
+    {
+        async {
+            // orch:10:5
+                let mut m = max(3, 7);
+                // orch:11:5
+                print_val(to_string(&m));
+        }.await;
+    }
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
     }

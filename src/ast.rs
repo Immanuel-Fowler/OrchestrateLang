@@ -404,3 +404,75 @@ pub enum StmtNode {
         variants: Vec<EnumVariant>,
     },
 }
+
+/// A node of the tree, as a walk visits it.
+#[derive(Clone, Copy)]
+pub enum Node<'a> {
+    Expr(&'a Expr),
+    Stmt(&'a Stmt),
+}
+
+/// Visits `expr` and everything inside it — statements, closure and handler bodies,
+/// serverlet handlers — parent before children.
+pub fn walk_expr<'a>(expr: &'a Expr, visit: &mut dyn FnMut(Node<'a>)) {
+    visit(Node::Expr(expr));
+    match &expr.node {
+        ExprNode::Literal(_) | ExprNode::Identifier(_) | ExprNode::NoneLiteral => {}
+        ExprNode::Unary { operand, .. } => walk_expr(operand, visit),
+        ExprNode::Binary { lhs, rhs, .. } => { walk_expr(lhs, visit); walk_expr(rhs, visit); }
+        ExprNode::Call { args, .. } | ExprNode::ModuleCall { args, .. } | ExprNode::StartServerlet { args, .. }
+        | ExprNode::ArrayLiteral(args) => for arg in args { walk_expr(arg, visit); },
+        ExprNode::Pipeline { value, function } => { walk_expr(value, visit); walk_expr(function, visit); }
+        ExprNode::Block(stmts) => for stmt in stmts { walk_stmt(stmt, visit); },
+        ExprNode::If { cond, then_branch, else_branch } => {
+            walk_expr(cond, visit);
+            walk_expr(then_branch, visit);
+            if let Some(branch) = else_branch { walk_expr(branch, visit); }
+        }
+        ExprNode::AutomaticBlock { body, crash_handler, .. } => {
+            walk_expr(body, visit);
+            if let Some((_, handler)) = crash_handler { walk_expr(handler, visit); }
+        }
+        ExprNode::TriggeredBlock { body, .. } | ExprNode::Closure { body, .. } => walk_expr(body, visit),
+        ExprNode::StartProcess { target } => walk_expr(target, visit),
+        ExprNode::StructLiteral { fields, .. } => for (_, value) in fields { walk_expr(value, visit); },
+        ExprNode::FieldAccess { object, .. } => walk_expr(object, visit),
+        ExprNode::Index { object, index } => { walk_expr(object, visit); walk_expr(index, visit); }
+        ExprNode::SomeLiteral(inner) | ExprNode::OkLiteral(inner) | ExprNode::ErrLiteral(inner) | ExprNode::Propagate(inner) => {
+            walk_expr(inner, visit)
+        }
+        ExprNode::TryCatch { body, handler, .. } => { walk_expr(body, visit); walk_expr(handler, visit); }
+        ExprNode::EnumVariantLiteral { payload, .. } => if let Some(payload) = payload { walk_expr(payload, visit); },
+        ExprNode::Match { value, arms } => {
+            walk_expr(value, visit);
+            for arm in arms {
+                if let MatchPattern::Guard { condition, .. } = &arm.pattern { walk_expr(condition, visit); }
+                walk_expr(&arm.body, visit);
+            }
+        }
+        ExprNode::StringInterp { parts } => for part in parts {
+            if let StringPart::Expr(inner) = part { walk_expr(inner, visit); }
+        },
+    }
+}
+
+/// `walk_expr` for a statement.
+pub fn walk_stmt<'a>(stmt: &'a Stmt, visit: &mut dyn FnMut(Node<'a>)) {
+    visit(Node::Stmt(stmt));
+    match &stmt.node {
+        StmtNode::Let { value, .. } | StmtNode::Expr(value) | StmtNode::Return(Some(value)) => walk_expr(value, visit),
+        StmtNode::FnDecl { body, .. } | StmtNode::TaskDecl { body, .. } | StmtNode::ProcessDecl { body, .. }
+        | StmtNode::OrchestratorDecl { body, .. } | StmtNode::OnTick { body, .. } | StmtNode::OnFixedTick { body, .. }
+        | StmtNode::OnStart(body) | StmtNode::OnStop(body) => walk_expr(body, visit),
+        StmtNode::Trigger { args, .. } => for arg in args { walk_expr(arg, visit); },
+        StmtNode::Parallel(stmts) => for inner in stmts { walk_stmt(inner, visit); },
+        StmtNode::While { cond, body } | StmtNode::ForIn { iter: cond, body, .. } => { walk_expr(cond, visit); walk_expr(body, visit); }
+        StmtNode::Serverlet { state, handlers, crash_handler, .. } => {
+            for s in state { walk_stmt(s, visit); }
+            for h in handlers { walk_expr(&h.body, visit); }
+            if let Some((_, handler)) = crash_handler { walk_expr(handler, visit); }
+        }
+        StmtNode::Return(None) | StmtNode::UseModule { .. } | StmtNode::Load { .. } | StmtNode::LoadForeign { .. }
+        | StmtNode::Host { .. } | StmtNode::Break | StmtNode::Continue | StmtNode::StructDef { .. } | StmtNode::EnumDef { .. } => {}
+    }
+}

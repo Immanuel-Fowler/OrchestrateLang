@@ -82,14 +82,14 @@ async fn slow_add(a: i64, b: i64) -> i64 {
 }
 
 // orch:5:1
-async fn orchestrator_main() {
-    // orch:6:5
-        let (x, y) = tokio::join!(async { slow_add(1, 2).await }, async { slow_add(3, 4).await });
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    orchestrator_main().await;
+    {
+        async {
+            // orch:6:5
+                let (x, y) = tokio::join!(async { slow_add(1, 2).await }, async { slow_add(3, 4).await });
+        }.await;
+    }
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
     }

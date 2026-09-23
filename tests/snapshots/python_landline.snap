@@ -300,18 +300,18 @@ pub fn start_Counter() -> CounterClient {
 
 
 // orch:5:1
-async fn orchestrator_main() {
-    // orch:6:5
-        let mut c = start_Counter();
-        // orch:7:5
-        print_val(to_string(c.add(2).await));
-        // orch:8:5
-        stop_orch();
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    orchestrator_main().await;
+    {
+        async {
+            // orch:6:5
+                let mut c = start_Counter();
+                // orch:7:5
+                print_val(to_string(c.add(2).await));
+                // orch:8:5
+                stop_orch();
+        }.await;
+    }
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
     }

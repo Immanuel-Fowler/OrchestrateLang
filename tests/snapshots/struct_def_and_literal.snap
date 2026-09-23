@@ -84,19 +84,19 @@ pub struct Point {
 }
 
 // orch:6:1
-async fn orchestrator_main() {
-    // orch:7:5
-        let mut p = Point {
-        x: 3,
-        y: 4,
-    };
-        // orch:8:5
-        print_val(to_string(&p.x));
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    orchestrator_main().await;
+    {
+        async {
+            // orch:7:5
+                let mut p = Point {
+                x: 3,
+                y: 4,
+            };
+                // orch:8:5
+                print_val(to_string(&p.x));
+        }.await;
+    }
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
     }

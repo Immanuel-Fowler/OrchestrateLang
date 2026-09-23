@@ -77,6 +77,10 @@ struct OrchContext {
     program: OrchSlot<__OrchProgram>,
     /// Set whenever an event is queued, so an idle tick skips the queues without locking.
     has_events: std::sync::atomic::AtomicBool,
+    /// The program's state while a tick drains events, and null otherwise. A top-level
+    /// event handler runs inside that drain, one at a time, with the tick waiting on it,
+    /// so it reaches instance state through this as the tick itself would.
+    draining_program: std::sync::atomic::AtomicPtr<__OrchProgram>,
 @SHARED_FIELD@
 @EVENT_FIELDS@
 }
@@ -296,6 +300,19 @@ impl OrchContext {
     /// since building and polling that future costs more than the idle tick around it.
     #[inline]
     fn events_pending(&self) -> bool { self.has_events.load(std::sync::atomic::Ordering::Acquire) }
+    /// Instance state for a top-level event handler. Every access reads the pointer
+    /// afresh, so a handler resumed in a later drain uses that drain's tick's state.
+    fn program_ptr(&self) -> *mut __OrchProgram {
+        let program = self.draining_program.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(!program.is_null(), "an event handler reached instance state outside a tick");
+        program
+    }
+    /// `drain_events`, with the tick's state reachable by the handlers it runs.
+    async fn drain_events_with(&self, program: &mut __OrchProgram) {
+        self.draining_program.store(program, std::sync::atomic::Ordering::Relaxed);
+        self.drain_events().await;
+        self.draining_program.store(std::ptr::null_mut(), std::sync::atomic::Ordering::Relaxed);
+    }
     async fn drain_events(&self) {
         // Cleared before the queue is read, so an event queued during the drain is seen next time.
         if !self.has_events.swap(false, std::sync::atomic::Ordering::AcqRel) { return; }
@@ -504,7 +521,7 @@ pub fn start_with_options(runtime: &tokio::runtime::Handle, host: impl Host, opt
     let context = std::sync::Arc::new(OrchContext {
         host: std::sync::Arc::new(host), options, events: Default::default(), batch: Default::default(), clock_nanos: 0.into(), frame: 0.into(), dt_bits: 0.into(), stop_requested: false.into(), closing, shutdown,
         tasks: Default::default(), active: 0.into(), idle: tokio::sync::Notify::new(), assets, runtime: runtime.clone(),
-        program: OrchSlot::new(), has_events: false.into(),
+        program: OrchSlot::new(), has_events: false.into(), draining_program: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
 @SHARED_INIT@
 @EVENT_INIT@
     });

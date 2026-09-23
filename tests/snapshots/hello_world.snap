@@ -76,14 +76,14 @@ fn clock_micros() -> i64 {
 type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send + Sync + 'static>;
 
 // orch:2:1
-async fn orchestrator_main() {
-    // orch:3:5
-        print_val(String::from("hello world"));
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    orchestrator_main().await;
+    {
+        async {
+            // orch:3:5
+                print_val(String::from("hello world"));
+        }.await;
+    }
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
     }
