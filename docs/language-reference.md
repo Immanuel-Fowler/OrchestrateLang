@@ -1847,6 +1847,23 @@ default value, and with `late: "latest"` it returns the handler's most recent co
 result, which a late reply replaces. A queued call whose caller has already given up is
 not sent. `late` requires `budget`. Pass arrays to handle many items in one call.
 
+**`latest` is per handler, not per argument.** It is the most recent answer the handler
+gave to *any* call, so a late `echo(2)` returns what `echo(1)` answered. That is what
+`latest` is for — the last known output of something sampled every tick, where
+arguments change on every call and any recent answer beats none — and it is a rule a
+handler has to be written for: **under `latest`, a handler's answer must be valid for any
+caller.** Return the whole picture rather than one caller's slice of it (every tenant's
+value, keyed, rather than one tenant's), or use `late: "drop"` and treat the default as
+"no answer in time". Keying the cache by argument was considered and not done: a key per
+distinct argument is a memo cache that needs an eviction policy, and it would miss on
+exactly the calls `latest` exists for, whose arguments are new each time.
+
+A handler whose internal state changes on every call can still make two replays of the
+same input diverge without a single budget miss: a warm-up loop that repeated a
+budgeted call until one answered in time changed how many calls the callee had seen,
+which decided when it refreshed a cached map. Nothing in the language marks this; make
+such handlers idempotent, or keep the counting on the caller's side.
+
 ### TypeScript 7
 
 `via typescript(source: "...")` checks the source with TypeScript 7, then compiles a

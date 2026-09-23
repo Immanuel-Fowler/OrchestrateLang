@@ -16,6 +16,13 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   heartbeat window, and the whole fleet it served went link-lost while it waited.
 
 ### Changed
+- **`late: "latest"` is documented as per handler, with the rule it needs.** A late call
+  returns the handler's most recent answer to any call, so a late `echo(2)` can return
+  what `echo(1)` answered — what `latest` is for, a sampled signal whose arguments change
+  every call, but a surprise to a handler that answers one caller at a time. The
+  reference now states it, with the rule that a handler under `latest` must answer
+  validly for any caller, and why the cache is not keyed by argument; it also warns that a
+  handler whose state counts its calls can make two replays diverge without a budget miss.
 - **A worker, a handler, or a closure that writes a binding declared outside it is a
   compile error.** Each works on copies of what it names from outside — a worker and a
   standalone handler run on tasks of their own, and a closure captures when it is made —

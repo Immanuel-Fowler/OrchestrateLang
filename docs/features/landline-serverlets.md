@@ -231,7 +231,11 @@ naive design fails, so they get explicit rules. Budgets are implemented (§8 ste
      discarded when it arrives.
    - `late: "latest"`: the call returns the handler's most recent completed result (the
      default until one exists), and a late reply becomes that result, so a slow answer
-     is used on the next tick instead of stalling this one.
+     is used on the next tick instead of stalling this one. The result is the handler's,
+     not the arguments': a late `think(b)` returns what `think(a)` answered. So a handler
+     under `latest` must return an answer that is valid for any caller. Keyed per
+     argument, it would be a memo cache needing an eviction policy, and would miss on
+     every call whose arguments are new — the calls it is for — so it is not.
 
    A queued call whose caller has already given up is never sent, so a slow serverlet
    doesn't build a backlog. Don't budget handlers whose side effects must always run.
