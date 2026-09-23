@@ -1552,6 +1552,33 @@ orchestrator main() {
     assert!(stderr.contains("exited between calls"), "{stderr}");
 }
 
+/// `orchestrate run` becomes the program on Unix, so a signal sent to `run` — a supervisor's
+/// SIGTERM, a timeout — ends the program too. Started as a child, the program outlived a
+/// killed `run` and kept running alone; an examples runner hung on one for hours.
+#[cfg(unix)]
+#[test]
+fn runtime_run_passes_a_signal_to_the_program() {
+    use std::io::BufRead;
+    let scratch = Scratch::new("run_signal");
+    let src = scratch.path().join("program.orch");
+    fs::write(&src, "orchestrator main() {\n    print(\"up\")\n    sleep(60000)\n}\n").unwrap();
+    let mut run = Command::new(orchestrate_bin())
+        .args(["run", src.to_str().unwrap()])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = run.stdout.take().unwrap();
+    let up = std::io::BufReader::new(stdout).lines().map_while(Result::ok).any(|line| line == "up");
+    assert!(up, "the program never started");
+    Command::new("kill").args(["-TERM", &run.id().to_string()]).status().unwrap();
+    let status = run.wait().unwrap();
+    assert!(!status.success(), "run exited as if the program had finished");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let program = scratch.path().join(".orch_cache/target/debug/orch_generated");
+    let left = Command::new("pgrep").args(["-f", program.to_str().unwrap()]).output().unwrap();
+    assert!(String::from_utf8_lossy(&left.stdout).trim().is_empty(), "the program outlived run: {}", String::from_utf8_lossy(&left.stdout));
+}
+
 /// A secret child that cannot start is tried again: calls answer with the default until
 /// it can, and the first call after the next try is served. Before, one failed start
 /// closed the serverlet for the rest of the run.

@@ -185,6 +185,11 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   write, which is why this release is a minor one.
 
 ### Fixed
+- **`orchestrate run` becomes the program it built, on Unix**, so a signal sent to `run`
+  reaches the program. `run` started the program as a child and waited: killed by a
+  supervisor's SIGTERM or a timeout, it exited and left the program running alone, still
+  holding its output. Only Ctrl+C in a terminal, which reaches both, stopped both. Test:
+  `runtime_run_passes_a_signal_to_the_program`.
 - **A Python or TypeScript landline whose host has gone exits quietly.** A late answer to
   a call that missed its budget, written after the program exited, ended the Python
   process with a `BrokenPipeError` traceback on stderr, and could leave the TypeScript one

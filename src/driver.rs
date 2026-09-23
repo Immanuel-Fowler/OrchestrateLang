@@ -936,17 +936,28 @@ pub fn run_run(input_file: &str) -> Result<(), String> {
     let exe_path = cache_dir.join("target/debug").join(target_exe);
 
     copy_landlines(&cache_dir.join("landlines"), &cache_dir.join("target/debug"))?;
-    let mut child = Command::new(exe_path)
-        .spawn()
-        .map_err(|e| format!("Failed to execute generated binary: {}", e))?;
-
-    let status = child.wait().map_err(|e| format!("Failed to wait for program to finish: {}", e))?;
-
-    if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
+    // On Unix `run` becomes the program, so a signal sent to `run` — a supervisor's
+    // SIGTERM, a timeout's kill — reaches the program, and its exit status is `run`'s. A
+    // program started as a child outlived a `run` that was killed, and went on alone.
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::process::CommandExt;
+        let _ = std::io::stdout().flush();
+        let error = Command::new(&exe_path).exec();
+        return Err(format!("Failed to execute generated binary: {}", error));
     }
-
-    Ok(())
+    #[cfg(not(unix))]
+    {
+        let mut child = Command::new(exe_path)
+            .spawn()
+            .map_err(|e| format!("Failed to execute generated binary: {}", e))?;
+        let status = child.wait().map_err(|e| format!("Failed to wait for program to finish: {}", e))?;
+        if !status.success() {
+            std::process::exit(status.code().unwrap_or(1));
+        }
+        Ok(())
+    }
 }
 
 /// Type-check only (no codegen, no Cargo invocation). Designed to be fast (<100ms).
