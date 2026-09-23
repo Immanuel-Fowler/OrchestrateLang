@@ -522,7 +522,7 @@ impl Codegen {
                 // The body runs in a block of its own, so a `return` in it is recorded too.
                 let measured = self.measure.hooks && !unmeasured && event_name != "update_orchestrator";
                 let (unit, body_str) = if measured {
-                    let (cpu, used) = if self.may_wait(body) { ("", "") } else { ("let __cpu = crate::__orch_thread_cpu(); ", " __unit.used(__cpu);") };
+                    let (cpu, used) = if self.may_wait(body) { ("", "") } else { ("let __cpu = __unit.cpu_start(); ", " __unit.used(__cpu);") };
                     (
                         format!("let __unit = crate::__orch_unit({:?}, \"event\"); ", format!("on {}", event_name)),
                         format!("{{ __unit.started_late(__queued.elapsed()); let __began = std::time::Instant::now(); {cpu}async {{ {body_str} }}.await; __unit.called(__began.elapsed());{used} }}"),

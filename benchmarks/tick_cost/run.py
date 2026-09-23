@@ -175,7 +175,8 @@ def markdown(env, rows):
                   f"method called through its vtable alone. The empty tick and the one-call tick are within noise "
                   f"of each other at this resolution."
                   + (f" Measuring the one hook (`measure hooks`) costs {fastest['measured'] - fastest['empty']:.2f} ns a tick: "
-                     f"three clock readings, two of the thread's CPU time, and three histogram updates."
+                     f"two clock readings and the tick's own, three histogram updates, and on one tick in "
+                     f"sixteen two readings of the thread's CPU clock."
                      if "measured" in fastest else ""),
                   "",
                   "Medians overlap between cases within a few nanoseconds: the OS moves the thread between core "
@@ -189,13 +190,15 @@ def main():
     parser.add_argument("--out", default=str(REPO / "benchmarks" / "results"))
     parser.add_argument("--ticks", type=int, default=200_000, help="ticks per round")
     parser.add_argument("--rounds", type=int, default=21, help="timed rounds per case")
+    parser.add_argument("--cases", nargs="*", choices=list(CASES), help="run only these cases, as when comparing a compiler that lacks one")
     args = parser.parse_args()
+    cases = {case: source for case, source in CASES.items() if not args.cases or case in args.cases}
     orchestrate = os.environ.get("ORCHESTRATE", "orchestrate")
 
     with tempfile.TemporaryDirectory(prefix="orch_tick_cost_") as tmp:
         tmp = pathlib.Path(tmp)
         deps, impls, calls = [], [], []
-        for case, source in CASES.items():
+        for case, source in cases.items():
             crate = f"tick_{case}"
             src_dir = tmp / f"src_{case}"
             src_dir.mkdir()

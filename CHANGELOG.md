@@ -19,8 +19,10 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   run was — and CPU time for code that runs without waiting. `unmeasured` on a serverlet,
   a handler, a hook, an event handler, or a worker leaves it out. `stats()` returns a
   table; a library host calls `Scripts::stats()`. It is compiled in only for what is
-  measured, so a program without the line is unchanged; the tick-cost benchmark has a
-  `measured` row for the cost of one hook. Tests: `runtime_measure_records_what_it_declares`,
+  measured, so a program without the line is unchanged. Measuring costs about 100 ns per
+  measured hook per tick on an Apple M2 (the tick-cost benchmark's new `measured` row);
+  CPU time is sampled on one call in sixteen, since reading the thread's clock costs
+  ~140 ns on macOS, and reading it on every call made the first version cost 363 ns. Tests: `runtime_measure_records_what_it_declares`,
   `library_measure_records_hooks_events_and_handlers`, `library_measure_keeps_a_typed_hooks_output`.
 - **`shared queue`**: `shared queue jobs: Job (capacity: 256, full: "reject")`, with
   `push`, `pop`, `drain`, `take`, and `length`, each atomic under the queue's own lock. A

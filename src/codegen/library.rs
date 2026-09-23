@@ -294,7 +294,7 @@ impl Codegen {
             units.push(name);
             let unit = format!("__program.__hooks[{slot}]");
             let (cpu, used) = if waits { (String::new(), String::new()) } else {
-                ("let __cpu = crate::__orch_thread_cpu(); ".to_string(), format!(" {unit}.used(__cpu);"))
+                (format!("let __cpu = {unit}.cpu_start(); "), format!(" {unit}.used(__cpu);"))
             };
             format!("{{ let __hook = std::time::Instant::now(); {unit}.started_late(__hook.saturating_duration_since(__tick_began)); {cpu}{inner} {unit}.called(__hook.elapsed());{used} }}\n")
         };

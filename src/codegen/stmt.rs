@@ -551,7 +551,7 @@ impl Codegen {
                     let (bindings_str, before, after) = match self.measured_slot(h) {
                         Some(slot) => (
                             format!("{bindings_str}, __sent"),
-                            format!("__orch_stats[{slot}].started_late(__sent.elapsed());\n                    let __cpu = crate::__orch_thread_cpu();\n                    "),
+                            format!("__orch_stats[{slot}].started_late(__sent.elapsed());\n                    let __cpu = __orch_stats[{slot}].cpu_start();\n                    "),
                             format!("\n                    __orch_stats[{slot}].used(__cpu);"),
                         ),
                         None => (bindings_str, String::new(), String::new()),

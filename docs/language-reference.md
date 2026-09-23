@@ -1111,10 +1111,15 @@ paced       worker   13     0       1.0us   2.0us   2.0us   2.0us   2.4ms     -
 Durations are kept in histograms a quarter of a doubling wide, so each percentile is within
 a fifth. CPU time is read from the thread's clock, which is exact only for code that runs
 without waiting, and is left out elsewhere; it is available on Linux, macOS, and FreeBSD.
+It is sampled on one call in sixteen, since reading that clock costs about as much as a
+kernel call — around 140 ns on macOS — and reading it twice on every call made measuring a
+cheap hook cost more than fifty times the hook.
 
 `measure` is declared in the source, so nothing that is not measured pays anything:
-without the line no timing code is generated at all, and each measured unit costs a few
-clock readings a call — the tick-cost benchmark's `measured` row is one hook's share. A library's host reads the same records with `Scripts::stats()`.
+without the line no timing code is generated at all. A measured unit costs two clock
+readings and a few atomic updates a call: about 100 ns per measured hook per tick on an
+Apple M2, as the tick-cost benchmark's `measured` row shows — nothing beside a serverlet
+call's microseconds, but fifteen times an empty tick. A library's host reads the same records with `Scripts::stats()`.
 `stats()` in a program without a `measure` line is refused by `check`.
 
 ## Chapter 5 · CLI Reference
