@@ -1277,6 +1277,29 @@ shares the object), and held in structs and arrays. They are not wire types: a s
 landline handler cannot take or return one. The object's own thread-safety is the foreign
 code's concern; the generated type only guarantees the release happens once.
 
+**Building a vendor library.** A sidecar's `[build]` section, after its signatures, says
+how its source is compiled — the way a Rust sidecar's `[dependencies]` says what it needs.
+Paths are relative to the sidecar:
+
+```
+driver_sum() -> int
+
+[build]
+std = "c++17"                        # the language standard, as -std=
+include = ["vendor/include"]         # header directories
+sources = ["vendor/src/driver.cpp"]  # more files, compiled into the same library
+define = ["SCALE=10", "FAST"]        # preprocessor definitions
+libraries = ["m", "framework=IOKit"] # what to link, as Cargo's kind=name
+search = ["vendor/lib"]              # where the linker looks for them
+flags = ["-Wno-unused-parameter"]    # anything else, passed to the compiler as written
+```
+
+Each source that `load_foreign` names is compiled with its own sidecar's options, so two
+vendor libraries' includes and definitions never meet. C++ is compiled as C++17 unless
+`std` says otherwise, since the compiler's own default is C++98 on Apple clang, where brace
+initialisation does not compile. `orchestrate check-foreign` checks a source with the same
+options, and `check` refuses a `[build]` that names a file or directory that is not there.
+
 #### Foreign Zig (`load_foreign "zig"`) and Swift (`load_foreign "swift"`)
 
 Zig and Swift use the same `.orch_ffi` sidecar and the same types as C. Each function the

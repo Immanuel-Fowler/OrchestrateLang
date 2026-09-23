@@ -70,8 +70,8 @@ pub fn resolve_load_recursive(path_str: &str, dir_path: &Path) -> Result<Vec<ast
 }
 
 pub enum ForeignSource {
-    C(PathBuf),
-    Cpp(PathBuf),
+    C(PathBuf, crate::dependencies::NativeBuild),
+    Cpp(PathBuf, crate::dependencies::NativeBuild),
     Zig(PathBuf),
     Swift(PathBuf),
     CSharp(PathBuf),
@@ -456,6 +456,7 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
                     let sidecar_path = module_path.join(path).with_extension("orch_ffi");
                     if let Ok(content) = fs::read_to_string(&sidecar_path) {
                         let file_name = sidecar_path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown.orch_ffi").to_string();
+                        let (content, _) = native_sidecar(&content, language, &sidecar_path)?;
                         for signature in ffi_parser::parse_ffi(&content, language, &file_name)? {
                             if signature.drop { continue; }
                             if signature.mentions_handle() { uses_handles = true; }
@@ -560,14 +561,6 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
                     }
                     let abs_path = PathBuf::from(abs_path_str);
 
-                    all_foreign_sources.push(match language.as_str() {
-                        "c" => ForeignSource::C(abs_path),
-                        "cpp" => ForeignSource::Cpp(abs_path),
-                        "zig" => ForeignSource::Zig(abs_path),
-                        "csharp" => ForeignSource::CSharp(abs_path),
-                        _ => ForeignSource::Swift(abs_path),
-                    });
-                    
                     let mut ffi_path = foreign_path.clone();
                     ffi_path.set_extension("orch_ffi");
                     
@@ -577,6 +570,15 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
                     
                     let ffi_content = fs::read_to_string(&ffi_path)
                         .map_err(|e| format!("Failed to read FFI file {:?}: {}", ffi_path, e))?;
+                    let (ffi_content, native_build) = native_sidecar(&ffi_content, language, &ffi_path)?;
+
+                    all_foreign_sources.push(match language.as_str() {
+                        "c" => ForeignSource::C(abs_path, native_build),
+                        "cpp" => ForeignSource::Cpp(abs_path, native_build),
+                        "zig" => ForeignSource::Zig(abs_path),
+                        "csharp" => ForeignSource::CSharp(abs_path),
+                        _ => ForeignSource::Swift(abs_path),
+                    });
                     
                     let ffi_file_name = ffi_path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown.orch_ffi");
                     let ffi_bindings = ffi_parser::parse_ffi_and_generate_bindings(&ffi_content, language, ffi_file_name)?;
@@ -667,16 +669,16 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
         let mut has_c = false;
         let mut has_cpp = false;
 
-        let mut c_files = Vec::new();
-        let mut cpp_files = Vec::new();
+        let mut c_files: Vec<(PathBuf, crate::dependencies::NativeBuild)> = Vec::new();
+        let mut cpp_files: Vec<(PathBuf, crate::dependencies::NativeBuild)> = Vec::new();
         let mut zig_files = Vec::new();
         let mut swift_files = Vec::new();
         let mut csharp_files = Vec::new();
 
         for (index, source) in all_foreign_sources.into_iter().enumerate() {
             match source {
-                ForeignSource::C(p) => { c_files.push(p); has_c = true; },
-                ForeignSource::Cpp(p) => { cpp_files.push(p); has_cpp = true; },
+                ForeignSource::C(p, build) => { c_files.push((p, build)); has_c = true; },
+                ForeignSource::Cpp(p, build) => { cpp_files.push((p, build)); has_cpp = true; },
                 ForeignSource::Zig(p) => zig_files.push((foreign_lib_name("zig", index, &p), p)),
                 ForeignSource::Swift(p) => swift_files.push((foreign_lib_name("swift", index, &p), p)),
                 ForeignSource::CSharp(p) => csharp_files.push((foreign_lib_name("csharp", index, &p), p)),
@@ -778,22 +780,15 @@ fn orch_link_swift_runtime() {
 "#);
         }
 
-        if has_c {
-            build_rs.push_str("    cc::Build::new()\n");
-            for p in c_files {
-                let p_str = p.to_string_lossy().replace("\\", "\\\\");
-                build_rs.push_str(&format!("        .file(\"{}\")\n", p_str));
-            }
-            build_rs.push_str("        .compile(\"foreign_c\");\n\n");
+        // One library per source that `load_foreign` names, compiled with its own
+        // sidecar's [build] options, so two vendor libraries' includes and defines never
+        // meet. C++ is C++17 unless a sidecar says otherwise: the compiler's own default is
+        // C++98 on Apple clang, where brace initialisation does not compile.
+        for (index, (p, build)) in c_files.iter().enumerate() {
+            build_rs.push_str(&native_build_rs(p, build, false, &format!("foreign_c_{index}")));
         }
-        
-        if has_cpp {
-            build_rs.push_str("    cc::Build::new()\n        .cpp(true)\n");
-            for p in cpp_files {
-                let p_str = p.to_string_lossy().replace("\\", "\\\\");
-                build_rs.push_str(&format!("        .file(\"{}\")\n", p_str));
-            }
-            build_rs.push_str("        .compile(\"foreign_cpp\");\n\n");
+        for (index, (p, build)) in cpp_files.iter().enumerate() {
+            build_rs.push_str(&native_build_rs(p, build, true, &format!("foreign_cpp_{index}")));
         }
         build_rs.push_str("}\n");
         build_rs.push_str(&helpers);
@@ -1105,6 +1100,44 @@ fn check_modules(entry: &[ast::Stmt], modules: &[(PathBuf, Vec<ast::Stmt>)]) -> 
     Ok(())
 }
 
+/// A C-ABI sidecar's signatures, and, for C and C++, the `[build]` section after them.
+/// Zig, Swift, and C# have their own build tools, so a section there is an error.
+fn native_sidecar(content: &str, language: &str, sidecar: &Path) -> Result<(String, crate::dependencies::NativeBuild), String> {
+    let (signatures, section) = crate::dependencies::split_sidecar(content);
+    let Some(section) = section else { return Ok((signatures, Default::default())) };
+    if !matches!(language, "c" | "cpp") {
+        return Err(format!("{}: a [build] section applies to C and C++ sidecars", sidecar.display()));
+    }
+    let base = sidecar.parent().unwrap_or(Path::new("."));
+    let build = crate::dependencies::parse_native_build(&section, base, &sidecar.display().to_string())?;
+    Ok((signatures, build))
+}
+
+/// The build-script lines that compile one C or C++ source, and its sidecar's extra
+/// sources, into the static library `lib`, and link what the sidecar asks for.
+fn native_build_rs(source: &Path, build: &crate::dependencies::NativeBuild, cpp: bool, lib: &str) -> String {
+    let path = |p: &Path| format!("{:?}", p.to_string_lossy());
+    let mut code = String::from("    cc::Build::new()\n");
+    if cpp { code.push_str("        .cpp(true)\n"); }
+    let std = build.std.clone().or_else(|| cpp.then(|| "c++17".to_string()));
+    if let Some(std) = std { code.push_str(&format!("        .std({:?})\n", std)); }
+    for dir in &build.include { code.push_str(&format!("        .include({})\n", path(dir))); }
+    for (name, value) in &build.define {
+        match value {
+            Some(value) => code.push_str(&format!("        .define({:?}, Some({:?}))\n", name, value)),
+            None => code.push_str(&format!("        .define({:?}, None)\n", name)),
+        }
+    }
+    for flag in &build.flags { code.push_str(&format!("        .flag({:?})\n", flag)); }
+    code.push_str(&format!("        .file({})\n", path(source)));
+    for extra in &build.sources { code.push_str(&format!("        .file({})\n", path(extra))); }
+    code.push_str(&format!("        .compile({:?});\n", lib));
+    for dir in &build.search { code.push_str(&format!("    println!(\"cargo:rustc-link-search=native={{}}\", {});\n", path(dir))); }
+    for library in &build.libraries { code.push_str(&format!("    println!(\"cargo:rustc-link-lib={}\");\n", library)); }
+    code.push('\n');
+    code
+}
+
 /// The alias a module's own foreign functions are registered under while the module is
 /// checked by itself; `expose_module_functions` makes them callable by bare name.
 const MODULE_SELF: &str = "__module";
@@ -1155,6 +1188,7 @@ fn register_module_sidecars(type_checker: &mut typechecker::TypeChecker, local_n
                 let sidecar_path = module_path.join(path).with_extension("orch_ffi");
                 if let Ok(content) = fs::read_to_string(&sidecar_path) {
                     let file_name = sidecar_path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown.orch_ffi").to_string();
+                    let (content, _) = native_sidecar(&content, language, &sidecar_path)?;
                     for signature in ffi_parser::parse_ffi(&content, language, &file_name)? {
                         if signature.drop { continue; }
                         let params = signature.params.iter().map(|(_, ty)| ty.clone()).collect();
@@ -1176,6 +1210,8 @@ struct ForeignSource2 {
     /// TypeScript is checked against a generated adapter, so it needs the contract
     /// its handlers declare, the declarations in scope, and whether it is FFI.
     typescript: Option<(Vec<ast::Handler>, Vec<ast::Stmt>, bool)>,
+    /// C and C++ are checked with their sidecar's `[build]` options, as they are built.
+    native: Option<crate::dependencies::NativeBuild>,
 }
 
 /// Collect every foreign source a file declares: `load_foreign` paths, relative to
@@ -1196,7 +1232,16 @@ fn collect_foreign_sources(
                 } else {
                     None
                 };
-                found.push(ForeignSource2 { language: language.clone(), path, typescript });
+                let native = if matches!(language.as_str(), "c" | "cpp") {
+                    let sidecar = path.with_extension("orch_ffi");
+                    match fs::read_to_string(&sidecar) {
+                        Ok(content) => Some(native_sidecar(&content, language, &sidecar)?.1),
+                        Err(_) => None,
+                    }
+                } else {
+                    None
+                };
+                found.push(ForeignSource2 { language: language.clone(), path, typescript, native });
             }
             ast::StmtNode::Serverlet { handlers, landline: Some(config), .. } => {
                 let typescript = (config.runtime == "typescript")
@@ -1205,6 +1250,7 @@ fn collect_foreign_sources(
                     language: config.runtime.clone(),
                     path: PathBuf::from(&config.source),
                     typescript,
+                    native: None,
                 });
             }
             _ => {}
@@ -1302,7 +1348,7 @@ pub fn run_check_foreign(input_file: &str, deep: bool) -> Result<(), String> {
                 *ffi,
             )
             .map(|_| crate::foreign_check::Outcome::Checked),
-            None => crate::foreign_check::check_file(language, path, &scratch, deep),
+            None => crate::foreign_check::check_file(language, path, &scratch, deep, source.native.as_ref()),
         };
         match outcome {
             Ok(crate::foreign_check::Outcome::Checked) => {

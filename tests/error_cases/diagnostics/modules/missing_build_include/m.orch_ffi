@@ -1,0 +1,4 @@
+one() -> int
+
+[build]
+include = ["vendor/include"]

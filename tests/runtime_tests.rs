@@ -1414,6 +1414,33 @@ orchestrator main(procs: process[worker]) { }
     assert_eq!(out.trim(), "10\n3,5\n11,22");
 }
 
+/// A C++ vendor library that ships a header and a source of its own attaches through its
+/// sidecar's `[build]` section — its include directory, its extra source, a definition, a
+/// standard, and a library to link — rather than by being `#include`d into one file.
+#[test]
+fn runtime_ffi_cpp_vendor_library_through_build_options() {
+    let root = std::env::temp_dir().join("orch_runtime_ffi_cpp_vendor").join("vendormod");
+    fs::create_dir_all(root.join("vendor/include")).unwrap();
+    fs::create_dir_all(root.join("vendor/src")).unwrap();
+    fs::write(root.join("module.orch"), "load_foreign \"cpp\" \"./shim.cpp\"\n").unwrap();
+    fs::write(root.join("vendor/include/driver.hpp"),
+        "#pragma once\n#include <vector>\nnamespace vendor {\nstruct Driver {\n    std::vector<long long> readings{4, 5, 6};\n    long long sum() const;\n};\n}\n").unwrap();
+    fs::write(root.join("vendor/src/driver.cpp"),
+        "#include \"driver.hpp\"\nnamespace vendor {\nlong long Driver::sum() const { long long t = 0; for (auto r : readings) t += r; return t * SCALE; }\n}\n").unwrap();
+    fs::write(root.join("shim.cpp"),
+        "#include \"driver.hpp\"\n#include <cmath>\nextern \"C\" long long driver_sum() { vendor::Driver d; return d.sum(); }\nextern \"C\" double driver_root() { return std::sqrt(16.0); }\n").unwrap();
+    fs::write(root.join("shim.orch_ffi"),
+        "driver_sum() -> int\ndriver_root() -> float\n\n[build]\nstd = \"c++17\"\ninclude = [\"vendor/include\"]\nsources = [\"vendor/src/driver.cpp\"]\ndefine = [\"SCALE=10\"]\nlibraries = [\"m\"]\n").unwrap();
+    let out = run_orch("ffi_cpp_vendor", r#"
+use module v: "./vendormod"
+orchestrator main() {
+    print("{v.driver_sum()} {v.driver_root()}")
+    stop_orch()
+}
+"#);
+    assert_eq!(out.trim(), "150 4");
+}
+
 /// The same ABI from Zig, which reaches it through `export fn` rather than C declarations.
 #[test]
 fn runtime_ffi_zig_arrays() {

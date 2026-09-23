@@ -110,6 +110,7 @@ pub fn check_file(
     path: &Path,
     scratch: &Path,
     deep: bool,
+    native: Option<&crate::dependencies::NativeBuild>,
 ) -> Result<Outcome, String> {
     // A Rust `load_foreign` file is concatenated with its module's generated code
     // and may call into it, so checking it alone would report calls to module
@@ -138,9 +139,27 @@ pub fn check_file(
                 hint
             )
         })?;
+    // A C or C++ source is checked as it is built: its sidecar's standard, include
+    // directories, and definitions, and C++17 unless it names a standard.
+    let mut native_args: Vec<String> = Vec::new();
+    let mut extra_sources: Vec<String> = Vec::new();
+    if matches!(language, "c" | "cpp") {
+        let build = native.cloned().unwrap_or_default();
+        if let Some(std) = build.std.clone().or_else(|| (language == "cpp").then(|| "c++17".to_string())) {
+            native_args.push(format!("-std={std}"));
+        }
+        native_args.extend(build.include.iter().map(|dir| format!("-I{}", dir.display())));
+        native_args.extend(build.define.iter().map(|(name, value)| match value {
+            Some(value) => format!("-D{name}={value}"),
+            None => format!("-D{name}"),
+        }));
+        extra_sources.extend(build.sources.iter().map(|p| p.display().to_string()));
+    }
     let output = Command::new(program)
         .args(args)
+        .args(&native_args)
         .arg(absolute)
+        .args(&extra_sources)
         .current_dir(scratch)
         .env("PYTHONPYCACHEPREFIX", scratch)
         .output()

@@ -112,6 +112,101 @@ pub fn parse_section(text: &str, base: &Path, origin: &str) -> Result<Vec<Depend
     Ok(dependencies)
 }
 
+/// How a C or C++ sidecar's source is compiled, from its `[build]` section: a vendor
+/// library that ships headers and sources of its own attaches through this, rather than by
+/// being `#include`d into one file. Paths are relative to the sidecar.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NativeBuild {
+    /// `std = "c++17"`: the language standard, passed as `-std=`.
+    pub std: Option<String>,
+    /// `include = ["vendor/include"]`: header search directories.
+    pub include: Vec<std::path::PathBuf>,
+    /// `sources = ["vendor/src/driver.cpp"]`: more files compiled beside the one
+    /// `load_foreign` names, into the same library.
+    pub sources: Vec<std::path::PathBuf>,
+    /// `define = ["USE_FAST", "LEVEL=2"]`: preprocessor definitions.
+    pub define: Vec<(String, Option<String>)>,
+    /// `libraries = ["m", "static=vendor", "framework=IOKit"]`: what to link, in Cargo's
+    /// `kind=name` form.
+    pub libraries: Vec<String>,
+    /// `flags = ["-Wno-unused"]`: extra compiler flags, passed as written.
+    pub flags: Vec<String>,
+    /// `search = ["vendor/lib"]`: directories the linker searches for `libraries`.
+    pub search: Vec<std::path::PathBuf>,
+}
+
+/// Parses a C or C++ sidecar's `[build]` section; see `NativeBuild`. A path that does not
+/// exist is an error naming the sidecar, rather than a compiler error later.
+pub fn parse_native_build(text: &str, base: &Path, origin: &str) -> Result<NativeBuild, String> {
+    let mut parser = Parser { tokens: tokenize(text, origin)?, pos: 0, origin };
+    let mut build = NativeBuild::default();
+    let strings = |key: &str, value: Value| -> Result<Vec<String>, String> {
+        match value {
+            Value::Array(items) => items.into_iter().map(|item| match item {
+                Value::Str(s) => Ok(s),
+                other => Err(format!("{origin}: [build] {key} holds strings, found {}", describe(&other))),
+            }).collect(),
+            other => Err(format!("{origin}: [build] {key} is an array of strings, found {}", describe(&other))),
+        }
+    };
+    let paths = |key: &str, items: Vec<String>, must_be_dir: bool| -> Result<Vec<std::path::PathBuf>, String> {
+        items.into_iter().map(|item| {
+            let path = base.join(&item);
+            let exists = if must_be_dir { path.is_dir() } else { path.is_file() };
+            if !exists {
+                return Err(format!("{origin}: [build] {key} names {:?}, which is not {} relative to the sidecar", item, if must_be_dir { "a directory" } else { "a file" }));
+            }
+            Ok(std::fs::canonicalize(&path).unwrap_or(path))
+        }).collect()
+    };
+    let mut seen = std::collections::HashSet::new();
+    while !parser.at_end() {
+        if parser.eat(&Token::LBracket) {
+            let section = parser.key()?;
+            parser.expect(&Token::RBracket)?;
+            if section != "build" {
+                return Err(format!("{origin}: a C or C++ sidecar takes a [build] section, found [{section}]"));
+            }
+            continue;
+        }
+        let key = parser.key()?;
+        parser.expect(&Token::Eq)?;
+        let value = parser.value()?;
+        if !seen.insert(key.clone()) {
+            return Err(format!("{origin}: [build] sets '{key}' twice"));
+        }
+        match key.as_str() {
+            "std" => match value {
+                Value::Str(std) => build.std = Some(std),
+                other => return Err(format!("{origin}: [build] std is a string such as \"c++17\", found {}", describe(&other))),
+            },
+            "include" => build.include = paths("include", strings("include", value)?, true)?,
+            "sources" => build.sources = paths("sources", strings("sources", value)?, false)?,
+            "search" => build.search = paths("search", strings("search", value)?, true)?,
+            "define" => build.define = strings("define", value)?.into_iter().map(|d| match d.split_once('=') {
+                Some((name, value)) => (name.to_string(), Some(value.to_string())),
+                None => (d, None),
+            }).collect(),
+            "libraries" => {
+                build.libraries = strings("libraries", value)?;
+                for library in &build.libraries {
+                    let (kind, name) = library.split_once('=').map_or((None, library.as_str()), |(k, n)| (Some(k), n));
+                    let kind_ok = kind.map_or(true, |k| matches!(k, "static" | "dylib" | "framework"));
+                    let name_ok = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '+'));
+                    if !kind_ok || !name_ok {
+                        return Err(format!("{origin}: [build] libraries entry {:?} is not a library name, optionally prefixed with static=, dylib=, or framework=", library));
+                    }
+                }
+            }
+            "flags" => build.flags = strings("flags", value)?,
+            other => return Err(format!(
+                "{origin}: [build] has no '{other}'; it takes std, include, sources, define, libraries, search, and flags"
+            )),
+        }
+    }
+    Ok(build)
+}
+
 /// Adds one origin's declarations. The same crate declared twice must be identical, and
 /// `tokio` may only repeat what the generated crate provides.
 pub fn merge(

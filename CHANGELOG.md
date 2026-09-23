@@ -33,6 +33,15 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   used as a name, and `none`, is refused with a message saying the word is reserved.
 - **A shared `handle`.** `shared let h = m.make()` was refused; every statement that uses
   a shared handle holds the lock, so its native object is used one statement at a time.
+- **A C or C++ sidecar's `[build]` section** sets the standard, include directories, extra
+  sources, definitions, libraries to link, where to find them, and compiler flags, the way
+  a Rust sidecar's `[dependencies]` names crates. Only the one file `load_foreign` names
+  was compiled before, with no options, so a C++ vendor library that shipped a header and
+  a source could be attached only by `#include`-ing its `.cpp` into the shim. Each source is
+  now compiled into a library of its own with its sidecar's options, `check-foreign`
+  checks it with them, and `check` refuses a `[build]` naming a file that is not there.
+  C++ is compiled as C++17 unless a sidecar says otherwise: the compiler's default was
+  C++98 on Apple clang, where brace initialisation does not compile.
 - **`automatic(..., backoff: "50ms")` declares the wait before each restart.** The
   default is unchanged — a second, doubling with each restart up to thirty — and was the
   only choice: a heartbeat worker's one-second restart outlasted its devices' 500 ms
