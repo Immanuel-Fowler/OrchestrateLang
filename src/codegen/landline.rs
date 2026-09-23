@@ -177,8 +177,8 @@ impl Codegen {
             code = code
                 .replace("tokio::spawn(", "__ORCH_LINE_SPAWN(")
                 .replace(
-                    "exe.parent().expect(\"exe directory\")",
-                    "crate::__orch_context().assets.as_path()",
+                    "crate::__orch_children_dir()",
+                    "crate::__orch_context().assets.clone()",
                 )
                 .replace("__secret_read_frame(", "crate::__orch_read_frame(")
                 .replace("rx.recv().await", "crate::__orch_recv(&mut rx).await");

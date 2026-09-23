@@ -341,7 +341,7 @@ orchestrator main() {
     );
     fs::remove_file(module.join("nested/impl.py")).unwrap();
     assert!(output_dir
-        .join("landline_Counter/orchestratelang/landline.py")
+        .join("app.children/landline_Counter/orchestratelang/landline.py")
         .exists());
     let output = Command::new(output_dir.join(format!("app{}", std::env::consts::EXE_SUFFIX)))
         .current_dir(std::env::temp_dir())

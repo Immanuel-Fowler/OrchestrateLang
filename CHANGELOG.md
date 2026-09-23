@@ -48,6 +48,13 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   heartbeat window, and the whole fleet it served went link-lost while it waited.
 
 ### Changed
+- **A standalone build puts its child processes in `<binary>.children/`.** Secret
+  serverlet binaries, landline sources, and TypeScript executables were copied beside the
+  binary under names that carried only the serverlet's name, so two programs built into
+  one directory overwrote each other's `secret_Broker` or `landline_Notifier/`; the build
+  said nothing, and the handshake later failed with an interface mismatch. Each binary's
+  children now go in its own folder, replaced whole on each build; distribute that folder
+  with the binary. A binary built before looks where it always did.
 - **An `if` whose branches wait is not one statement for the shared-state rule.** An `if`
   that waited in one statement and wrote shared state in another was refused as though
   it were one statement that both waits and touches shared state; a whole worker body was

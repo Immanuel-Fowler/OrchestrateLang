@@ -99,8 +99,8 @@ sandbox. They are also excluded from deterministic library mode.
 can return a default immediately when it exceeds its budget; use `late: "latest"` to read
 the most recently completed result on later calls.
 
-`run` and standalone `build` place the executable in `landline_<Name>/` beside the
-program. Library builds embed and extract it per script instance. Players therefore do
+`run` places the executable in `landline_<Name>/` beside the cached program, and
+standalone `build -o app` in `app.children/landline_<Name>/` beside `app`. Library builds embed and extract it per script instance. Players therefore do
 not need Bun, TypeScript, scriptc, or the original `.ts` file; package any application data
 and native dependencies used by the implementation separately. Cross-target TypeScript
 artifacts are currently rejected because the executable is built for the compiler host.

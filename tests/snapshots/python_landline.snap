@@ -88,6 +88,16 @@ trait __OrchPow { fn orch_pow(self, exponent: Self) -> Self; }
 impl __OrchPow for i64 { fn orch_pow(self, exponent: i64) -> i64 { self.pow(exponent as u32) } }
 impl __OrchPow for f64 { fn orch_pow(self, exponent: f64) -> f64 { self.powf(exponent) } }
 
+/// Where this program's child processes are: `<binary>.children/` beside the binary, so
+/// two programs built into one directory do not share them, or, for a binary built before
+/// that directory existed, the binary's own directory.
+fn __orch_children_dir() -> std::path::PathBuf {
+    let exe = std::env::current_exe().expect("current_exe");
+    let dir = exe.parent().expect("exe dir").to_path_buf();
+    let own = dir.join(format!("{}.children", exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+    if own.is_dir() { own } else { dir }
+}
+
 type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send + Sync + 'static>;
 
 /// Aborts a task when dropped: a worker's supervisor holds its current run in one, so
@@ -239,8 +249,7 @@ pub fn start_Counter() -> CounterClient {
     let __latest = std::sync::Arc::new(CounterLatest::default());
     let latest = __latest.clone();
     tokio::spawn(async move {
-        let exe = std::env::current_exe().expect("current_exe");
-        let directory = exe.parent().expect("exe directory").join("landline_Counter");
+        let directory = crate::__orch_children_dir().join("landline_Counter");
         let mut __next_call = 0u32;
         // Consecutive starts that failed. Each waits longer before the next try, and the
         // calls that arrive meanwhile are answered with their default.

@@ -48,8 +48,8 @@ layouts; keep those layouts identical to the `.orch` declaration.
 
 The compiler resolves `source` relative to the declaring `.orch` file, including
 loaded module files. `run` stages the source and SDK next to the cached binary.
-`build -o app` places them in `landline_<Name>/` beside `app`; distribute that
-folder with the binary. Only the declared Python source and SDK are copied.
+`build -o app` places them in `app.children/landline_<Name>/` beside `app`; distribute
+`app.children/` with the binary. Only the declared Python source and SDK are copied.
 Additional local modules/data must be packaged separately. Third-party Python
 packages must be installed in the selected runtime. Serverlet names must be
 unique across modules.

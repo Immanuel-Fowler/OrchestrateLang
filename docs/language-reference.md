@@ -1674,7 +1674,10 @@ orchestrator main() {
 From the caller's side a secret serverlet is **identical** to a normal one —
 `start` returns the same client handle and you call the same methods. The compiler
 emits the handler logic as its own binary (`secret_<name>`) and wires the mirror to
-spawn it on first use and shut it down when the orchestrator stops.
+spawn it on first use and shut it down when the orchestrator stops. `build -o app` puts
+the child in `app.children/` beside `app`, with the program's other child processes;
+distribute that folder with the binary. Each binary has its own, so two programs built
+into one directory never share a child.
 
 **What you get:**
 
@@ -1965,7 +1968,8 @@ same-file structs to matching object shapes. Its optional constructor receives
 for a `tick` handler called from a typed library tick.
 
 `source` is relative to its declaring file. Python builds copy the source and SDK into
-`landline_<Name>/` beside the binary. TypeScript builds put a compiled executable there.
+`app.children/landline_<Name>/` beside the binary `app`. TypeScript builds put a compiled
+executable there.
 Library builds embed their respective assets. Python dependencies remain external; the
 TypeScript executable does not need Bun, TypeScript, scriptc, or the original source at
 runtime. Package application data and native dependencies separately. TypeScript artifacts

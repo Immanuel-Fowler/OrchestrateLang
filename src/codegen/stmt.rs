@@ -461,7 +461,7 @@ impl Codegen {
                         start_fn = start_fn.replace(".stdout(std::process::Stdio::piped())", ".stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())");
                         start_fn = start_fn.replace("let mut __cout = __child.stdout.take().expect(\"child stdout\");", "let mut __cout = __child.stdout.take().expect(\"child stdout\"); let stderr = __child.stderr.take().expect(\"child stderr\"); crate::__orch_spawn(async move { use tokio::io::AsyncBufReadExt; let mut lines = tokio::io::BufReader::new(stderr).lines(); while let Ok(Some(line)) = lines.next_line().await { crate::__orch_log(crate::LogLevel::Info, line); } });");
                         start_fn = start_fn.replace("tokio::spawn(", "__ORCH_LINE_SPAWN(")
-                            .replace("let __dir = __exe.parent().expect(\"exe dir\").to_path_buf();", "let __dir = crate::__orch_context().assets.clone();")
+                            .replace("let __dir = crate::__orch_children_dir();", "let __dir = crate::__orch_context().assets.clone();")
                             .replace("__secret_read_frame(", "crate::__orch_read_frame(")
                             .replace("rx.recv().await", "crate::__orch_recv(&mut rx).await");
                     }

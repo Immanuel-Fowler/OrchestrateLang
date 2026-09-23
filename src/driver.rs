@@ -853,23 +853,38 @@ pub fn run_build(input_file: &str, output_binary: Option<&str>) -> Result<(), St
     fs::copy(&src_exe_path, &dest_exe_path)
         .map_err(|e| format!("Failed to copy compiled binary: {}", e))?;
 
-    // Copy any secret serverlet child binaries next to the output binary, since
-    // the orchestrator locates them relative to its own executable at runtime.
+    // The program's child processes — secret serverlets, landlines, TypeScript modules —
+    // go in `<binary>.children/` beside it, where it looks for them, so two programs built
+    // into one directory do not overwrite each other's. It is replaced whole on each
+    // build, so a child the program no longer has does not linger.
     let release_dir = cache_dir.join("target/release");
     let dest_dir = dest_exe_path.parent()
-        .map(|p| p.to_path_buf())
+        .map(|p| if p.as_os_str().is_empty() { PathBuf::from(".") } else { p.to_path_buf() })
         .unwrap_or_else(|| PathBuf::from("."));
+    let exe_file = dest_exe_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(exe_name.clone());
+    let children_dir = dest_dir.join(format!("{}.children", exe_file));
+    if children_dir.exists() {
+        fs::remove_dir_all(&children_dir).map_err(|e| format!("Failed to replace {}: {}", children_dir.display(), e))?;
+    }
+    let mut children = Vec::new();
     if let Ok(entries) = fs::read_dir(&release_dir) {
         for entry in entries.flatten() {
             let fname = entry.file_name();
             let fname_str = fname.to_string_lossy().to_string();
             if fname_str.starts_with("secret_") && !fname_str.ends_with(".d") && entry.path().is_file() {
-                let _ = fs::copy(entry.path(), dest_dir.join(&fname_str));
+                children.push((entry.path(), fname_str));
             }
         }
     }
-
-    copy_landlines(&cache_dir.join("landlines"), &dest_dir)?;
+    let landlines = cache_dir.join("landlines");
+    let has_landlines = fs::read_dir(&landlines).map(|mut entries| entries.next().is_some()).unwrap_or(false);
+    if !children.is_empty() || has_landlines {
+        fs::create_dir_all(&children_dir).map_err(|e| e.to_string())?;
+        for (path, name) in children {
+            fs::copy(&path, children_dir.join(&name)).map_err(|e| format!("Failed to copy {}: {}", name, e))?;
+        }
+        copy_landlines(&landlines, &children_dir)?;
+    }
     println!("[orchestrate] Successfully built binary: {}", exe_name);
     Ok(())
 }

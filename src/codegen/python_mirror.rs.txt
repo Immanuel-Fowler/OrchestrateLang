@@ -4,8 +4,7 @@ pub fn start_@NAME@() -> @NAME@Client {
     let __latest = std::sync::Arc::new(@NAME@Latest::default());
     let latest = __latest.clone();
     tokio::spawn(async move {
-        let exe = std::env::current_exe().expect("current_exe");
-        let directory = exe.parent().expect("exe directory").join("landline_@NAME@");
+        let directory = crate::__orch_children_dir().join("landline_@NAME@");
         let mut __next_call = 0u32;
         // Consecutive starts that failed. Each waits longer before the next try, and the
         // calls that arrive meanwhile are answered with their default.

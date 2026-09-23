@@ -422,7 +422,7 @@ pub fn ffi_bindings(
     let base = if library {
         "crate::__orch_context().assets.clone()"
     } else {
-        "std::env::current_exe().expect(\"current_exe\").parent().unwrap().to_path_buf()"
+        "crate::__orch_children_dir()"
     };
     let mut code = format!("mod {module} {{\n{}\n", crate::codegen::core::WIRE_CODEC);
     code.push_str(include_str!("typescript_ffi.rs.txt"));

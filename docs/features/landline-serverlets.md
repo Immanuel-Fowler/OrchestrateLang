@@ -287,7 +287,8 @@ simulation, a desktop app — owns its own main loop, so:
   the orchestration's per-tick entry point. Hosts without a loop never call `tick`.
 - `stop_orch()` in library mode asks the host to stop; it never exits the process.
 - Sidecar sources and their SDKs are copied next to the host binary at build time, the
-  same way secret serverlet binaries are today.
+  same way secret serverlet binaries are today — since 0.16 into `<binary>.children/`, so
+  two programs built into one directory keep theirs apart.
 
 ---
 

@@ -1297,6 +1297,38 @@ fn children_named(parent: u32, needle: &str) -> Vec<u32> {
         .collect()
 }
 
+/// Two programs built into one directory keep their child processes apart: each binary's
+/// are in `<binary>.children/`. Both declare a secret serverlet `Broker` with different
+/// handlers; the second build used to overwrite the first's child, which then failed its
+/// handshake with an interface mismatch.
+#[test]
+fn runtime_two_programs_in_one_directory_keep_their_children() {
+    let scratch = Scratch::new("children_per_binary");
+    let build = |name: &str, source: &str| {
+        let src = scratch.path().join(format!("{name}.orch"));
+        fs::write(&src, source).unwrap();
+        let out = Command::new(orchestrate_bin())
+            .args(["build", src.to_str().unwrap(), "-o", scratch.path().join(name).to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    };
+    build("first", r#"
+serverlet Broker secret { on quote() -> int { return 1 } }
+orchestrator main() { let b = start Broker()  print("first {b.quote()}")  stop_orch() }
+"#);
+    build("second", r#"
+serverlet Broker secret { on quote(n: int) -> int { return n * 2 } }
+orchestrator main() { let b = start Broker()  print("second {b.quote(21)}")  stop_orch() }
+"#);
+    for (name, expected) in [("first", "first 1"), ("second", "second 42")] {
+        let out = Command::new(scratch.path().join(name)).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), expected, "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    assert!(scratch.path().join("first.children/secret_Broker").is_file());
+    assert!(scratch.path().join("second.children/secret_Broker").is_file());
+}
+
 /// A secret serverlet's child killed from outside is noticed at the next call: `on_crash`
 /// runs on the host with the reason, a fresh child is started, and that call is served by
 /// it, with its state starting over. Before, every later call answered 0.
@@ -1361,8 +1393,8 @@ orchestrator main() {
 }
 "#, std::time::Duration::from_millis(0), |_, dir| {
         // Gone when the first call starts it, and back before the later one.
-        let child = dir.join("secret_Late");
-        let hidden = dir.join("secret_Late.hidden");
+        let child = dir.join("program_bin.children/secret_Late");
+        let hidden = dir.join("program_bin.children/secret_Late.hidden");
         fs::rename(&child, &hidden).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(500));
         fs::rename(&hidden, &child).unwrap();

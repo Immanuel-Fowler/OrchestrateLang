@@ -4,7 +4,16 @@ use std::collections::HashSet;
 pub fn runtime_preamble(print_to_stderr: bool, include_process_ref: bool) -> String {
     let print_macro = if print_to_stderr { "eprintln!" } else { "println!" };
     let process_ref = if include_process_ref {
-        "type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send + Sync + 'static>;\n\n\
+        "/// Where this program's child processes are: `<binary>.children/` beside the binary, so\n\
+         /// two programs built into one directory do not share them, or, for a binary built before\n\
+         /// that directory existed, the binary's own directory.\n\
+         fn __orch_children_dir() -> std::path::PathBuf {\n    \
+             let exe = std::env::current_exe().expect(\"current_exe\");\n    \
+             let dir = exe.parent().expect(\"exe dir\").to_path_buf();\n    \
+             let own = dir.join(format!(\"{}.children\", exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));\n    \
+             if own.is_dir() { own } else { dir }\n\
+         }\n\n\
+         type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send + Sync + 'static>;\n\n\
          /// Aborts a task when dropped: a worker's supervisor holds its current run in one, so\n\
          /// stopping the worker stops the run too.\n\
          struct __OrchAbortOnDrop(tokio::task::AbortHandle);\n\
