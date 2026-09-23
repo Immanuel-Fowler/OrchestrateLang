@@ -118,6 +118,7 @@ fn test_error_cases() {
     assert_check_fails("diagnostics/closure_writes_outer_binding.orch", "return the new value instead");
     assert_check_lib_fails("library_body_writes_state.orch", "the orchestrator body assigns to 'count'");
     assert_check_lib_fails("library_body_writes_state.orch", "write it from a hook");
+    assert_check_lib_fails("library_handler_in_process_set.orch", "'pinger' is an event handler");
     // A module's grants name the entry file's host groups; an ungranted call there is
     // caught by check, as the build catches it.
     assert_check_lib_fails("module_sandbox_ungranted_host_call.orch", "calls world.reset, which it was not granted");

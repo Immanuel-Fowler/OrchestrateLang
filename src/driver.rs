@@ -976,6 +976,36 @@ fn library_rules(input_file: &str, ast: &[ast::Stmt], modules: &[&[ast::Stmt]], 
                 }
             }
         }
+        // A library's handlers run inside its ticks for as long as it runs; there is no
+        // task to start or stop, so a handler in a process set would reach rustc.
+        let handlers: std::collections::HashSet<&String> = ast.iter().filter_map(|s| match &s.node {
+            ast::StmtNode::Let { name, value, .. } if matches!(value.node, ast::ExprNode::TriggeredBlock { .. }) => Some(name),
+            _ => None,
+        }).collect();
+        let mut named = Vec::new();
+        for stmt in ast {
+            if let ast::StmtNode::OrchestratorDecl { params, .. } = &stmt.node {
+                for p in params {
+                    if let ast::Type::Array(_, initial) = &p.ty { named.extend(initial.iter().cloned()); }
+                }
+            }
+            ast::walk_stmt(stmt, &mut |node| {
+                if let ast::Node::Stmt(ast::Stmt { node: ast::StmtNode::Trigger { event_name, args }, .. }) = node {
+                    if event_name == "update_orchestrator" {
+                        for arg in args {
+                            if let ast::ExprNode::ArrayLiteral(items) = &arg.node {
+                                named.extend(items.iter().filter_map(|i| match &i.node { ast::ExprNode::Identifier(n) => Some(n.clone()), _ => None }));
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        if let Some(handler) = named.iter().find(|n| handlers.contains(n)) {
+            return Err(format!(
+                "'{handler}' is an event handler, and in a library a handler runs inside the ticks for the library's lifetime rather than as a process; list only `automatic` workers in process[...] and update_orchestrator"
+            ));
+        }
     }
     Ok(())
 }

@@ -1,0 +1,6 @@
+// A library's handler runs inside its ticks for its whole life; it is not a process
+// that can be started and stopped, so it cannot be in a process set.
+host world { fn record(n: int) }
+let pinger = on ping() { world.record(1) }
+on_tick(dt: float) { }
+orchestrator main(procs: process[pinger]) {}
