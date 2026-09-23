@@ -35,12 +35,18 @@ fn __orch_check_drivers(runtime: &tokio::runtime::Handle) -> Result<(), String> 
 
 #[derive(Clone, Debug)]
 pub struct StartOptions {
+    /// Replay: hooks, event handlers, and serverlet calls run in tick order on host time,
+    /// so the same ticks and events produce the same host calls. See library-mode.md.
     pub deterministic: bool,
+    /// Ignore every landline `budget:`, so a call waits for its reply however long it
+    /// takes: a result then cannot depend on wall time. A deterministic run does this
+    /// whatever this says.
+    pub ignore_budgets: bool,
     pub python: Option<std::path::PathBuf>,
     pub shutdown_grace: std::time::Duration,
 }
 impl Default for StartOptions {
-    fn default() -> Self { Self { deterministic: false, python: None, shutdown_grace: std::time::Duration::from_secs(3) } }
+    fn default() -> Self { Self { deterministic: false, ignore_budgets: false, python: None, shutdown_grace: std::time::Duration::from_secs(3) } }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,6 +87,8 @@ struct OrchContext {
     panicked: std::sync::OnceLock<String>,
     /// The child processes running now, by the serverlet they serve.
     children: std::sync::Mutex<std::collections::BTreeMap<String, u32>>,
+    /// Set by a deterministic `sleep` that is waiting on host time, for the event drain.
+    host_sleeping: std::sync::atomic::AtomicBool,
     /// The program's state while a tick drains events, and null otherwise. A top-level
     /// event handler runs inside that drain, one at a time, with the tick waiting on it,
     /// so it reaches instance state through this as the tick itself would.
@@ -245,8 +253,10 @@ where F: std::future::Future + Send + 'static, F::Output: Send + 'static {
 }
 fn __orch_spawn_kind<F>(future: F, line: bool) -> tokio::task::JoinHandle<F::Output>
 where F: std::future::Future + Send + 'static, F::Output: Send + 'static {
+    // A deterministic run refuses what would run beside the ticks where it is declared —
+    // a worker, by name — and holds serverlet actors rather than spawning them; what is
+    // spawned here then is only plumbing no result depends on, such as a child's stderr.
     let context = __orch_context();
-    assert!(!context.options.deterministic, "deterministic mode supports lifecycle and event hooks; spawned workers and serverlets are excluded");
     context.active.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     let guard = OrchTaskGuard(context.clone());
     let task = context.runtime.spawn(__orch_task(context.clone(), async move {
@@ -281,7 +291,13 @@ async fn __orch_sleep(duration: std::time::Duration) {
     }
     assert!(ORCH_EVENT.try_with(|_| ()).is_ok(), "deterministic sleep is supported only in event handlers");
     let deadline = context.clock_nanos.load(std::sync::atomic::Ordering::Relaxed).saturating_add(duration.as_nanos().min(u64::MAX as u128) as u64);
-    std::future::poll_fn(|_| if context.clock_nanos.load(std::sync::atomic::Ordering::Relaxed) >= deadline { std::task::Poll::Ready(()) } else { std::task::Poll::Pending }).await
+    std::future::poll_fn(|_| if context.clock_nanos.load(std::sync::atomic::Ordering::Relaxed) >= deadline {
+        std::task::Poll::Ready(())
+    } else {
+        // Waiting on host time, which only a later tick moves: the drain requeues it.
+        context.host_sleeping.store(true, std::sync::atomic::Ordering::Relaxed);
+        std::task::Poll::Pending
+    }).await
 }
 impl OrchContext {
     fn advance_time(&self, dt: f64) {
@@ -337,9 +353,20 @@ impl OrchContext {
             let event = self.batch.lock().unwrap().pop_front();
             let Some(event) = event else { break; };
             if self.options.deterministic {
+                // Run until it finishes or sleeps on host time, which only a later tick can
+                // move, so it waits in the queue. Anything else it waits on — a serverlet's
+                // reply, a child's answer — is awaited here, in its turn, so it completes in
+                // the same tick on every replay however long the wait takes.
                 let mut event = event;
-                let result = ORCH_EVENT.scope((), std::future::poll_fn(|cx| std::task::Poll::Ready(event.as_mut().poll(cx)))).await;
-                if result.is_pending() { pending.push_back(event); }
+                let finished = ORCH_EVENT.scope((), std::future::poll_fn(|cx| {
+                    self.host_sleeping.store(false, std::sync::atomic::Ordering::Relaxed);
+                    match event.as_mut().poll(cx) {
+                        std::task::Poll::Ready(()) => std::task::Poll::Ready(true),
+                        std::task::Poll::Pending if self.host_sleeping.load(std::sync::atomic::Ordering::Relaxed) => std::task::Poll::Ready(false),
+                        std::task::Poll::Pending => std::task::Poll::Pending,
+                    }
+                })).await;
+                if !finished { pending.push_back(event); }
             } else { event.await; }
         }
         if !pending.is_empty() {
@@ -584,7 +611,7 @@ pub fn start_with_options(runtime: &tokio::runtime::Handle, host: impl Host, opt
     let context = std::sync::Arc::new(OrchContext {
         host: std::sync::Arc::new(host), options, events: Default::default(), batch: Default::default(), clock_nanos: 0.into(), frame: 0.into(), dt_bits: 0.into(), stop_requested: false.into(), closing, shutdown,
         tasks: Default::default(), active: 0.into(), idle: tokio::sync::Notify::new(), assets, runtime: runtime.clone(),
-        program: OrchSlot::new(), has_events: false.into(), draining_program: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()), panicked: std::sync::OnceLock::new(), children: Default::default(),
+        program: OrchSlot::new(), has_events: false.into(), draining_program: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()), panicked: std::sync::OnceLock::new(), children: Default::default(), host_sleeping: false.into(),
 @SHARED_INIT@
 @EVENT_INIT@
     });

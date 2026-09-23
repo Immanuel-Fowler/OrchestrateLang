@@ -212,8 +212,15 @@ named in `CHANGELOG.md`.
   `tick_sync` the panic still reaches the calling thread. Regression test:
   `engine_deterministic_mode_refuses_what_it_excludes`.
 - **The exclusions are checked at run time, not by `check`.** A program that starts a
-  serverlet is a fine program in normal mode; only the host's `StartOptions` makes it an
+  worker is a fine program in normal mode; only the host's `StartOptions` makes it an
   error. `check` cannot know which mode the host will choose.
+- **Serverlets were excluded until 0.16**, so the guarantee covered the part of a program
+  that needs no isolation and none of the part that does: two library programs split a
+  deterministic subset off into a second entry file to say anything about replay. A
+  deterministic run now holds every serverlet's actor and runs it in call order, inside
+  the tick, and ignores what measures wall time (budgets, sandbox timeouts). Workers and
+  `sleep` outside a handler are still excluded; a child that reads the clock is outside
+  what any replay can see.
 
 ## Diagnostics corpus: what still reaches rustc
 

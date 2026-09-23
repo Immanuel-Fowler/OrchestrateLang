@@ -1,28 +1,122 @@
 use crate::ast::{ExprNode, StmtNode, Expr, Stmt, StringPart, Type};
 use std::collections::HashSet;
 
-pub fn runtime_preamble(print_to_stderr: bool, include_process_ref: bool) -> String {
+/// What a program's runtime needs that differs between a standalone binary and a library:
+/// where children live, what records them, whether budgets and timeouts apply, how a
+/// worker and a serverlet's actor start. One definition each, chosen by mode.
+const STANDALONE_RUNTIME: &str = r#"/// Where this program's child processes are: `<binary>.children/` beside the binary, so
+/// two programs built into one directory do not share them, or, for a binary built before
+/// that directory existed, the binary's own directory.
+fn __orch_children_dir() -> std::path::PathBuf {
+    let exe = std::env::current_exe().expect("current_exe");
+    let dir = exe.parent().expect("exe dir").to_path_buf();
+    let own = dir.join(format!("{}.children", exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+    if own.is_dir() { own } else { dir }
+}
+
+/// Records that a serverlet's child process started (`Some(pid)`) or ended (`None`), for a
+/// host to ask about. A standalone program has no host, so it records nothing.
+fn __orch_child(serverlet: &str, pid: Option<u32>) { let _ = (serverlet, pid); }
+
+/// Whether a landline's `budget:` bounds its calls. Always, in a standalone program.
+fn __orch_budgets_apply() -> bool { true }
+
+/// Whether this run replays deterministically. Only a library, started so, does.
+fn __orch_deterministic() -> bool { false }
+
+/// Starts a worker's supervisor.
+fn __orch_spawn_worker<F: std::future::Future<Output = ()> + Send + 'static>(_worker: &str, future: F) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(future)
+}
+
+/// A serverlet's actor, spawned on the runtime, where it serves calls as they arrive.
+#[derive(Clone, Debug)]
+struct __OrchActor;
+impl __OrchActor {
+    fn spawn<F: std::future::Future<Output = ()> + Send + 'static>(_line: bool, future: F) -> Self {
+        tokio::spawn(future);
+        __OrchActor
+    }
+    async fn reply<T>(&self, reply: tokio::sync::oneshot::Receiver<T>) -> Result<T, tokio::sync::oneshot::error::RecvError> {
+        reply.await
+    }
+}
+
+"#;
+
+/// The library's versions of `STANDALONE_RUNTIME`'s functions, which ask the instance.
+const LIBRARY_RUNTIME: &str = r#"/// Records that a serverlet's child process started (`Some(pid)`) or ended (`None`), for
+/// `Scripts::child_processes`.
+fn __orch_child(serverlet: &str, pid: Option<u32>) { crate::__orch_context().record_child(serverlet, pid) }
+
+/// Whether a landline's `budget:` bounds its calls: not in a deterministic run, where a
+/// result must not depend on wall time, nor when the host lifts budgets for a replay.
+fn __orch_budgets_apply() -> bool {
+    let context = crate::__orch_context();
+    !(context.options.deterministic || context.options.ignore_budgets)
+}
+
+/// Whether this instance replays deterministically.
+fn __orch_deterministic() -> bool { crate::__orch_context().options.deterministic }
+
+/// Starts a worker's supervisor. A worker runs beside the ticks, so a deterministic run
+/// refuses it, naming it.
+fn __orch_spawn_worker<F: std::future::Future<Output = ()> + Send + 'static>(worker: &str, future: F) -> tokio::task::JoinHandle<()> {
+    if crate::__orch_context().options.deterministic {
+        panic!("deterministic mode runs hooks, event handlers, and serverlet calls in tick order; the automatic block {worker} would run beside the ticks, so it is excluded");
+    }
+    crate::__orch_spawn(future)
+}
+
+/// A serverlet's actor. Spawned on the runtime normally. In a deterministic run it is held
+/// here instead, and run only by a caller waiting for one of its replies — inside the tick
+/// or a handler, one call at a time, in call order — so what it answers cannot depend on
+/// when a thread got to it.
+#[derive(Clone)]
+struct __OrchActor(Option<std::sync::Arc<std::sync::Mutex<Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>>>>);
+impl std::fmt::Debug for __OrchActor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(if self.0.is_some() { "actor (held)" } else { "actor (spawned)" }) }
+}
+impl __OrchActor {
+    fn spawn<F: std::future::Future<Output = ()> + Send + 'static>(line: bool, future: F) -> Self {
+        if !crate::__orch_context().options.deterministic {
+            crate::__orch_spawn_kind(future, line);
+            return __OrchActor(None);
+        }
+        __OrchActor(Some(std::sync::Arc::new(std::sync::Mutex::new(Some(Box::pin(future))))))
+    }
+    async fn reply<T>(&self, mut reply: tokio::sync::oneshot::Receiver<T>) -> Result<T, tokio::sync::oneshot::error::RecvError> {
+        let Some(actor) = &self.0 else { return reply.await };
+        let context = crate::__orch_context();
+        std::future::poll_fn(|cx| {
+            if let std::task::Poll::Ready(answer) = std::pin::Pin::new(&mut reply).poll(cx) { return std::task::Poll::Ready(answer); }
+            {
+                // Under the runtime, since `tick_sync` polls on the host's own thread and an
+                // actor may start a child process or read its pipe.
+                let _runtime = context.runtime.enter();
+                let mut held = actor.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(future) = held.as_mut() {
+                    if future.as_mut().poll(cx).is_ready() { *held = None; }
+                }
+            }
+            std::pin::Pin::new(&mut reply).poll(cx)
+        }).await
+    }
+}
+
+"#;
+
+pub fn runtime_preamble(print_to_stderr: bool, include_process_ref: bool, library: bool) -> String {
     let print_macro = if print_to_stderr { "eprintln!" } else { "println!" };
     let process_ref = if include_process_ref {
-        "/// Where this program's child processes are: `<binary>.children/` beside the binary, so\n\
-         /// two programs built into one directory do not share them, or, for a binary built before\n\
-         /// that directory existed, the binary's own directory.\n\
-         fn __orch_children_dir() -> std::path::PathBuf {\n    \
-             let exe = std::env::current_exe().expect(\"current_exe\");\n    \
-             let dir = exe.parent().expect(\"exe dir\").to_path_buf();\n    \
-             let own = dir.join(format!(\"{}.children\", exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));\n    \
-             if own.is_dir() { own } else { dir }\n\
-         }\n\n\
-         /// Records that a serverlet's child process started (`Some(pid)`) or ended (`None`),\n\
-         /// for a host to ask about. A standalone program has no host, so it records nothing.\n\
-         fn __orch_child(serverlet: &str, pid: Option<u32>) { let _ = (serverlet, pid); }\n\n\
-         type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send + Sync + 'static>;\n\n\
+        let runtime = if library { LIBRARY_RUNTIME } else { STANDALONE_RUNTIME };
+        format!("{runtime}type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send + Sync + 'static>;\n\n\
          /// Aborts a task when dropped: a worker's supervisor holds its current run in one, so\n\
          /// stopping the worker stops the run too.\n\
          struct __OrchAbortOnDrop(tokio::task::AbortHandle);\n\
-         impl Drop for __OrchAbortOnDrop {\n    fn drop(&mut self) { self.0.abort(); }\n}\n\n"
+         impl Drop for __OrchAbortOnDrop {{\n    fn drop(&mut self) {{ self.0.abort(); }}\n}}\n\n")
     } else {
-        ""
+        String::new()
     };
     format!(r#"trait OrchAdd<RHS = Self> {{
     type Output;
@@ -1296,7 +1390,7 @@ impl Codegen {
 macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::Error, format!($($args)*)) }; }
 "#);
         }
-        let preamble = runtime_preamble(false, true);
+        let preamble = runtime_preamble(false, true, self.library);
         code.push_str(&if self.library {
             preamble.replace("fn stop_orch() {\n    std::process::exit(0);\n}", if is_main { "" } else { "use crate::stop_orch;" })
         } else { preamble });

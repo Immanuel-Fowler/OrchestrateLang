@@ -10,6 +10,20 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 ## [Unreleased]
 
 ### Added
+- **Deterministic replay covers serverlets, on every boundary.** `StartOptions {
+  deterministic: true }` refused any serverlet or landline, so the guarantee covered the
+  part of a program that needs no isolation and none of the part that does — a sandboxed
+  plugin, a Python model, a secret child — and programs split a deterministic subset off
+  to say anything about replay. A deterministic run now holds each serverlet's actor
+  rather than spawning it, and runs it only for a caller waiting on its reply, in call
+  order, inside the tick; an event handler waiting on a reply is awaited in its turn
+  rather than put back in the queue. What measures wall time is switched off: landline
+  budgets are ignored and sandbox timeouts are not enforced. The 10,000-tick trace test
+  now calls an in-process and a sandboxed serverlet from `on_tick` and from handlers, and
+  a second test replays across a secret serverlet and a Python landline. Workers and
+  `sleep` outside a handler are still excluded, and the refusal names the worker.
+- **`StartOptions::ignore_budgets`** lifts every landline budget for a run, so a host can
+  replay a recording without the result depending on wall time.
 - **`!`, bitwise operators, and shifts.** `!` negates a `bool`; `&`, `|`, `^`, `<<`, and
   `>>` work on `int`, with Rust's precedence, so `flags & 2 == 2` is `(flags & 2) == 2`.
   Status bits were read with `/` and `%` before. A nested type that closes with `>>`,

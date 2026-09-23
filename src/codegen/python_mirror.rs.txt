@@ -3,7 +3,7 @@ pub fn start_@NAME@() -> @NAME@Client {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<@NAME@Msg>(100);
     let __latest = std::sync::Arc::new(@NAME@Latest::default());
     let latest = __latest.clone();
-    tokio::spawn(async move {
+    let actor = __OrchActor::spawn(true, async move {
         let directory = crate::__orch_children_dir().join("landline_@NAME@");
         let mut __next_call = 0u32;
         // Consecutive starts that failed. Each waits longer before the next try, and the
@@ -73,5 +73,5 @@ pub fn start_@NAME@() -> @NAME@Client {
             break;
         }
     });
-    @NAME@Client { tx, latest }
+    @NAME@Client { tx, latest, actor }
 }

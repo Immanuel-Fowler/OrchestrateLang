@@ -309,7 +309,7 @@ impl Codegen {
                 let worker_code = format!(
                     r#"{{
     {capture}std::sync::Arc::new(move || {{
-        {recapture}tokio::spawn(async move {{
+        {recapture}__orch_spawn_worker({worker_label:?}, async move {{
             {bind}let mut __restarts: u32 = 0;
             loop {{
                 {setup}{recapture}let __inner_handle = tokio::spawn(async move {{
@@ -342,6 +342,7 @@ impl Codegen {
                     loop_body = loop_inner,
                     crash = crash_code,
                     allowed = allowed,
+                    worker_label = own_name.as_ref().map(|n| format!("'{n}'")).unwrap_or_else(|| "(unnamed)".to_string()),
                     worker = worker,
                     spent = spent,
                     delay = delay,

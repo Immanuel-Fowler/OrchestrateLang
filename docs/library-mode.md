@@ -76,7 +76,8 @@ assets, host implementations, and stop flags are isolated per instance.
 
 | Field | Default | Meaning |
 |---|---|---|
-| `deterministic` | `false` | Run lifecycle and event hooks on host-driven time ([below](#deterministic-mode)) |
+| `deterministic` | `false` | Run lifecycle and event hooks, and serverlet calls, on host-driven time ([below](#deterministic-mode)) |
+| `ignore_budgets` | `false` | Ignore every landline `budget:`, so a call waits for its reply; a deterministic run always does |
 | `python` | `None` | Python executable for Python landlines; otherwise `ORCH_PYTHON`, then `python3` |
 | `shutdown_grace` | 3 seconds | How long shutdown waits for sidecar tasks before aborting them; zero is allowed |
 
@@ -244,23 +245,43 @@ runtimes.
 
 - Time comes from the host: each tick adds its `dt`, and `sleep` inside an event handler
   waits until enough later tick time has passed. No wall clock is consulted.
-- Ready events run in FIFO order; events that are sleeping stay queued.
+- Ready events run in FIFO order; events that are sleeping on host time stay queued. An
+  event whose handler is waiting on anything else — a serverlet's reply, a child's answer
+  — is awaited in its turn, so it finishes in the same tick on every replay.
 - The orchestrator body runs to completion during startup instead of on its own task.
-- Spawned workers (`automatic` blocks), serverlets and landlines, and `sleep` outside
-  event handlers are not supported: the library panics with a message naming
-  deterministic mode. On the coordinator's task that panic reaches the host as an error
-  that carries its message: `ready` returns "library startup task failed: " and the
-  message for a worker, serverlet, or landline started at the top level, and `tick`
-  returns "tick task failed: " and the message for a `sleep` in a tick. Under
-  `tick_sync`, whose body runs on the calling thread, the panic reaches the caller
-  directly.
-- Host implementations must be deterministic themselves.
+- **Serverlet calls replay.** A serverlet's actor is not spawned: it is held, and run only
+  by a caller waiting for one of its replies — a hook, a handler, the orchestrator body —
+  one call at a time, in call order. That holds for every boundary: in-process, sandboxed,
+  secret, and landline. What makes a call's answer depend on wall time is switched off:
+  - a landline's `budget:` is ignored, so every call waits for its reply (a host can also
+    lift budgets in a normal run with `ignore_budgets`);
+  - a sandboxed serverlet's `timeout` is not enforced, since it measures wall time — a
+    guest that never returns hangs the replay rather than trapping on one run and not
+    another; its memory limit still applies.
+- **What it still excludes, and how it says so.** A spawned worker (`automatic`) runs
+  beside the ticks, so starting one panics with a message naming deterministic mode and
+  the worker; so does `sleep` outside an event handler. On the coordinator's task that
+  panic reaches the host as an error carrying its message: `ready` returns "library
+  startup task failed: " and the message for a worker started at startup, and `tick`
+  returns "tick task failed: " for a `sleep` in a tick. Under `tick_sync` the panic is
+  caught on the calling thread and returned as "tick panicked: " and the message.
+- **What it cannot see.** A replay is as deterministic as what it calls: host functions,
+  a landline or secret child that reads the clock or a random source, and
+  `clock_micros`/`clock_nanos`, which read the wall clock, all make a trace depend on
+  more than its inputs. A landline whose own state changes on every call can diverge
+  between replays if the calls it sees differ — a warm-up loop that retries a budgeted
+  call until one answers changes how many calls it has seen; see the reference on
+  `late: "latest"`.
 
 The guarantee is tested at length: `engine_deterministic_trace_is_byte_identical_over_ten_thousand_ticks`
 replays one scripted sequence of 10,000 ticks and events — host-fired events, events
 fired by handlers, handlers that sleep on host time across ticks, and instance state —
 on fresh instances, on a current-thread and a multithreaded runtime, through
-`tick_blocking` and `tick_sync`, and asserts a byte-identical host-call trace.
+`tick_blocking` and `tick_sync`, and asserts a byte-identical host-call trace; the program
+calls an in-process serverlet and a sandboxed one from `on_tick` and from its handlers.
+`engine_deterministic_replay_across_process_boundaries` does the same across a secret
+serverlet and a Python landline whose every call misses its budget, and shows the budget
+holding outside deterministic mode unless `ignore_budgets` lifts it.
 `engine_deterministic_mode_refuses_what_it_excludes` asserts that each exclusion above
 fails as described.
 

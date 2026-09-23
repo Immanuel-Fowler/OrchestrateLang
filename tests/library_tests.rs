@@ -974,12 +974,32 @@ fn engine_deterministic_trace_is_byte_identical_over_ten_thousand_ticks() {
     let root = root("deterministic_trace");
     build(&root, r#"
 host world { fn record(tag: int, value: int) }
+// Two boundaries inside the replay: an in-process serverlet, and a sandboxed one whose
+// guest keeps state of its own. Each is called from on_tick and from an event handler.
+serverlet Counter {
+    let n = 0
+    on add(k: int) -> int {
+        n = n + k
+        return n
+    }
+}
+serverlet Mixer sandbox(memory_limit: "8mb", timeout: "50ms") {
+    let seen = 0
+    on mix(a: int, b: int) -> int {
+        seen = seen + 1
+        return (a * 31 + b) % 1000 + seen
+    }
+}
+let counter = start Counter()
+let mixer = start Mixer()
 let ticks = 0
 let fired = 0
 on hit(n: int) {
     world.record(1, n)
+    world.record(4, counter.add(n))
     sleep(5)
     world.record(2, n + 100)
+    world.record(6, mixer.mix(n, 1))
 }
 on pulse(a: int, b: int) {
     world.record(3, a * b)
@@ -988,6 +1008,7 @@ on pulse(a: int, b: int) {
 on_tick(dt: float) {
     ticks = ticks + 1
     world.record(0, ticks)
+    world.record(5, mixer.mix(ticks, counter.add(1)))
     if ticks % 7 == 0 {
         fired = fired + 1
         trigger pulse(ticks, fired)
@@ -1044,6 +1065,8 @@ fn main() {
     assert_eq!(count(0), TICKS + 10, "one tick record per tick");
     assert!(count(1) > 3_000 && count(2) == count(1), "every hit slept and finished on host time: {} started, {} finished", count(1), count(2));
     assert!(count(3) > 1_000, "pulses were handled: {}", count(3));
+    assert_eq!(count(5), TICKS + 10, "the sandboxed serverlet answered every tick");
+    assert!(count(4) == count(1) && count(6) == count(2), "both serverlets answered every handler");
     println!("trace {} bytes, {} records", reference.len(), records.len());
 }
 "#);
@@ -1051,18 +1074,92 @@ fn main() {
     println!("{}", output.trim());
 }
 
+/// Deterministic mode across the process boundaries: a secret serverlet and a Python
+/// landline whose every call misses its budget, called from on_tick and from a handler.
+/// A deterministic run ignores the budget, so each call answers; replayed through both
+/// tick paths, the trace is byte-identical. Outside deterministic mode the budget holds,
+/// unless the host lifts it with `ignore_budgets`.
+#[test]
+fn engine_deterministic_replay_across_process_boundaries() {
+    let root = root("deterministic_processes");
+    fs::write(root.join("slow.py"), r#"
+import time
+from orchestratelang import landline
+class Slow(landline.Serverlet):
+    def echo(self, n: int) -> int:
+        time.sleep(0.02)
+        return n * 2
+landline.serve(Slow)
+"#).unwrap();
+    build(&root, r#"
+host world { fn record(tag: int, value: int) }
+serverlet Vault secret {
+    let n = 0
+    on add(k: int) -> int {
+        n = n + k
+        return n
+    }
+}
+serverlet Slow via python(source: "slow.py", budget: "5ms") { on echo(n: int) -> int }
+let vault = start Vault()
+let slow = start Slow()
+let ticks = 0
+on hit(n: int) { world.record(2, vault.add(n)) }
+on_tick(dt: float) {
+    ticks = ticks + 1
+    world.record(0, vault.add(1))
+    world.record(1, slow.echo(ticks))
+    if ticks % 3 == 0 { trigger hit(ticks) }
+}
+orchestrator main() {}
+"#);
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<(i64, i64)>>>);
+impl scripts::Host for Host {
+    fn world_record(&self, tag: i64, value: i64) -> Result<(), String> { self.0.lock().unwrap().push((tag, value)); Ok(()) }
+}
+fn run(runtime: &tokio::runtime::Runtime, options: scripts::StartOptions, sync: bool) -> Vec<(i64, i64)> {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let mut scripts = scripts::start_with_options(runtime.handle(), Host(trace.clone()), options).unwrap();
+    scripts.ready_blocking(runtime).unwrap();
+    for _ in 0..30 {
+        if sync { scripts.tick_sync(runtime, 0.016).unwrap(); } else { scripts.tick_blocking(runtime, 0.016).unwrap(); }
+    }
+    scripts.shutdown_blocking(runtime).unwrap();
+    let result = trace.lock().unwrap().clone();
+    result
+}
+fn echoes(trace: &[(i64, i64)]) -> Vec<i64> { trace.iter().filter(|(t, _)| *t == 1).map(|(_, v)| *v).collect() }
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let deterministic = scripts::StartOptions { deterministic: true, ..Default::default() };
+    let reference = run(&runtime, deterministic.clone(), false);
+    assert_eq!(reference, run(&runtime, deterministic, true), "tick_sync diverged from tick_blocking");
+    let expected: Vec<i64> = (1..=30).map(|n| n * 2).collect();
+    assert_eq!(echoes(&reference), expected, "a deterministic run waits for every reply");
+    assert_eq!(reference.iter().filter(|(t, _)| *t == 2).count(), 10, "every handler called the secret serverlet");
+    let lifted = run(&runtime, scripts::StartOptions { ignore_budgets: true, ..Default::default() }, false);
+    assert_eq!(echoes(&lifted), expected, "ignore_budgets lifts the budget");
+    let budgeted = run(&runtime, scripts::StartOptions::default(), false);
+    assert!(echoes(&budgeted).iter().all(|v| *v == 0), "the budget holds by default: {:?}", echoes(&budgeted));
+    println!("replayed {} records", reference.len());
+}
+"#);
+    assert!(output.starts_with("replayed "), "{output}");
+}
+
 /// The documented exclusions from deterministic mode fail the way the documentation says:
-/// a spawned worker, a serverlet, a landline, and a `sleep` outside an event handler each
-/// stop the library with the deterministic-mode message. On the coordinator's task the
-/// panic surfaces to the host as an error from `ready` or `tick` that carries the
-/// message; under `tick_sync` the
-/// body runs on the host's own thread, so the panic reaches that thread.
+/// a spawned worker, named, and a `sleep` outside an event handler each stop the library
+/// with the deterministic-mode message. On the coordinator's task the panic surfaces to
+/// the host as an error from `ready` or `tick` that carries the message; under `tick_sync`
+/// the body runs on the host's own thread, where the panic is caught and returned too.
 #[test]
 fn engine_deterministic_mode_refuses_what_it_excludes() {
+    // Serverlets and landlines are not here: since 0.16 a deterministic run holds their
+    // actors and runs them in call order, inside the tick.
     let programs = [
         ("worker", "host world { fn record(n: int) }\nlet worker = automatic { world.record(1) }\non_tick(dt: float) { }\norchestrator main(procs: process[worker]) {}\n", "startup"),
-        ("serverlet", "host world { fn record(n: int) }\nserverlet Counter { on add(n: int) -> int { return n } }\nlet counter = start Counter()\non_tick(dt: float) { world.record(counter.add(1)) }\norchestrator main() {}\n", "startup"),
-        ("landline", "host world { fn record(n: int) }\nserverlet P via python(source: \"impl.py\") { on ping() -> int }\nlet p = start P()\non_tick(dt: float) { world.record(p.ping()) }\norchestrator main() {}\n", "startup"),
         ("sleep", "host world { fn record(n: int) }\non_tick(dt: float) { sleep(1) world.record(1) }\norchestrator main() {}\n", "tick"),
     ];
     for (name, source, failure) in programs {
@@ -1088,18 +1185,21 @@ fn main() {{
     if failure == "startup" {{
         let error = ready.unwrap_err();
         assert!(error.starts_with("library startup task failed: ") && error.contains("deterministic"), "{{error}}");
+        // The refusal names the declaration it hit.
+        assert!(error.contains("'worker'"), "{{error}}");
     }} else {{
         ready.unwrap();
         let error = tick.unwrap_err();
         assert!(error.starts_with("tick task failed: ") && error.contains("deterministic"), "{{error}}");
     }}
     drop(scripts);
-    // The synchronous path for a tick-time failure: the body runs on this thread.
+    // The synchronous path for a tick-time failure: the body runs on this thread, and the
+    // panic is caught there and returned, rather than unwinding into the host.
     if failure == "tick" {{
         let mut scripts = scripts::start_with_options(runtime.handle(), Host, options).unwrap();
         scripts.ready_blocking(&runtime).unwrap();
-        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scripts.tick_sync(&runtime, 0.016)));
-        assert!(caught.is_err(), "tick_sync must panic on the calling thread");
+        let error = scripts.tick_sync(&runtime, 0.016).unwrap_err();
+        assert!(error.starts_with("tick panicked: ") && error.contains("deterministic"), "{{error}}");
         drop(scripts);
     }}
     let panics = panics.lock().unwrap();

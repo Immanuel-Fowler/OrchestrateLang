@@ -98,9 +98,33 @@ fn __orch_children_dir() -> std::path::PathBuf {
     if own.is_dir() { own } else { dir }
 }
 
-/// Records that a serverlet's child process started (`Some(pid)`) or ended (`None`),
-/// for a host to ask about. A standalone program has no host, so it records nothing.
+/// Records that a serverlet's child process started (`Some(pid)`) or ended (`None`), for a
+/// host to ask about. A standalone program has no host, so it records nothing.
 fn __orch_child(serverlet: &str, pid: Option<u32>) { let _ = (serverlet, pid); }
+
+/// Whether a landline's `budget:` bounds its calls. Always, in a standalone program.
+fn __orch_budgets_apply() -> bool { true }
+
+/// Whether this run replays deterministically. Only a library, started so, does.
+fn __orch_deterministic() -> bool { false }
+
+/// Starts a worker's supervisor.
+fn __orch_spawn_worker<F: std::future::Future<Output = ()> + Send + 'static>(_worker: &str, future: F) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(future)
+}
+
+/// A serverlet's actor, spawned on the runtime, where it serves calls as they arrive.
+#[derive(Clone, Debug)]
+struct __OrchActor;
+impl __OrchActor {
+    fn spawn<F: std::future::Future<Output = ()> + Send + 'static>(_line: bool, future: F) -> Self {
+        tokio::spawn(future);
+        __OrchActor
+    }
+    async fn reply<T>(&self, reply: tokio::sync::oneshot::Receiver<T>) -> Result<T, tokio::sync::oneshot::error::RecvError> {
+        reply.await
+    }
+}
 
 type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send + Sync + 'static>;
 
@@ -236,6 +260,7 @@ pub struct CounterLatest {
 #[derive(Clone, Debug)]
 pub struct CounterClient {
     tx: tokio::sync::mpsc::Sender<CounterMsg>,
+    actor: __OrchActor,
     latest: std::sync::Arc<CounterLatest>,
 }
 
@@ -243,7 +268,7 @@ impl CounterClient {
     pub async fn add(&self, n: i64) -> i64 {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         let _ = self.tx.send(CounterMsg::Add { n, reply_to: reply_tx }).await;
-        reply_rx.await.unwrap_or_default()
+        self.actor.reply(reply_rx).await.unwrap_or_default()
     }
 }
 
@@ -252,7 +277,7 @@ pub fn start_Counter() -> CounterClient {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<CounterMsg>(100);
     let __latest = std::sync::Arc::new(CounterLatest::default());
     let latest = __latest.clone();
-    tokio::spawn(async move {
+    let actor = __OrchActor::spawn(true, async move {
         let directory = crate::__orch_children_dir().join("landline_Counter");
         let mut __next_call = 0u32;
         // Consecutive starts that failed. Each waits longer before the next try, and the
@@ -353,7 +378,7 @@ pub fn start_Counter() -> CounterClient {
             break;
         }
     });
-    CounterClient { tx, latest }
+    CounterClient { tx, latest, actor }
 }
 
 
