@@ -1,0 +1,3 @@
+host world { fn record(n: int) }
+on_tick(dt: float) -> int every "100ms" { return 1 }
+orchestrator main() {}

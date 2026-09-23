@@ -1,0 +1,12 @@
+host world { fn record(n: int) }
+serverlet Planner sandbox(memory_limit: "8mb", timeout: "50ms") {
+    on tick(dt: float) -> int { return 1 }
+}
+let planner = start Planner()
+on_tick(dt: float) {
+    match latest(planner.tick) {
+        result::Ok(v) => world.record(v)
+        result::Err(why) => world.record(0)
+    }
+}
+orchestrator main() {}

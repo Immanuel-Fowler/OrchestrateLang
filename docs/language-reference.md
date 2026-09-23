@@ -391,6 +391,7 @@ trigger update_orchestrator([])
 | `stop_orch` | `stop_orch()` | Immediately exits the program |
 | `clock_micros` | `clock_micros() -> int` | Microseconds on a monotonic clock; subtract two readings to measure elapsed time |
 | `clock_nanos` | `clock_nanos() -> int` | Nanoseconds on the same clock, for work shorter than a microsecond. Its resolution is the platform's monotonic clock: nanoseconds on Linux and macOS |
+| `latest` | `latest(p.tick) -> result<T>` | A cadenced serverlet's last answer to the runtime's call, or `err` saying why there is none; library mode (see Cadences) |
 | `to_int` | `to_int(x) -> int` | A `float` rounded toward zero, or an `int` unchanged |
 | `to_float` | `to_float(x) -> float` | An `int` as a `float` |
 | `parse_int` | `parse_int(s: string) -> result<int>` | The number a string spells, or an error saying why not |
@@ -632,6 +633,23 @@ let heartbeat = automatic(restart: always, backoff: "50ms") {
 restarts stays stopped and says so once on stderr; nothing else restarts it. A worker
 whose body ends on its own — a `return` or a `break` out of its loop — has finished, not
 crashed, and is not restarted either.
+
+#### Running on a period: `every`
+
+`every: "20ms"` runs the body once per period instead of as fast as it loops:
+
+```orchestrate
+let sweeper = automatic(restart: always, every: "20ms") {
+    retry_due()
+}
+```
+
+The first run starts at once, and each later one on a schedule fixed to it, so the rate
+does not drift with how long the body takes — unlike `sleep(20)` at the end of the body,
+which waits 20 ms *after* the work. A `continue` waits for the next period too. A run that
+takes longer than the period skips the periods it overran rather than running them back to
+back, and runs never overlap. The period is wall time: a worker is not driven by a host.
+Durations take `us`, `ms`, or `s`. A restart starts the schedule over.
 
 ### 3.2 Serverlet Lifetime Inside Automatic Blocks
 
@@ -2054,7 +2072,67 @@ methods are named `world_record` and return `Result<T, String>`.
 
 `on_fixed_tick(step: float) { ... }` runs on `Scripts::fixed_tick(step)`. A single typed
 hook, `on_tick(dt: float, input: Input) -> Output { ... }`, makes `tick` take an input and
-return an output. `Scripts::trigger_<event>(...)` fires `on <event>` blocks from Rust, and
+return an output.
+
+#### Cadences: how often a hook or a serverlet runs
+
+A program may declare several `on_tick` hooks, run in declaration order on each tick. One
+declared with `every` runs only when its period of **host time** — the sum of the `dt`s
+the host has passed — has gone by, and its `dt` is the host time since it last ran:
+
+```orchestrate
+let waypoints: int[] = []
+
+on_tick(dt: float) every "100ms" {      // 10 Hz inside, say, a 50 Hz host
+    waypoints = planner.plan(position)
+}
+
+on_tick(dt: float) every 5 ticks {      // or count ticks
+    report(waypoints)
+}
+
+on_tick(dt: float) {                    // every tick
+    follow(waypoints)
+}
+```
+
+A cadenced hook runs on the first tick, then once per period on a schedule fixed to that
+first run, so it does not drift. A tick that finds more than one period gone runs it once:
+missed periods are skipped, never caught up in a burst. The slow hook's result lives in
+instance state, where the every-tick hook reads it — there is no counter to keep, and the
+value read is exactly as old as the period says. Because the clock is the host's, a
+cadence replays exactly under `deterministic: true`. `on_fixed_tick` takes `every` too,
+counting the `step`s it is passed. A hook with `every` takes no input and returns nothing:
+those belong to the one `on_tick` the host calls on every tick.
+
+A landline or sandboxed serverlet can carry its own cadence, next to its other choices:
+
+```orchestrate
+serverlet Planner via python(source: "planner.py", budget: "10ms", every: "100ms") {
+    on tick(dt: float) -> int[]
+}
+let planner = start Planner()
+
+on_tick(dt: float) {
+    match latest(planner.tick) {
+        result::Ok(route) => follow(route)
+        result::Err(why) => hold()          // no answer yet, or the last call failed
+    }
+}
+```
+
+On each tick where the period has passed, the runtime calls every running instance's
+`tick` with the host time since its last call, in the order the instances started, under
+the serverlet's own `budget` and `late`, before the tick's hooks run — so they read this
+tick's answer. `latest(p.tick)` is that last call's outcome: `ok` with its answer, or
+`err` saying why there is none (not called yet, or the call failed, missed its budget, or
+the process crashed). With `late: "latest"`, a late answer replaces it when it arrives.
+The serverlet must declare `on tick(dt: float)`. A program may still call `tick` itself;
+that call answers as declared. An instance stops being called once the program has let
+go of its last client. Cadences count host time, so they need a library build; in a
+standalone program, call the serverlet from a worker with `automatic(every: ...)`.
+In-process and secret serverlets have no configuration list to put a cadence in: call them
+from a cadenced hook. `Scripts::trigger_<event>(...)` fires `on <event>` blocks from Rust, and
 the `*_blocking` methods drive the library from synchronous code.
 
 See [library-mode.md](library-mode.md) for lifecycle ordering, async and blocking APIs,

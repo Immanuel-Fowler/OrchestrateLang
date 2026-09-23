@@ -1074,6 +1074,107 @@ fn main() {
     println!("{}", output.trim());
 }
 
+/// A cadence is a divisor of the host's clock. Over 10,000 ticks of varying `dt`, a
+/// sandboxed serverlet declared `every: "100ms"`, a hook `every "250ms"`, and a hook
+/// `every 7 ticks` each run exactly as often as a schedule computed here from the same
+/// `dt`s says, each is passed the host time since it last ran, and the hooks read the
+/// serverlet's answer from the same tick. The trace is byte-identical across both tick
+/// paths and both runtimes, deterministic or not: nothing in it depends on wall time.
+#[test]
+fn engine_cadence_follows_host_time() {
+    let root = root("cadence");
+    build(&root, r#"
+host world { fn record(tag: int, value: int) }
+serverlet Planner sandbox(memory_limit: "8mb", timeout: "50ms", every: "100ms") {
+    let plans = 0
+    on tick(dt: float) -> int {
+        plans = plans + 1
+        return plans * 1000000 + to_int(round(dt * 1000000.0))
+    }
+}
+let planner = start Planner()
+on_tick(dt: float) every "250ms" {
+    world.record(2, to_int(round(dt * 1000000.0)))
+}
+on_tick(dt: float) every 7 ticks {
+    world.record(3, to_int(round(dt * 1000000.0)))
+}
+on_tick(dt: float) {
+    match latest(planner.tick) {
+        result::Ok(answer) => world.record(1, answer)
+        result::Err(why) => world.record(0, 0)
+    }
+}
+orchestrator main() {}
+"#);
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<u8>>>);
+impl scripts::Host for Host {
+    fn world_record(&self, tag: i64, value: i64) -> Result<(), String> {
+        let mut trace = self.0.lock().unwrap();
+        trace.extend_from_slice(&tag.to_le_bytes());
+        trace.extend_from_slice(&value.to_le_bytes());
+        Ok(())
+    }
+}
+const TICKS: usize = 10_000;
+fn dt(i: usize) -> f64 { 0.001 + (i % 5) as f64 * 0.001 }
+fn run(runtime: &tokio::runtime::Runtime, deterministic: bool, sync: bool) -> Vec<u8> {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let options = scripts::StartOptions { deterministic, ..Default::default() };
+    let mut scripts = scripts::start_with_options(runtime.handle(), Host(trace.clone()), options).unwrap();
+    scripts.ready_blocking(runtime).unwrap();
+    for i in 0..TICKS {
+        if sync { scripts.tick_sync(runtime, dt(i)).unwrap(); } else { scripts.tick_blocking(runtime, dt(i)).unwrap(); }
+    }
+    scripts.shutdown_blocking(runtime).unwrap();
+    let result = trace.lock().unwrap().clone();
+    result
+}
+/// When a hook with this period runs, and the host time in microseconds since its last run:
+/// the first tick, then once each period on a schedule fixed to it, never twice in a tick.
+fn schedule(period_nanos: u64) -> Vec<i64> {
+    let (mut clock, mut last, mut due) = (0u64, 0u64, 0u64);
+    let mut runs = Vec::new();
+    for i in 0..TICKS {
+        clock += (dt(i) * 1e9).round_ties_even() as u64;
+        if i > 0 && clock < due { continue; }
+        due = if i == 0 { clock + period_nanos } else { due + period_nanos * ((clock - due) / period_nanos + 1) };
+        runs.push(((clock - last) as f64 / 1e3).round() as i64);
+        last = clock;
+    }
+    runs
+}
+fn main() {
+    let single = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let multi = tokio::runtime::Runtime::new().unwrap();
+    let reference = run(&single, true, false);
+    assert_eq!(reference, run(&single, true, true), "tick_sync diverged from tick_blocking");
+    assert_eq!(reference, run(&multi, true, false), "the multithreaded runtime diverged");
+    assert_eq!(reference, run(&multi, false, true), "a run that is not deterministic diverged: the cadence read wall time");
+    let records: Vec<(i64, i64)> = reference.chunks_exact(16).map(|c| (
+        i64::from_le_bytes(c[..8].try_into().unwrap()), i64::from_le_bytes(c[8..].try_into().unwrap()),
+    )).collect();
+    let of = |tag: i64| records.iter().filter(|(t, _)| *t == tag).map(|(_, v)| *v).collect::<Vec<_>>();
+    // The planner answered before the first tick's hooks, so every tick read an answer.
+    let answers = of(1);
+    assert_eq!(answers.len(), TICKS, "a tick read no answer: {} records of tag 0", of(0).len());
+    let mut calls: Vec<i64> = answers.clone();
+    calls.dedup();
+    let expected = schedule(100_000_000);
+    assert_eq!(calls.iter().map(|a| a / 1_000_000).collect::<Vec<_>>(), (1..=expected.len() as i64).collect::<Vec<_>>(), "the planner's calls, in order");
+    assert_eq!(calls.iter().map(|a| a % 1_000_000).collect::<Vec<_>>(), expected, "the host time each planner call was passed");
+    assert_eq!(of(2), schedule(250_000_000), "the hook every 250ms");
+    let sevens = of(3);
+    assert_eq!(sevens.len(), (TICKS + 6) / 7, "the every 7 ticks hook");
+    println!("{} planner calls, {} slow hooks, {} every-seventh hooks", expected.len(), of(2).len(), sevens.len());
+}
+"#);
+    assert!(output.contains("planner calls"), "{output}");
+    println!("{}", output.trim());
+}
+
 /// Deterministic mode across the process boundaries: a secret serverlet and a Python
 /// landline whose every call misses its budget, called from on_tick and from a handler.
 /// A deterministic run ignores the budget, so each call answers; replayed through both

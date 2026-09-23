@@ -40,8 +40,9 @@ the host when there are no host functions.
 
 - `ready().await` waits for top-level bindings, `on_start`, and event registration.
   It does not wait for the orchestrator body or every sidecar handshake to finish.
-- `tick(dt).await` handles queued events, runs the `on_tick` hooks once in declaration
-  order, then handles the events those hooks queued. The method requires mutable access,
+- `tick(dt).await` calls the cadenced serverlets that are due, handles queued events,
+  runs the `on_tick` hooks once in declaration order — a hook declared `every` only when
+  its period of host time has passed — then handles the events those hooks queued. The method requires mutable access,
   so ticks from one handle are serialized.
 - `fixed_tick(step).await` does the same for `on_fixed_tick(step: float)` hooks, for
   fixed-rate updates alongside the per-frame `tick`. Each call runs only its own hooks.

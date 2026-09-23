@@ -1,0 +1,7 @@
+host world { fn record(n: int) }
+serverlet Planner sandbox(memory_limit: "8mb", timeout: "50ms", every: "100ms") {
+    on plan(dt: float) -> int { return 1 }
+}
+let planner = start Planner()
+on_tick(dt: float) { world.record(1) }
+orchestrator main() {}

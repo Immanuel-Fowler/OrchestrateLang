@@ -22,6 +22,8 @@ pub struct TypeChecker {
     /// A binding to the serverlet it was started from, so `c.add(1)` can be checked
     /// against that serverlet's handlers.
     var_serverlet: HashMap<String, String>,
+    /// Serverlets declared with `every:`, whose `tick` the runtime calls on a cadence.
+    cadenced: HashSet<String>,
     /// Events declared by an `on name(...)` block, so `trigger` can be checked.
     declared_events: HashMap<String, Vec<Type>>,
     /// While a sandboxed serverlet's handlers are checked: its name and the host
@@ -65,6 +67,7 @@ impl TypeChecker {
             serverlet_state: HashMap::new(),
             serverlet_names: HashSet::new(),
             var_serverlet: HashMap::new(),
+            cadenced: HashSet::new(),
             declared_events: HashMap::new(),
             sandbox_grants: None,
             module_aliases: HashSet::new(),
@@ -195,10 +198,13 @@ impl TypeChecker {
                     self.enum_defs.insert(name.clone(), variants.clone());
                 }
                 StmtNode::Serverlet { name, handlers, .. } if { self.serverlet_names.insert(name.clone()); false } => { let _ = handlers; }
-                StmtNode::Serverlet { name, handlers, .. } => {
+                StmtNode::Serverlet { name, handlers, landline, sandbox, .. } => {
                     for h in handlers {
                         let param_types: Vec<Type> = h.params.iter().map(|p| p.ty.clone()).collect();
                         self.functions.insert(format!("{}::{}", name, h.name), (param_types, h.return_type.clone()));
+                    }
+                    if landline.as_ref().and_then(|c| c.every_micros).or(sandbox.as_ref().and_then(|c| c.every_micros)).is_some() {
+                        self.cadenced.insert(name.clone());
                     }
                 }
                 _ => {}
@@ -390,6 +396,40 @@ impl TypeChecker {
             _ => {}
         }
         Ok(())
+    }
+
+    /// `latest(p.tick)`: the last answer the runtime got from calling a cadenced
+    /// serverlet's `tick`, as `ok`, or `err` saying why there is none.
+    fn latest_type(&mut self, args: &[Expr], line: usize, col: usize) -> Result<Type, String> {
+        let usage = "latest(...) takes a cadenced serverlet's tick, as in `latest(planner.tick)`";
+        let [Expr { node: ExprNode::FieldAccess { object, field }, .. }] = args else {
+            return Err(format!("line {}, col {}: {}", line, col, usage));
+        };
+        let ExprNode::Identifier(client) = &object.node else {
+            return Err(format!("line {}, col {}: {}", line, col, usage));
+        };
+        let Some(serverlet) = self.var_serverlet.get(client).cloned() else {
+            return Err(format!("line {}, col {}: '{}' is not a serverlet client; {}", line, col, client, usage));
+        };
+        let bare = serverlet.rsplit_once("::").map_or(serverlet.as_str(), |(_, bare)| bare).to_string();
+        if !self.cadenced.contains(&serverlet) && !self.cadenced.contains(&bare) {
+            return Err(format!(
+                "line {}, col {}: serverlet '{}' has no cadence, so nothing calls its tick for latest(...) to read; declare it with `every: \"100ms\"`, or call it yourself",
+                line, col, bare
+            ));
+        }
+        if field != "tick" {
+            return Err(format!("line {}, col {}: latest(...) reads the handler the runtime calls, `{}.tick`, not `{}.{}`", line, col, client, client, field));
+        }
+        let returns = [format!("{}::tick", serverlet), format!("{}::tick", bare)]
+            .iter()
+            .find_map(|key| self.functions.get(key).map(|(_, ret)| ret.clone()))
+            .unwrap_or(Type::Void);
+        match returns {
+            Type::Void => Err(format!("line {}, col {}: {}.tick returns nothing, so there is no answer for latest(...) to read", line, col, client)),
+            Type::Result(ok, error) if *error == Type::Str => Ok(Type::Result(ok, error)),
+            other => Ok(Type::Result(Box::new(other), Box::new(Type::Str))),
+        }
     }
 
     /// The math builtins: `sqrt`, `abs`, `floor`, `ceil`, `round`, `pow`, `sin`, `cos`,
@@ -1158,6 +1198,16 @@ impl TypeChecker {
                         return Err(reason.replace("secret serverlets", "landline serverlets"));
                     }
                 }
+                // A serverlet with `every:` is called on its `tick`, with the host time since
+                // the last call; it has to have one to call.
+                if landline.as_ref().and_then(|c| c.every_micros).or(sandbox.as_ref().and_then(|c| c.every_micros)).is_some()
+                    && !handlers.iter().any(|h| h.name == "tick" && h.params.len() == 1 && h.params[0].ty == Type::Float)
+                {
+                    return Err(format!(
+                        "line {}, col {}: serverlet '{}' is declared with `every:`, so the runtime calls its `tick` on that cadence; declare `on tick(dt: float)`, returning what `latest({}.tick)` should read",
+                        stmt.span.line, stmt.span.col, serverlet, serverlet.to_lowercase()
+                    ));
+                }
                 // Any other handler answers a failed call with its type's default. After the
                 // boundaries' own rules, so a type none of them carries is reported as that.
                 let structs = self.struct_defs.iter().map(|(n, f)| (n.clone(), f.clone())).collect::<Vec<_>>();
@@ -1261,7 +1311,7 @@ impl TypeChecker {
                 let structs = self.struct_defs.iter().map(|(n,f)| (n.clone(),f.clone())).collect::<Vec<_>>();
                 if let Some(reason) = crate::codegen::stmt::wire_unsupported_reason(functions, &structs) { return Err(reason); }
             }
-            StmtNode::OnTick { param, input, return_type, body } => {
+            StmtNode::OnTick { param, input, return_type, body, .. } => {
                 self.push_env();
                 self.define_var(param.clone(), Type::Float);
                 if let Some(input) = input { self.define_var(input.name.clone(), input.ty.clone()); }
@@ -1272,7 +1322,7 @@ impl TypeChecker {
                 let inferred = result?;
                 if *return_type != Type::Void && inferred != Type::Void && !self.types_compatible(return_type, &inferred) { return Err("on_tick return type mismatch".into()); }
             }
-            StmtNode::OnFixedTick { param, body } => {
+            StmtNode::OnFixedTick { param, body, .. } => {
                 self.push_env();
                 self.define_var(param.clone(), Type::Float);
                 self.infer_expr(body)?;
@@ -1442,6 +1492,9 @@ impl TypeChecker {
                         expr.span.line, expr.span.col, lhs_ty.display_name(), rhs_ty.display_name()
                     ))
                 }
+            }
+            ExprNode::Call { callee, args } if callee == "latest" && !self.functions.contains_key(callee) => {
+                self.latest_type(args, expr.span.line, expr.span.col)
             }
             ExprNode::Call { callee, args } => {
                 let mut arg_types = Vec::new();

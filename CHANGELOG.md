@@ -10,6 +10,26 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 ## [Unreleased]
 
 ### Added
+- **Cadences: how often a hook, a serverlet, or a worker runs, declared where it is.** A
+  10 Hz planner inside a 50 Hz host was `if tick % 5 == 1` around the call, a counter, and
+  the last plan held in a variable; three workers differed only by `sleep(15)`,
+  `sleep(20)`, `sleep(30)`. Now:
+  - `on_tick(dt: float) every "100ms" { }` (or `every 5 ticks`) runs when that much host
+    time — the sum of the host's `dt`s — has passed, with `dt` the host time since it
+    last ran, on a schedule fixed to its first run; `on_fixed_tick` takes it too. A
+    program may have several tick hooks, run in declaration order.
+  - `serverlet P via python(..., every: "100ms") { on tick(dt: float) -> T }`, or in
+    `sandbox(...)`: the runtime calls each instance's `tick` when due, under its budget,
+    before the tick's hooks, and `latest(p.tick)` reads the outcome — `ok`, or `err` saying
+    why there is none, so a skipped or failed call is never a stale value in disguise.
+  - `automatic(every: "20ms") { }` runs a worker's body once a period, on wall time,
+    without drift; a `continue` waits its turn too.
+
+  Host time, never wall time, in a library, so a cadence replays exactly: a 10,000-tick
+  test checks every call against a schedule computed from the same `dt`s and gets a
+  byte-identical trace on both tick paths and both runtimes, deterministic or not
+  (`engine_cadence_follows_host_time`); `runtime_worker_every_runs_once_per_period`
+  covers workers. A program without a cadence runs the same tick as before.
 - **A serverlet handler declared `-> result<T>` tells its caller when a call failed.** A
   sandbox trap, a landline crash, a missed budget, and a dead secret child all answered
   with the return type's default, so a caller could not tell "the plugin said 0" from

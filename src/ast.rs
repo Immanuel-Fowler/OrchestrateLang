@@ -110,6 +110,32 @@ pub struct Param {
 pub struct SandboxConfig {
     pub memory_limit: String,
     pub timeout: String,
+    /// `every: "100ms"`: how often, in host time, the runtime calls the serverlet's `tick`.
+    pub every_micros: Option<u64>,
+}
+
+/// How often a cadenced tick hook runs: a period of host time, or every so many ticks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cadence {
+    Micros(u64),
+    Ticks(u64),
+}
+
+/// A duration as a program writes it: a number and `us`, `ms`, or `s` — "500us", "2ms",
+/// "0.5s" — in whole microseconds, at least one.
+pub fn duration_micros(text: &str) -> Option<u64> {
+    let text = text.trim();
+    let (number, scale) = if let Some(n) = text.strip_suffix("us") {
+        (n, 1.0)
+    } else if let Some(n) = text.strip_suffix("ms") {
+        (n, 1_000.0)
+    } else if let Some(n) = text.strip_suffix('s') {
+        (n, 1_000_000.0)
+    } else {
+        return None;
+    };
+    let micros = number.trim().parse::<f64>().ok()? * scale;
+    (micros.is_finite() && micros >= 1.0 && micros <= u64::MAX as f64).then(|| micros.round() as u64)
 }
 
 impl SandboxConfig {
@@ -154,6 +180,8 @@ pub struct LandlineConfig {
     pub source: String,
     /// Per-call deadline in microseconds. A call with no reply by then returns early.
     pub budget_micros: Option<u64>,
+    /// `every: "100ms"`: how often, in host time, the runtime calls the serverlet's `tick`.
+    pub every_micros: Option<u64>,
     /// What a call that misses its budget returns.
     pub late: LatePolicy,
     /// TypeScript only: `auto`, `scriptc`, or `bun`.
@@ -271,6 +299,9 @@ pub enum ExprNode {
         /// `backoff: "50ms"`: the fixed wait before each restart. Absent, the wait starts
         /// at a second and doubles with each restart, up to thirty.
         backoff_ms: Option<u64>,
+        /// `every: "20ms"`: the body runs once per period, on wall time, rather than in a
+        /// loop as fast as it goes.
+        every_micros: Option<u64>,
         crash_handler: Option<(String, Box<Expr>)>,
     },
     TriggeredBlock {
@@ -407,8 +438,10 @@ pub enum StmtNode {
         grants: Vec<String>,
     },
     Host { name: String, functions: Vec<Handler> },
-    OnTick { param: String, input: Option<Param>, return_type: Type, body: Expr },
-    OnFixedTick { param: String, body: Expr },
+    /// `every` makes it a cadenced hook: it runs when its period of host time has passed,
+    /// and its parameter is the host time since it last ran.
+    OnTick { param: String, input: Option<Param>, return_type: Type, every: Option<Cadence>, body: Expr },
+    OnFixedTick { param: String, every: Option<Cadence>, body: Expr },
     OnStart(Expr),
     OnStop(Expr),
     Break,

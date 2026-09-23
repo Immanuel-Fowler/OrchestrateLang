@@ -35,6 +35,9 @@ properties config does not:
 | `serverlet X via python(source: …)` | A persistent Python process | An interpreter, and its encoding |
 | `serverlet X sandbox(memory_limit: …, timeout: …)` | A wasmtime guest | A cap, a deadline, and a copy per value |
 | `grant call world.record` | One mediated host function | Exactly that function, and nothing else |
+| `on_tick(dt: float) every "100ms"` | A hook at a divisor of the host's clock | A counter per hook |
+| `via python(..., every: "100ms")` | A serverlet the runtime calls on that cadence | One call per period, inside the tick |
+| `automatic(every: "20ms")` | A worker on a fixed rate | A timer per run |
 | `budget: "2ms"`, `late: "latest"` | A call that cannot hold the tick | A default or a stale result when it is late |
 | `automatic(restart: 3) { } on_crash e { }` | A supervised worker | A task |
 | `shared let x = 0` | State any task may touch | One mutex, about 9 ns a statement |

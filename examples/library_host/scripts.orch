@@ -10,5 +10,8 @@ serverlet Counter via python(source: "counter.py") {
 let counter = start Counter()
 on_start { print("scripts started") }
 on_tick(dt: float) { print(to_string(counter.tick())) }
+// A cadence: this hook runs on the first tick and every second one after it, and its dt
+// is the host time since it last ran.
+on_tick(dt: float) every 2 ticks { print("every other tick, {dt} s since the last") }
 on_stop { print("scripts stopped") }
 orchestrator main() {}

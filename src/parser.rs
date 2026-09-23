@@ -182,8 +182,15 @@ impl Parser {
             self.consume(TokenKind::RParen, "Expected ')' after tick parameter")?;
             let return_type = if self.match_token(TokenKind::Arrow) { self.parse_type()? } else { Type::Void };
             if fixed && return_type != Type::Void { return Err("on_fixed_tick cannot return a value".into()); }
+            let every = self.parse_hook_cadence()?;
+            if every.is_some() && (input.is_some() || return_type != Type::Void) {
+                return Err(format!(
+                    "line {}, col {}: a hook with `every` cannot take an input or return a value: the host passes those to the one on_tick it calls on every tick",
+                    span.line, span.col
+                ));
+            }
             let body = self.parse_block()?;
-            if fixed { StmtNode::OnFixedTick { param, body } } else { StmtNode::OnTick { param, input, return_type, body } }
+            if fixed { StmtNode::OnFixedTick { param, every, body } } else { StmtNode::OnTick { param, input, return_type, every, body } }
         } else if self.match_token(TokenKind::Use) {
             self.parse_use_statement()?
         } else if self.match_token(TokenKind::Load) {
@@ -344,20 +351,9 @@ impl Parser {
             let mut late = None;
             let mut backend = None;
             let mut keys = std::collections::HashSet::new();
+            let mut every_micros = None;
             // Durations take a us, ms, or s suffix, e.g. "500us", "2ms", "0.5s".
-            fn duration_micros(value: &str) -> Option<u64> {
-                let (number, scale) = if let Some(n) = value.strip_suffix("us") {
-                    (n, 1.0)
-                } else if let Some(n) = value.strip_suffix("ms") {
-                    (n, 1_000.0)
-                } else if let Some(n) = value.strip_suffix('s') {
-                    (n, 1_000_000.0)
-                } else {
-                    return None;
-                };
-                let micros = number.trim().parse::<f64>().ok()? * scale;
-                (micros.is_finite() && micros >= 1.0).then(|| micros.round() as u64)
-            }
+            use crate::ast::duration_micros;
             while self.peek().kind != TokenKind::RParen {
                 let key = match self.advance().kind.clone() {
                     TokenKind::Identifier(s) => s,
@@ -380,7 +376,12 @@ impl Parser {
                     "late" if value == "drop" => late = Some(crate::ast::LatePolicy::Drop),
                     "late" if value == "latest" => late = Some(crate::ast::LatePolicy::Latest),
                     "backend" if runtime == "typescript" => backend = Some(Self::typescript_backend(&value)?),
-                    _ => return Err(format!("Unsupported landline config '{}': '{}' (expected source, line: \"pipe\", budget, late: \"drop\" | \"latest\", or backend for typescript)", key, value)),
+                    "every" => {
+                        every_micros = Some(duration_micros(&value).ok_or_else(|| format!(
+                            "Invalid landline every '{}' (expected a duration of host time such as \"100ms\" or \"0.5s\")", value
+                        ))?);
+                    }
+                    _ => return Err(format!("Unsupported landline config '{}': '{}' (expected source, line: \"pipe\", budget, late: \"drop\" | \"latest\", every, or backend for typescript)", key, value)),
                 }
                 if !self.match_token(TokenKind::Comma) { break; }
             }
@@ -392,6 +393,7 @@ impl Parser {
                 runtime,
                 source: source.ok_or("Landline requires source")?,
                 budget_micros,
+                every_micros,
                 late: late.unwrap_or(crate::ast::LatePolicy::Drop),
                 backend,
             });
@@ -437,10 +439,40 @@ impl Parser {
         Ok(StmtNode::Serverlet { name, state, handlers, secret, crash_handler, sandbox, landline, grants })
     }
 
+    /// `every "100ms"` or `every 5 ticks` after a tick hook's signature, if it has one.
+    fn parse_hook_cadence(&mut self) -> Result<Option<crate::ast::Cadence>, String> {
+        if !matches!(&self.peek().kind, TokenKind::Identifier(word) if word == "every") {
+            return Ok(None);
+        }
+        let every = self.advance().clone();
+        let value = self.advance().clone();
+        match &value.kind {
+            TokenKind::Str(text) => crate::ast::duration_micros(text).map(|micros| Some(crate::ast::Cadence::Micros(micros))).ok_or_else(|| format!(
+                "line {}, col {}: invalid every \"{}\": write a duration of host time such as \"100ms\", \"500us\", or \"2s\", or a count such as `every 5 ticks`",
+                value.line, value.col, text
+            )),
+            TokenKind::Int(count) => {
+                if !matches!(&self.peek().kind, TokenKind::Identifier(word) if word == "ticks" || word == "tick") {
+                    return Err(format!("line {}, col {}: expected `ticks` after `every {}`", value.line, value.col, count));
+                }
+                self.advance();
+                if *count < 1 {
+                    return Err(format!("line {}, col {}: `every {} ticks` must count at least one tick", value.line, value.col, count));
+                }
+                Ok(Some(crate::ast::Cadence::Ticks(*count as u64)))
+            }
+            _ => Err(format!(
+                "line {}, col {}: expected a duration such as \"100ms\" or a count such as `5 ticks` after `every`",
+                every.line, every.col
+            )),
+        }
+    }
+
     fn parse_sandbox_config(&mut self) -> Result<crate::ast::SandboxConfig, String> {
         self.consume(TokenKind::LParen, "Expected '(' after 'sandbox'")?;
         let mut memory_limit = String::new();
         let mut timeout = String::new();
+        let mut every_micros = None;
         // Parse comma-separated `key: "value"` pairs.
         while self.peek().kind != TokenKind::RParen && self.peek().kind != TokenKind::EOF {
             let key_tok = self.advance().clone();
@@ -457,7 +489,10 @@ impl Parser {
             match key.as_str() {
                 "memory_limit" => memory_limit = val,
                 "timeout" => timeout = val,
-                _ => return Err(format!("Unknown sandbox config key '{}' at line {}, col {} (expected 'memory_limit' or 'timeout')", key, key_tok.line, key_tok.col)),
+                "every" => every_micros = Some(crate::ast::duration_micros(&val).ok_or_else(|| format!(
+                    "Invalid sandbox every '{}' at line {}, col {} (expected a duration of host time such as \"100ms\" or \"0.5s\")", val, val_tok.line, val_tok.col
+                ))?),
+                _ => return Err(format!("Unknown sandbox config key '{}' at line {}, col {} (expected 'memory_limit', 'timeout', or 'every')", key, key_tok.line, key_tok.col)),
             }
             let _ = self.match_token(TokenKind::Comma);
         }
@@ -465,7 +500,7 @@ impl Parser {
         if memory_limit.is_empty() || timeout.is_empty() {
             return Err("sandbox(...) needs both 'memory_limit' and 'timeout'".into());
         }
-        let config = crate::ast::SandboxConfig { memory_limit, timeout };
+        let config = crate::ast::SandboxConfig { memory_limit, timeout, every_micros };
         // Checked here so a typo is a parse error, not a limit that silently misses.
         if config.memory_bytes().is_none() {
             return Err(format!(
@@ -1203,17 +1238,18 @@ impl Parser {
             }
             TokenKind::Automatic => {
                 self.advance();
-                // `automatic(restart: 3, backoff: "50ms")`: each option at most once, in
-                // any order.
+                // `automatic(restart: 3, backoff: "50ms", every: "20ms")`: each option at
+                // most once, in any order.
                 let mut restart_policy = None;
                 let mut backoff_ms = None;
+                let mut every_micros = None;
                 if self.peek().kind == TokenKind::LParen {
                     self.advance();
                     loop {
                         let kw_tok = self.advance().clone();
                         let kw = match &kw_tok.kind {
                             TokenKind::Identifier(s) => s.clone(),
-                            _ => return Err(format!("Expected 'restart' or 'backoff' inside automatic(...) at line {}, col {}", kw_tok.line, kw_tok.col)),
+                            _ => return Err(format!("Expected 'restart', 'backoff', or 'every' inside automatic(...) at line {}, col {}", kw_tok.line, kw_tok.col)),
                         };
                         self.consume(TokenKind::Colon, &format!("Expected ':' after '{}'", kw))?;
                         let value_tok = self.advance().clone();
@@ -1234,13 +1270,22 @@ impl Parser {
                                     TokenKind::Str(text) => text.clone(),
                                     _ => return Err(format!("Expected a duration such as \"50ms\" after 'backoff:' at line {}", value_tok.line)),
                                 };
-                                let config = SandboxConfig { memory_limit: String::new(), timeout: text.clone() };
+                                let config = SandboxConfig { memory_limit: String::new(), timeout: text.clone(), every_micros: None };
                                 backoff_ms = Some(config.timeout_ms().ok_or_else(|| format!(
                                     "Invalid backoff \"{}\" at line {}: write a duration of at least 1ms, such as \"50ms\" or \"2s\"", text, value_tok.line
                                 ))?);
                             }
-                            "restart" | "backoff" => return Err(format!("Duplicate '{}' inside automatic(...) at line {}", kw, kw_tok.line)),
-                            _ => return Err(format!("Expected 'restart' or 'backoff' inside automatic(...), got '{}' at line {}", kw, kw_tok.line)),
+                            "every" if every_micros.is_none() => {
+                                let text = match &value_tok.kind {
+                                    TokenKind::Str(text) => text.clone(),
+                                    _ => return Err(format!("Expected a duration such as \"20ms\" after 'every:' at line {}", value_tok.line)),
+                                };
+                                every_micros = Some(crate::ast::duration_micros(&text).ok_or_else(|| format!(
+                                    "Invalid every \"{}\" at line {}: write a duration such as \"20ms\", \"500us\", or \"2s\"", text, value_tok.line
+                                ))?);
+                            }
+                            "restart" | "backoff" | "every" => return Err(format!("Duplicate '{}' inside automatic(...) at line {}", kw, kw_tok.line)),
+                            _ => return Err(format!("Expected 'restart', 'backoff', or 'every' inside automatic(...), got '{}' at line {}", kw, kw_tok.line)),
                         }
                         if self.peek().kind == TokenKind::Comma { self.advance(); continue; }
                         self.consume(TokenKind::RParen, "Expected ')' after automatic options")?;
@@ -1259,7 +1304,7 @@ impl Parser {
                     let handler_body = self.parse_block()?;
                     Some((err_name, Box::new(handler_body)))
                 } else { None };
-                Ok(ExprNode::AutomaticBlock { body: Box::new(body), restart_policy, backoff_ms, crash_handler })
+                Ok(ExprNode::AutomaticBlock { body: Box::new(body), restart_policy, backoff_ms, every_micros, crash_handler })
             }
             // `on` declares a handler only as `on name(`; anywhere else it is a name.
             TokenKind::On if !(matches!(self.peek_at(1).kind, TokenKind::Identifier(_)) && self.peek_at(2).kind == TokenKind::LParen) => {

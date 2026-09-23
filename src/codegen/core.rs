@@ -561,6 +561,8 @@ pub struct Codegen {
     /// For the entry file: the struct and enum declarations of every imported module,
     /// which the entry file defines at the crate root so each is one type.
     pub module_types: Vec<Stmt>,
+    /// Whether any file in the program declares a serverlet with `every:`.
+    pub has_cadenced: bool,
     /// The name a `let` is binding, while its value is compiled, for messages that name
     /// what they are about: a worker's restart report.
     pub(super) naming: Option<String>,
@@ -606,6 +608,7 @@ impl Codegen {
             program_fields: std::collections::BTreeMap::new(),
             top_level_handler: false,
             module_types: Vec::new(),
+            has_cadenced: false,
             naming: None,
             user_functions: HashSet::new(),
         }
@@ -903,7 +906,7 @@ impl Codegen {
         self.tasks.contains(name)
             || matches!(name, "print" | "to_string" | "to_int" | "to_float" | "parse_int" | "parse_float"
                             | "length" | "append" | "remove" | "sleep" | "stop_orch" | "clock_micros" | "clock_nanos"
-                            | "range" | "map" | "filter" | "reduce" | "find" | "any" | "all")
+                            | "range" | "map" | "filter" | "reduce" | "find" | "any" | "all" | "latest")
     }
 
     /// A closure body runs later and on its own, so it is its own statement context: it

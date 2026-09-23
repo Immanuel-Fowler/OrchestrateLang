@@ -269,6 +269,20 @@ impl Codegen {
         // Every hook body runs with `__context` and `__host` bound once, in scope.
         self.context_bound = true;
         let hooks = self.local_stmts.iter().chain(self.body_hooks.iter()).cloned().collect::<Vec<_>>();
+        // Each cadenced hook's own count of host time, kept with the instance's state.
+        let mut cadences = 0usize;
+        let mut cadenced = |every: Option<crate::ast::Cadence>, compiled: String, param: &str| -> String {
+            let Some(every) = every else {
+                return format!("{{ let {} = __dt; {}; }}\n", rust_ident(param), compiled);
+            };
+            let index = cadences;
+            cadences += 1;
+            let due = match every {
+                crate::ast::Cadence::Micros(micros) => format!("every_nanos(__dt, {}u64)", micros.saturating_mul(1_000)),
+                crate::ast::Cadence::Ticks(count) => format!("every_ticks(__dt, {}u64)", count),
+            };
+            format!("if let Some(__since) = __program.__cadence[{index}].{due} {{ let {} = __since; {}; }}\n", rust_ident(param), compiled)
+        };
         for stmt in hooks {
             match stmt.node {
                 StmtNode::OnStart(body) => {
@@ -277,16 +291,16 @@ impl Codegen {
                 StmtNode::OnStop(body) => {
                     stop.push_str(&format!("{};\n", self.compile_expr(&body)))
                 }
-                StmtNode::OnFixedTick { param, body } => {
+                StmtNode::OnFixedTick { param, every, body } => {
                     // Hook bodies run after the bindings are packed, so they read the struct.
                     let mut scope = std::collections::HashSet::new();
                     scope.insert(param.clone());
                     self.state_rewrite = Some(StateRewrite { fields: rewrite_fields.clone(), scopes: vec![scope], receiver: "__program" });
                     let compiled = self.compile_expr(&body);
                     self.state_rewrite = None;
-                    fixed.push_str(&format!("{{ let {} = __dt; {}; }}\n", rust_ident(&param), compiled));
+                    fixed.push_str(&cadenced(every, compiled, &param));
                 }
-                StmtNode::OnTick { param, input, return_type, body } => {
+                StmtNode::OnTick { param, input, return_type, every, body } => {
                     let bind = input.as_ref().map(|p| format!("let {} = __input;", rust_ident(&p.name))).unwrap_or_default();
                     let mut scope = std::collections::HashSet::new();
                     scope.insert(param.clone());
@@ -296,7 +310,7 @@ impl Codegen {
                     self.state_rewrite = None;
                     if input.is_some() || return_type != Type::Void {
                         tick = format!("let {} = __dt; {} {}", rust_ident(&param), bind, compiled);
-                    } else { tick.push_str(&format!("{{ let {} = __dt; {}; }}\n", rust_ident(&param), compiled)); }
+                    } else { tick.push_str(&cadenced(every, compiled, &param)); }
                 },
                 _ => {}
             }
@@ -306,27 +320,32 @@ impl Codegen {
         let input_param = input.as_ref().map(|ty| format!(", __input: {ty}")).unwrap_or_default();
         let input_arg = if input.is_some() { ", __input" } else { "" };
         let errors = fields.iter().filter_map(|f| f.error.as_ref().map(|e| format!("compile_error!({e:?});\n"))).collect::<String>();
-        let program_struct = if fields.is_empty() {
+        // The cadenced hooks' counters ride with the bindings, so an instance has its own.
+        let cadence_field = (cadences > 0).then(|| format!("__cadence: [__OrchCadence; {cadences}]"));
+        let members = fields.iter().map(|f| format!("    {}: {},", rust_ident(&f.name), f.rust_type)).chain(cadence_field.iter().map(|c| format!("    {c},"))).collect::<Vec<_>>();
+        let program_struct = if members.is_empty() {
             "struct __OrchProgram {}".to_string()
         } else {
-            format!("struct __OrchProgram {{\n{}\n}}", fields.iter().map(|f| format!("    {}: {},", rust_ident(&f.name), f.rust_type)).collect::<Vec<_>>().join("\n"))
+            format!("struct __OrchProgram {{\n{}\n}}", members.join("\n"))
         };
-        let pack = if fields.is_empty() {
-            "__OrchProgram {}".to_string()
-        } else {
-            format!("__OrchProgram {{ {} }}", fields.iter().map(|f| if f.boxed { format!("{0}: Box::new({0})", rust_ident(&f.name)) } else { rust_ident(&f.name) }).collect::<Vec<_>>().join(", "))
-        };
-        let unpack = if fields.is_empty() {
-            "__OrchProgram {}".to_string()
-        } else {
-            format!("__OrchProgram {{ {} }}", fields.iter().map(|f| format!("mut {}", rust_ident(&f.name))).collect::<Vec<_>>().join(", "))
-        };
+        let literal = |items: Vec<String>| if items.is_empty() { "__OrchProgram {}".to_string() } else { format!("__OrchProgram {{ {} }}", items.join(", ")) };
+        let pack = literal(
+            fields.iter().map(|f| if f.boxed { format!("{0}: Box::new({0})", rust_ident(&f.name)) } else { rust_ident(&f.name) })
+                .chain((cadences > 0).then(|| format!("__cadence: [__OrchCadence::NEW; {cadences}]")))
+                .collect()
+        );
+        let unpack = literal(
+            fields.iter().map(|f| format!("mut {}", rust_ident(&f.name)))
+                .chain((cadences > 0).then(|| "__cadence: _".to_string()))
+                .collect()
+        );
+        let cadenced = if self.has_cadenced { "__context.run_cadenced(__dt).await;\n    " } else { "" };
         format!(
             r#"{errors}/// The top-level bindings the hooks reach, owned by the instance rather than by a task.
 {program_struct}
 async fn __orch_run_tick(__context: &OrchContext, __program: &mut __OrchProgram, __dt: f64{input_param}) -> {output} {{
     __context.advance_time(__dt);
-    if __context.events_pending() {{ __context.drain_events_with(__program).await; }}
+    {cadenced}if __context.events_pending() {{ __context.drain_events_with(__program).await; }}
     let __host = &*__context.host;
     let __output = async {{ {tick} }}.await;
     if __context.events_pending() {{ __context.drain_events_with(__program).await; }}

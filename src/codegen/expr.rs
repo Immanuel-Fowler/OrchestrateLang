@@ -114,6 +114,12 @@ impl Codegen {
                     format!("(({}) as i64)", self.compile_expr(&args[0]))
                 } else if callee == "to_float" && args.len() == 1 {
                     format!("(({}) as f64)", self.compile_expr(&args[0]))
+                } else if callee == "latest" && args.len() == 1 && !self.user_functions.contains(callee) {
+                    // `latest(p.tick)`: the client keeps what the runtime's last call answered.
+                    match &args[0].node {
+                        ExprNode::FieldAccess { object, .. } => format!("({}).cadence_latest()", self.compile_place(object)),
+                        _ => format!("compile_error!({:?})", "latest(...) takes a cadenced serverlet's tick, as in `latest(planner.tick)`"),
+                    }
                 } else if callee == "parse_int" && args.len() == 1 {
                     format!("({}).parse::<i64>().map_err(|e| e.to_string())", self.compile_place(&args[0]))
                 } else if callee == "parse_float" && args.len() == 1 {
@@ -220,7 +226,7 @@ impl Codegen {
                 let args_str = self.compile_values(args);
                 format!("{}({})", start_fn, args_str)
             }
-            ExprNode::AutomaticBlock { body, restart_policy, backoff_ms, crash_handler } => {
+            ExprNode::AutomaticBlock { body, restart_policy, backoff_ms, every_micros, crash_handler } => {
                 let own_name = self.naming.take();
                 let worker = own_name.as_ref().map(|name| format!(" '{name}'")).unwrap_or_default();
                 let mut free_vars = HashSet::new();
@@ -300,6 +306,27 @@ impl Codegen {
                     None => "(1000u64 * 2u64.saturating_pow((__restarts - 1).min(5))).min(30000)".to_string(),
                 };
 
+                // `every: "20ms"`: each pass through the body waits for its turn first, on a
+                // schedule fixed to the first pass, so a `continue` waits too and the rate does
+                // not drift with the body's own time. A pass that overran skips the turns it
+                // missed rather than running them back to back.
+                let pace = match every_micros {
+                    Some(micros) => format!(
+                        "let __period = std::time::Duration::from_micros({micros}u64);\n                    \
+                         let mut __due = std::time::Instant::now();\n                    "
+                    ),
+                    None => String::new(),
+                };
+                let wait = if every_micros.is_some() {
+                    "let __now = std::time::Instant::now();\n                        \
+                     if __due > __now { tokio::time::sleep(__due - __now).await; }\n                        \
+                     let __now = std::time::Instant::now();\n                        \
+                     __due += __period;\n                        \
+                     if __due <= __now { __due += __period * ((((__now - __due).as_nanos() / __period.as_nanos()) + 1).min(u32::MAX as u128) as u32); }\n                        "
+                } else {
+                    ""
+                };
+
                 let setup_block = if setup_code.is_empty() {
                     String::new()
                 } else {
@@ -313,8 +340,8 @@ impl Codegen {
             {bind}let mut __restarts: u32 = 0;
             loop {{
                 {setup}{recapture}let __inner_handle = tokio::spawn(async move {{
-                    {bind}loop {{
-                        {loop_body}
+                    {bind}{pace}loop {{
+                        {wait}{loop_body}
                     }}
                 }});
                 // Stopping the worker stops its current run with it.
@@ -340,6 +367,8 @@ impl Codegen {
                     bind = bind,
                     setup = setup_block,
                     loop_body = loop_inner,
+                    pace = pace,
+                    wait = wait,
                     crash = crash_code,
                     allowed = allowed,
                     worker_label = own_name.as_ref().map(|n| format!("'{n}'")).unwrap_or_else(|| "(unnamed)".to_string()),

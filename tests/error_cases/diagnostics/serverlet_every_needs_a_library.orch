@@ -1,0 +1,7 @@
+serverlet Planner sandbox(memory_limit: "8mb", timeout: "50ms", every: "100ms") {
+    on tick(dt: float) -> int { return 1 }
+}
+orchestrator main() {
+    let planner = start Planner()
+    stop_orch()
+}

@@ -123,6 +123,13 @@ fn test_error_cases() {
     assert_check_fails("diagnostics/serverlet_result_error_not_string.orch", "carries its error as a string");
     assert_check_fails("diagnostics/serverlet_result_error_not_string.orch", "Declare it `-> result<int>`");
     assert_check_fails("diagnostics/host_fn_returns_result.orch", "only a serverlet handler can answer with a result");
+    // A cadence counts host time, which a library's host supplies; each rule names what to
+    // write instead.
+    assert_check_fails("diagnostics/serverlet_every_needs_a_library.orch", "`every:` counts host time");
+    assert_check_fails("diagnostics/serverlet_every_needs_a_library.orch", "automatic(every:");
+    assert_check_lib_fails("cadenced_serverlet_without_tick.orch", "declare `on tick(dt: float)`");
+    assert_check_lib_fails("latest_without_cadence.orch", "has no cadence, so nothing calls its tick");
+    assert_check_lib_fails("cadenced_typed_tick.orch", "a hook with `every` cannot take an input or return a value");
     assert_check_lib_fails("library_body_writes_state.orch", "the orchestrator body assigns to 'count'");
     assert_check_lib_fails("library_body_writes_state.orch", "write it from a hook");
     assert_check_lib_fails("library_handler_in_process_set.orch", "'pinger' is an event handler");

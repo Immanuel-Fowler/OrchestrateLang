@@ -697,6 +697,36 @@ orchestrator main() {
 }
 
 #[test]
+fn runtime_worker_every_runs_once_per_period() {
+    // `automatic(every: "50ms")` runs its body once a period on a schedule fixed to the
+    // first run, so in 610 ms it runs at most 13 times (0, 50, ... 600) however fast the
+    // body is, and a `continue` waits for the next period like the end of the body does.
+    // The lower bound is loose: a loaded machine can only make it run less often.
+    let stdout = run_orch("worker_every", r#"
+shared let runs = 0
+shared let skipped = 0
+let paced = automatic(restart: always, every: "50ms") {
+    runs = runs + 1
+    if runs % 2 == 0 {
+        skipped = skipped + 1
+        continue
+    }
+}
+orchestrator main(procs: process[paced]) {
+    sleep(610)
+    let r = runs
+    let s = skipped
+    print("{r} {s}")
+    stop_orch()
+}
+"#);
+    let counts: Vec<i64> = stdout.trim().split(' ').map(|n| n.parse().unwrap()).collect();
+    let (runs, skipped) = (counts[0], counts[1]);
+    assert!((3..=13).contains(&runs), "ran {runs} times in 610 ms at one run per 50 ms");
+    assert_eq!(skipped, runs / 2, "every other run continued: {runs} runs, {skipped} skipped");
+}
+
+#[test]
 fn runtime_secret_serverlet_state_persists() {
     // The body runs in a separate process; state must survive across calls,
     // proving the child is long-lived and reused.

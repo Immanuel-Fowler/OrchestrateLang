@@ -423,6 +423,10 @@ pub trait Host: Send + Sync + 'static {
 }
 
 type OrchEvent = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+/// A cadenced serverlet's call, given the host time since its last one: the call, or
+/// `None` once the program has let the instance go.
+type OrchCadenceCall = Box<dyn FnMut(f64) -> Option<OrchEvent> + Send>;
+struct OrchCadenced { cadence: __OrchCadence, period: u64, call: OrchCadenceCall }
 type OrchEventHandler<T> = std::sync::Arc<dyn Fn(std::sync::Arc<T>) -> OrchEvent + Send + Sync>;
 tokio::task_local! { static ORCH_EVENT: (); }
 struct OrchContext {
@@ -457,6 +461,8 @@ struct OrchContext {
     /// event handler runs inside that drain, one at a time, with the tick waiting on it,
     /// so it reaches instance state through this as the tick itself would.
     draining_program: std::sync::atomic::AtomicPtr<__OrchProgram>,
+    /// The instances of serverlets declared with `every:`, in the order they started.
+    cadenced: std::sync::Mutex<Vec<OrchCadenced>>,
 
     event_update_orchestrator: std::sync::Arc<std::sync::Mutex<Vec<tokio::sync::mpsc::Sender<std::sync::Arc<Vec<ProcessRef>>>>>>,
 
@@ -601,6 +607,40 @@ impl<T> Drop for OrchSlotGuard<'_, T> {
     }
 }
 
+/// A cadenced tick hook's count of host time: the sum of the `dt`s its hook was passed,
+/// in whole nanoseconds, as the instance's clock counts them.
+struct __OrchCadence { clock: u64, last: u64, due: u64, ticks: u64 }
+impl __OrchCadence {
+    const NEW: __OrchCadence = __OrchCadence { clock: 0, last: 0, due: 0, ticks: 0 };
+    fn advance(&mut self, dt: f64) -> bool {
+        self.clock = self.clock.wrapping_add((dt * 1_000_000_000.0).round_ties_even() as u64);
+        self.ticks += 1;
+        self.ticks == 1
+    }
+    /// The host time since the hook last ran, in seconds, from the one it runs on.
+    fn ran(&mut self) -> f64 {
+        let since = self.clock - self.last;
+        self.last = self.clock;
+        since as f64 / 1_000_000_000.0
+    }
+    /// `every "100ms"`: due on the first tick, then once each period after it, on a
+    /// schedule fixed to the first run so it does not drift. A tick that finds more than
+    /// one period gone runs the hook once, and the periods it missed are skipped.
+    fn every_nanos(&mut self, dt: f64, period: u64) -> Option<f64> {
+        let first = self.advance(dt);
+        if !first && self.clock < self.due {
+            return None;
+        }
+        self.due = if first { self.clock + period } else { self.due + period * ((self.clock - self.due) / period + 1) };
+        Some(self.ran())
+    }
+    /// `every 5 ticks`: due on the first tick, then on every fifth after it.
+    fn every_ticks(&mut self, dt: f64, count: u64) -> Option<f64> {
+        self.advance(dt);
+        ((self.ticks - 1) % count == 0).then(|| self.ran())
+    }
+}
+
 struct OrchTaskGuard(std::sync::Arc<OrchContext>);
 impl Drop for OrchTaskGuard {
     fn drop(&mut self) {
@@ -665,6 +705,29 @@ async fn __orch_sleep(duration: std::time::Duration) {
     }).await
 }
 impl OrchContext {
+    fn register_cadence(&self, period: u64, call: OrchCadenceCall) {
+        self.cadenced.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(OrchCadenced { cadence: __OrchCadence::NEW, period, call });
+    }
+    /// Each cadenced serverlet whose period has passed, in the order they started: its
+    /// `tick` is called, and answers, before the tick's hooks run, so they read this
+    /// tick's answer. An instance started during these calls is counted from the next tick.
+    async fn run_cadenced(&self, dt: f64) {
+        let entries = std::mem::take(&mut *self.cadenced.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        let mut kept = Vec::with_capacity(entries.len());
+        for mut entry in entries {
+            let Some(since) = entry.cadence.every_nanos(dt, entry.period) else {
+                kept.push(entry);
+                continue;
+            };
+            if let Some(call) = (entry.call)(since) {
+                call.await;
+                kept.push(entry);
+            }
+        }
+        let mut registry = self.cadenced.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        kept.append(&mut registry);
+        *registry = kept;
+    }
     fn advance_time(&self, dt: f64) {
         assert!(dt.is_finite() && dt >= 0.0, "tick dt must be finite and nonnegative");
         // Whole nanoseconds, rounded as Duration::from_secs_f64 rounds them (ties to even)
@@ -976,7 +1039,7 @@ pub fn start_with_options(runtime: &tokio::runtime::Handle, host: impl Host, opt
     let context = std::sync::Arc::new(OrchContext {
         host: std::sync::Arc::new(host), options, events: Default::default(), batch: Default::default(), clock_nanos: 0.into(), frame: 0.into(), dt_bits: 0.into(), stop_requested: false.into(), closing, shutdown,
         tasks: Default::default(), active: 0.into(), idle: tokio::sync::Notify::new(), assets, runtime: runtime.clone(),
-        program: OrchSlot::new(), has_events: false.into(), draining_program: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()), panicked: std::sync::OnceLock::new(), children: Default::default(), host_sleeping: false.into(),
+        program: OrchSlot::new(), has_events: false.into(), draining_program: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()), panicked: std::sync::OnceLock::new(), children: Default::default(), host_sleeping: false.into(), cadenced: Default::default(),
 
     event_update_orchestrator: Default::default(),
 

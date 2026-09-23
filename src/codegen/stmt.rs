@@ -319,6 +319,25 @@ impl Codegen {
                     let guest = self.compile_sandbox_guest(name, state, handlers, grants);
                     self.sandbox_programs.push((name.clone(), guest));
                 }
+                // `every:`: the runtime calls `tick` on a cadence of host time, and keeps its
+                // last answer for `latest(...)`, which says when there is none — so on the host
+                // side that call answers `ok` or `err` whatever `tick` declares. A program's
+                // own call to `tick` still gets the declared type: the method unwraps it.
+                let every = landline.as_ref().and_then(|c| c.every_micros)
+                    .or(sandbox.as_ref().and_then(|c| c.every_micros))
+                    .filter(|_| self.library);
+                let tick_answer = every.and_then(|_| handlers.iter().find(|h| h.name == "tick"))
+                    .filter(|h| h.return_type != Type::Void)
+                    .map(|h| answered_type(&h.return_type).clone());
+                let unwrapped_tick = every.is_some() && handlers.iter().any(|h| h.name == "tick" && h.return_type != Type::Void && !answers_failure(h));
+                let host_handlers: Vec<Handler> = handlers.iter().map(|h| {
+                    let mut h = h.clone();
+                    if unwrapped_tick && h.name == "tick" {
+                        h.return_type = Type::Result(Box::new(h.return_type.clone()), Box::new(Type::Str));
+                    }
+                    h
+                }).collect();
+                let handlers = &host_handlers;
                 let mut enum_variants = Vec::new();
                 for h in handlers {
                     let variant_name = pascal_case(&h.name);
@@ -389,11 +408,38 @@ impl Codegen {
                         )
                     };
 
+                    if unwrapped_tick && h.name == "tick" {
+                        // The runtime's call, and the program's, which answers as declared.
+                        let declared = self.compile_type(answered_type(&h.return_type));
+                        client_methods.push(format!(
+                            "    pub async fn __cadence_tick({}{}) -> {} {{\n{}\n    }}\n\n    \
+                             pub async fn tick({}{}) -> {} {{\n        \
+                                 match self.__cadence_tick({}).await {{\n            \
+                                     Ok(__value) => __value,\n            \
+                                     Err(__why) => {{ eprintln!(\"[orchestrate] {{}}\", __why); Default::default() }}\n        \
+                                 }}\n    }}",
+                            self_params, method_params, ret_ty, body,
+                            self_params, method_params, declared,
+                            h.params.iter().map(|p| rust_ident(&p.name)).collect::<Vec<_>>().join(", ")
+                        ));
+                        continue;
+                    }
                     client_methods.push(format!(
                         "    pub async fn {}({}{}) -> {} {{\n{}\n    }}",
                         rust_ident(&h.name), self_params, method_params, ret_ty, body
                     ));
                 }
+                // What `latest(p.tick)` reads: the runtime's last call to `tick`, answered.
+                let (cadence_field, cadence_method) = match &tick_answer {
+                    Some(answer) => {
+                        let ty = format!("Result<{}, String>", self.compile_type(answer));
+                        (
+                            format!("    cadence: std::sync::Arc<std::sync::Mutex<{ty}>>,\n"),
+                            format!("\n\n    pub fn cadence_latest(&self) -> {ty} {{\n        self.cadence.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()\n    }}"),
+                        )
+                    }
+                    None => (String::new(), String::new()),
+                };
 
                 // Landline clients share each handler's most recent result with their actor,
                 // for the `late: "latest"` budget policy.
@@ -412,12 +458,16 @@ impl Codegen {
                 };
 
                 let client_struct = format!(
-                    "{}#[derive(Clone, Debug)]\npub struct {}Client {{\n    tx: tokio::sync::mpsc::Sender<{}Msg>,\n    actor: __OrchActor,\n{}}}\n\nimpl {}Client {{\n{}\n}}",
-                    latest_struct, name, name, latest_field, name, client_methods.join("\n\n")
+                    "{}#[derive(Clone, Debug)]\npub struct {}Client {{\n    tx: tokio::sync::mpsc::Sender<{}Msg>,\n    actor: __OrchActor,\n{}{}}}\n\nimpl {}Client {{\n{}{}\n}}",
+                    latest_struct, name, name, latest_field, cadence_field, name, client_methods.join("\n\n"), cadence_method
                 );
 
                 if let Some(config) = landline {
                     let start_fn = self.compile_python_mirror(name, handlers, crash_handler, grants, config);
+                    let start_fn = match every {
+                        Some(micros) => Self::register_cadence(start_fn, name, micros, &["latest", "actor"], tick_answer.is_some(), unwrapped_tick),
+                        None => start_fn,
+                    };
                     return format!("{}\n\n{}\n\n{}", msg_enum, client_struct, start_fn);
                 }
 
@@ -497,6 +547,10 @@ impl Codegen {
                             .replace("rx.recv().await", "crate::__orch_recv(&mut rx).await")
                     } else {
                         start_fn
+                    };
+                    let start_fn = match every {
+                        Some(micros) => Self::register_cadence(start_fn, name, micros, &["actor"], tick_answer.is_some(), unwrapped_tick),
+                        None => start_fn,
                     };
                     return format!("{}\n\n{}\n\n{}", msg_enum, client_struct, start_fn);
                 }
@@ -992,6 +1046,48 @@ impl Codegen {
 }
 
 impl Codegen {
+    /// A cadenced serverlet's `start_X()`: the client it returns is also registered with the
+    /// runtime, which calls its `tick` when due and keeps the answer. The registry holds the
+    /// client's sender weakly, so the instance still stops when the program's last client
+    /// goes; the entry is dropped at its next due tick.
+    fn register_cadence(start_fn: String, name: &str, micros: u64, fields: &[&str], answers: bool, unwrapped: bool) -> String {
+        let built = format!("{}Client {{ tx, {} }}", name, fields.join(", "));
+        assert!(start_fn.contains(&built), "cadenced serverlet '{name}': client construction not found");
+        let call = if unwrapped { "__cadence_tick" } else { "tick" };
+        let (initial, keep, store) = if answers {
+            (
+                format!(", cadence: std::sync::Arc::new(std::sync::Mutex::new(Err({:?}.to_string())))", format!("serverlet '{name}' has not answered a tick yet")),
+                ", __client.cadence.clone()".to_string(),
+                "*__client.cadence.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = __answer;".to_string(),
+            )
+        } else {
+            (String::new(), String::new(), "let _ = __answer;".to_string())
+        };
+        let rebuild = fields.iter().enumerate()
+            .map(|(i, field)| format!("{field}: __parts.{i}.clone()"))
+            .chain(answers.then(|| format!("cadence: __parts.{}.clone()", fields.len())))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let parts = fields.iter().map(|field| format!("__client.{field}.clone()")).collect::<Vec<_>>().join(", ");
+        let registered = format!(
+            "{{\n    let __client = {name}Client {{ tx, {fields}{initial} }};\n    \
+                 let __weak = __client.tx.downgrade();\n    \
+                 let __parts = ({parts}{keep},);\n    \
+                 crate::__orch_context().register_cadence({nanos}u64, Box::new(move |__dt: f64| {{\n        \
+                     let tx = __weak.upgrade()?;\n        \
+                     let __client = {name}Client {{ tx, {rebuild} }};\n        \
+                     Some(Box::pin(async move {{\n            \
+                         let __answer = __client.{call}(__dt).await;\n            \
+                         {store}\n        \
+                     }}))\n    \
+                 }}));\n    \
+                 __client\n}}",
+            fields = fields.join(", "),
+            nanos = micros.saturating_mul(1_000),
+        );
+        start_fn.replacen(&built, &registered, 1)
+    }
+
     /// The return type a handler's closure is declared with, when inference needs it: a
     /// `result` handler's body can use `?`, which cannot infer the type it returns from.
     fn handler_return_annotation(&self, h: &Handler) -> String {

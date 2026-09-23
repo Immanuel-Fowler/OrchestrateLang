@@ -626,6 +626,10 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
     }).collect();
     if library.is_some() { generator.scan_events(&module_event_stmts); }
     generator.module_types = module_event_stmts.iter().filter(|s| matches!(s.node, ast::StmtNode::StructDef { .. } | ast::StmtNode::EnumDef { .. })).cloned().collect();
+    // The tick calls the cadenced serverlets only in a program that has one, anywhere.
+    generator.has_cadenced = ast.iter().chain(module_event_stmts.iter()).any(|stmt| matches!(&stmt.node,
+        ast::StmtNode::Serverlet { landline: Some(ast::LandlineConfig { every_micros: Some(_), .. }), .. }
+        | ast::StmtNode::Serverlet { sandbox: Some(ast::SandboxConfig { every_micros: Some(_), .. }), .. }));
     let main_rust = generator.generate(&ast, true);
     if let Some(error) = generator.errors.first() {
         return Err(format!("{}: {}", input_file, error));
@@ -968,6 +972,15 @@ fn library_rules(input_file: &str, ast: &[ast::Stmt], modules: &[&[ast::Stmt]], 
     for stmt in ast.iter().chain(modules.iter().flat_map(|stmts| stmts.iter())) {
         if !library && matches!(&stmt.node, ast::StmtNode::Host { .. } | ast::StmtNode::OnTick { .. } | ast::StmtNode::OnFixedTick { .. }) {
             return Err("host and on_tick require build --lib; check such a program with check --lib".into());
+        }
+        if let ast::StmtNode::Serverlet { name, landline, sandbox, .. } = &stmt.node {
+            let every = landline.as_ref().and_then(|c| c.every_micros).or(sandbox.as_ref().and_then(|c| c.every_micros));
+            if !library && every.is_some() {
+                return Err(format!(
+                    "serverlet '{}': `every:` counts host time, the sum of the dt a library's host passes each tick, so it needs build --lib (and check --lib). In a standalone program, call it from a worker declared `automatic(every: \"...\")`, which runs on wall time",
+                    name
+                ));
+            }
         }
         if let ast::StmtNode::Serverlet { grants, .. } = &stmt.node {
             let mut seen = std::collections::HashSet::new();
