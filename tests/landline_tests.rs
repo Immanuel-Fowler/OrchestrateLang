@@ -174,6 +174,42 @@ fn run(dir: &std::path::Path, source: &str, python: &str) -> (String, String) {
     (stdout, stderr)
 }
 
+/// A landline whose startup fails is not closed for good. The first start exits before
+/// the handshake; calls meanwhile answer with the default, and the next try, after a short
+/// backoff, starts it and serves the calls after it.
+#[test]
+fn python_startup_failure_is_retried() {
+    let dir = directory("startup_retry");
+    let marker = dir.join("fail_first_start");
+    fs::write(&marker, "").unwrap();
+    let (stdout, stderr) = run(
+        &dir,
+        r#"
+serverlet Echo via python(source: "impl.py") { on echo(n: int) -> int }
+orchestrator main() {
+    let e = start Echo()
+    print(to_string(e.echo(7)))
+    sleep(1500)
+    print(to_string(e.echo(8)))
+    stop_orch()
+}
+"#,
+        &format!(r#"
+import os
+from orchestratelang import landline
+MARKER = {:?}
+if os.path.exists(MARKER):
+    os.remove(MARKER)
+    raise SystemExit(1)
+class Echo(landline.Serverlet):
+    def echo(self, n: int) -> int: return n
+landline.serve(Echo)
+"#, marker.display().to_string()),
+    );
+    assert_eq!(stdout, "0\n8", "{}", stderr);
+    assert!(stderr.contains("startup failed") && stderr.contains("tried again"), "{}", stderr);
+}
+
 #[test]
 fn python_state_values_errors_and_crash_recovery() {
     let (stdout, stderr) = run(

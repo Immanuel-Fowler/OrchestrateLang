@@ -33,7 +33,7 @@ version of the claim.
 | Boundary | `grant call` | `on_crash` | Ungranted host call |
 |---|---|---|---|
 | In-process | not needed: trusted code, calls the host directly | on a handler panic | n/a |
-| Secret | no host functions (a child process has no `Host`) | no | n/a |
+| Secret | no host functions (a child process has no `Host`) | when the child dies, noticed at the next call; the child is then restarted | n/a |
 | Landline | yes | on transport failure | rejected by the mirror at run time |
 | Sandboxed | yes, library builds only | on a trap (timeout, memory, self-stop) | refused by `orchestrate check`, and undefined in the linker |
 

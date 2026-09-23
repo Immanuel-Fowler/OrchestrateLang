@@ -1147,6 +1147,120 @@ fn runtime_design_document_example_runs() {
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "created 42: Mina");
 }
 
+/// Builds `source` into a scratch directory and runs it, calling `during` with the
+/// running process's id after `after`, then collects everything it printed.
+#[cfg(unix)]
+fn build_and_run_with(test_name: &str, source: &str, after: std::time::Duration, during: impl FnOnce(u32, &std::path::Path)) -> (String, String, Scratch) {
+    let scratch = Scratch::new(test_name);
+    let src_file = scratch.path().join("program.orch");
+    fs::write(&src_file, source).unwrap();
+    let binary = scratch.path().join("program_bin");
+    let built = Command::new(orchestrate_bin())
+        .args(["build", src_file.to_str().unwrap(), "-o", binary.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let child = Command::new(&binary)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(after);
+    during(child.id(), scratch.path());
+    let out = child.wait_with_output().unwrap();
+    (String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned(), scratch)
+}
+
+/// The process ids of `parent`'s children whose command contains `needle`.
+#[cfg(unix)]
+fn children_named(parent: u32, needle: &str) -> Vec<u32> {
+    let listing = Command::new("ps").args(["-A", "-o", "pid=,ppid=,command="]).output().unwrap();
+    String::from_utf8_lossy(&listing.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid: u32 = fields.next()?.parse().ok()?;
+            let ppid: u32 = fields.next()?.parse().ok()?;
+            let command = fields.collect::<Vec<_>>().join(" ");
+            (ppid == parent && command.contains(needle)).then_some(pid)
+        })
+        .collect()
+}
+
+/// A secret serverlet's child killed from outside is noticed at the next call: `on_crash`
+/// runs on the host with the reason, a fresh child is started, and that call is served by
+/// it, with its state starting over. Before, every later call answered 0.
+#[cfg(unix)]
+#[test]
+fn runtime_secret_child_killed_is_restarted_and_reported() {
+    let (stdout, stderr, _scratch) = build_and_run_with("secret_restart", r#"
+serverlet Risk secret {
+    let n = 0
+    on check(x: int) -> int {
+        n = n + 1
+        return n
+    }
+    on_crash e {
+        print("on_crash ran")
+    }
+}
+orchestrator main() {
+    let r = start Risk()
+    for i in range(4) { print("call {r.check(i)}") }
+    sleep(3000)
+    for i in range(3) { print("call {r.check(i)}") }
+    stop_orch()
+}
+"#, std::time::Duration::from_millis(500), |pid, _| {
+        // The first four calls start the child, and are done well before this; wait for
+        // the child, however loaded the machine, and kill it during the long sleep.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut children = children_named(pid, "secret_Risk");
+        while children.is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            children = children_named(pid, "secret_Risk");
+        }
+        assert_eq!(children.len(), 1, "expected one secret child");
+        Command::new("kill").args(["-9", &children[0].to_string()]).status().unwrap();
+    });
+    assert_eq!(stdout.lines().collect::<Vec<_>>(),
+        vec!["call 1", "call 2", "call 3", "call 4", "on_crash ran", "call 1", "call 2", "call 3"], "{stderr}");
+    assert!(stderr.contains("exited between calls"), "{stderr}");
+}
+
+/// A secret child that cannot start is tried again: calls answer with the default until
+/// it can, and the first call after the next try is served. Before, one failed start
+/// closed the serverlet for the rest of the run.
+#[cfg(unix)]
+#[test]
+fn runtime_secret_child_that_cannot_start_is_tried_again() {
+    let (stdout, stderr, _scratch) = build_and_run_with("secret_start_retry", r#"
+serverlet Late secret {
+    let n = 0
+    on check() -> int {
+        n = n + 1
+        return n
+    }
+}
+orchestrator main() {
+    let r = start Late()
+    print("first {r.check()}")
+    sleep(1500)
+    print("later {r.check()}")
+    stop_orch()
+}
+"#, std::time::Duration::from_millis(0), |_, dir| {
+        // Gone when the first call starts it, and back before the later one.
+        let child = dir.join("secret_Late");
+        let hidden = dir.join("secret_Late.hidden");
+        fs::rename(&child, &hidden).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        fs::rename(&hidden, &child).unwrap();
+    });
+    assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["first 0", "later 1"], "{stderr}");
+    assert!(stderr.contains("could not start"), "{stderr}");
+}
+
 /// Arrays and structs across the C ABI. An array parameter is a pointer and a count; an
 /// array return is a `malloc`'d pointer plus a count written through an out-parameter,
 /// which the wrapper copies and frees — the same ownership rule strings follow. A struct

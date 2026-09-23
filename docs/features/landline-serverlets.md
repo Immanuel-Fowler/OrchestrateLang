@@ -435,7 +435,10 @@ Implemented: Python pipe declarations, typed values, state, signature checking,
 exception replies, process restart after a failed call, portable source/SDK bundles,
 and snapshot/runtime tests. CI installs Python 3.10. The initial restart behavior is
 fixed: invoke `on_crash`, return a default for the failed call without replaying it,
-and restart for subsequent calls. Configurable restart policies remain future work.
+and restart for subsequent calls. Configurable restart policies remain future work. A
+landline whose startup fails — the interpreter missing, the handshake failed or timed
+out — is tried again after a backoff (100 ms, doubling to 5 s) rather than closed for the
+rest of the run; calls in between return their default.
 See the [Python SDK guide](../../sdk/python/README.md) and
 [TypeScript SDK guide](../../sdk/typescript/README.md) for current limits.
 

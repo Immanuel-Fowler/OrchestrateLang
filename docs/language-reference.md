@@ -1591,6 +1591,14 @@ spawn it on first use and shut it down when the orchestrator stops.
   replies carry matching IDs; closing the client sends a clean shutdown message.
 - A handler panic logs an error and returns the type’s default value. The child
   continues serving; state mutations made before the panic are retained.
+- A child that dies — killed, crashed, or exited — is noticed at the next call: `on_crash`,
+  if declared, runs on the host with the reason bound, and a fresh child is started to
+  serve that call. **Its state starts over**, as a restarted landline's does. A call that
+  was in flight when the child died returns its default. `on_crash` runs on the host, so it
+  cannot use the serverlet's state, which was in the child; `check` refuses that.
+- A child that cannot start — its binary missing, its handshake failed — is tried again at
+  the first call after a short wait (100 ms, doubling to 5 s); calls in between return
+  their default, with a message on stderr.
 - A secret serverlet's handlers are self-contained: they may use built-ins and
   primitives but cannot call top-level or module functions from the parent program.
 - `print(...)` inside a secret serverlet writes to **stderr** (its stdout is the IPC

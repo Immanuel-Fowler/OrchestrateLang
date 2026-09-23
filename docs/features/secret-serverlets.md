@@ -234,6 +234,10 @@ syntax lands with serverlet-files.
    child's stdin → the child reads EOF and exits (this also covers parent-death).
    Crash detection = on a read error/EOF from the child, the mirror logs
    `secret serverlet '<name>' exited unexpectedly` and returns rather than hanging.
+   Since 0.16 the mirror also restarts it: a child that died is noticed at the next call
+   (or during one), `on_crash` runs on the host with the reason, and a fresh child —
+   with fresh state — serves the next call. A child that cannot start is retried with a
+   backoff instead of closing the serverlet for the rest of the run.
 
 5. ✅ **Marshaling.** Length-prefixed framing (dependency-free, handles arbitrary
    bytes including newlines). `int`, `float`, `bool`, `string` params/returns and

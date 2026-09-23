@@ -1147,6 +1147,33 @@ impl TypeChecker {
                 }
                 self.sandbox_grants = None;
                 if let Some((err_name, handler_body)) = crash_handler {
+                    // Out of process, on_crash runs on the host after the child or the
+                    // guest is gone, and the state went with it.
+                    if *secret || sandbox.is_some() {
+                        let state: HashSet<String> = state.iter().filter_map(|s| match &s.node {
+                            StmtNode::Let { name, .. } => Some(name.clone()),
+                            _ => None,
+                        }).collect();
+                        let own = Self::declared_names(handler_body, &[]);
+                        let mut used = None;
+                        crate::ast::walk_expr(handler_body, &mut |node| {
+                            if let crate::ast::Node::Expr(Expr { node: ExprNode::Identifier(name), .. }) = node {
+                                if used.is_none() && state.contains(name) && !own.contains(name) && name != err_name {
+                                    used = Some(name.clone());
+                                }
+                            }
+                        });
+                        // The handler's own position: a name inside an interpolated string
+                        // carries the string's, not the file's.
+                        let span = handler_body.span;
+                        if let Some(name) = used {
+                            let (kind, place) = if *secret { ("secret", "the child") } else { ("sandboxed", "the guest") };
+                            return Err(format!(
+                                "line {}, col {}: {kind} serverlet '{serverlet}': on_crash uses '{name}', which is {place}'s state. on_crash runs on the host after {place} is gone, so the state is gone with it; report the error and let the next one start over",
+                                span.line, span.col
+                            ));
+                        }
+                    }
                     self.push_env();
                     self.define_var(err_name.clone(), Type::Str);
                     self.infer_expr(handler_body)?;

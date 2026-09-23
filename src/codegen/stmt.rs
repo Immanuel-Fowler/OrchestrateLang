@@ -448,7 +448,7 @@ impl Codegen {
                 }
 
                 if *secret {
-                    let mut start_fn = self.compile_secret_mirror(name, handlers);
+                    let mut start_fn = self.compile_secret_mirror(name, handlers, crash_handler, state);
                     if self.library {
                         start_fn = start_fn.replace(".stdout(std::process::Stdio::piped())", ".stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())");
                         start_fn = start_fn.replace("let mut __cout = __child.stdout.take().expect(\"child stdout\");", "let mut __cout = __child.stdout.take().expect(\"child stdout\"); let stderr = __child.stderr.take().expect(\"child stderr\"); crate::__orch_spawn(async move { use tokio::io::AsyncBufReadExt; let mut lines = tokio::io::BufReader::new(stderr).lines(); while let Ok(Some(line)) = lines.next_line().await { crate::__orch_log(crate::LogLevel::Info, line); } });");
@@ -754,12 +754,34 @@ impl Codegen {
         names
     }
 
-    fn compile_secret_mirror(&mut self, name: &str, handlers: &[Handler]) -> String {
+    /// The host side of a secret serverlet: an actor that forwards each call to the child
+    /// process and its reply back. The child is started for the first call and again for
+    /// the first call after it dies — killed, crashed, or exited — with `on_crash`, if
+    /// declared, run on the host each time it is lost. Its state starts over when it does.
+    fn compile_secret_mirror(&mut self, name: &str, handlers: &[Handler], crash_handler: &Option<(String, Box<Expr>)>, state: &[Stmt]) -> String {
         if let Some(reason) = wire_unsupported_reason(handlers, &self.struct_defs) {
             return format!("compile_error!(\"secret serverlet '{}': {}\");\n", name, reason);
         }
+        // `on_crash` runs on the host, after the child is gone, with the reason bound; the
+        // state lived in the child, so it is not reachable here.
+        let crash = match crash_handler {
+            Some((error_name, body)) => {
+                let mut free = std::collections::HashSet::new();
+                self.get_free_vars_expr(body, &mut std::collections::HashSet::new(), &mut free);
+                let mut reached: Vec<&String> = free.iter().filter(|v| state_names(state).contains(*v)).collect();
+                reached.sort();
+                if let Some(reached) = reached.first() {
+                    self.errors.push(format!(
+                        "secret serverlet '{name}': on_crash uses '{reached}', which is the child's state. on_crash runs on the host after the child is gone, so the state is gone with it; report the error and let the next child start over"
+                    ));
+                }
+                format!("{{ let {} = __error.clone(); {}; }}", rust_ident(error_name), self.compile_statement_body(body))
+            }
+            None => String::new(),
+        };
 
         let mut arms = Vec::new();
+        let mut default_arms = Vec::new();
         for (k, h) in handlers.iter().enumerate() {
             let variant = pascal_case(&h.name);
             let param_names: Vec<String> = h.params.iter().map(|p| rust_ident(&p.name)).collect();
@@ -781,15 +803,44 @@ impl Codegen {
             };
 
             arms.push(format!(
-"                {n}Msg::{v} {{ {b} }} => {{\n                    __next_call = __next_call.wrapping_add(1);\n                    let mut __payload = Vec::new();\n                    {k}i64.wire_encode(&mut __payload);\n{args}                    if __secret_write_frame(&mut __cin, ORCH_KIND_CALL, __next_call, &__payload).await.is_err() {{\n                        eprintln!(\"[orchestrate] secret serverlet '{n}' is not reachable\");\n                        let _ = reply_to.send(Default::default());\n                        continue;\n                    }}\n                    match __secret_read_frame(&mut __cout).await {{\n                        Ok(Some(__f)) if __f.kind == ORCH_KIND_REPLY && __f.call_id == __next_call => {{ let _ = reply_to.send({dec}); }}\n                        Ok(Some(__f)) if __f.kind == ORCH_KIND_ERROR && __f.call_id == __next_call => {{\n                            let mut __p = 0usize;\n                            let __msg: String = OrchWire::wire_decode(&__f.payload, &mut __p).unwrap_or_default();\n                            eprintln!(\"[orchestrate] secret serverlet '{n}' handler '{h}' failed: {{}}\", __msg);\n                            let _ = reply_to.send(Default::default());\n                        }}\n                        _ => {{ eprintln!(\"[orchestrate] secret serverlet '{n}' exited unexpectedly\"); let _ = reply_to.send(Default::default()); }}\n                    }}\n                }}",
+"                {n}Msg::{v} {{ {b} }} => {{
+                    __next_call = __next_call.wrapping_add(1);
+                    let mut __payload = Vec::new();
+                    {k}i64.wire_encode(&mut __payload);
+{args}                    let __call: Result<Option<_>, String> = async {{
+                        __secret_write_frame(&mut *__cin, ORCH_KIND_CALL, __next_call, &__payload).await.map_err(|e| format!(\"it is not reachable: {{}}\", e))?;
+                        match __secret_read_frame(&mut *__cout).await {{
+                            Ok(Some(__f)) if __f.kind == ORCH_KIND_REPLY && __f.call_id == __next_call => Ok(Some({dec})),
+                            Ok(Some(__f)) if __f.kind == ORCH_KIND_ERROR && __f.call_id == __next_call => {{
+                                let mut __p = 0usize;
+                                let __msg: String = OrchWire::wire_decode(&__f.payload, &mut __p).unwrap_or_default();
+                                eprintln!(\"[orchestrate] secret serverlet '{n}' handler '{h}' failed: {{}}\", __msg);
+                                Ok(None)
+                            }}
+                            Ok(None) => Err(\"it exited during the call\".to_string()),
+                            Ok(Some(_)) => Err(\"it answered out of turn\".to_string()),
+                            Err(e) => Err(format!(\"its reply could not be read: {{}}\", e)),
+                        }}
+                    }}.await;
+                    match __call {{
+                        Ok(__value) => {{ let _ = reply_to.send(__value.unwrap_or_default()); }}
+                        Err(__detail) => {{
+                            let _ = reply_to.send(Default::default());
+                            __lost = Some(format!(\"secret serverlet '{n}' was lost during a call to '{h}': {{}}\", __detail));
+                        }}
+                    }}
+                }}",
                 n = name, v = variant, b = binding, k = k, h = h.name, args = encode_args, dec = decode
             ));
+            default_arms.push(format!("                    {name}Msg::{variant} {{ reply_to, .. }} => {{ let _ = reply_to.send(Default::default()); }}"));
         }
 
-        format!(
-"#[allow(non_snake_case)]\npub fn start_{n}() -> {n}Client {{\n    let (tx, mut rx) = tokio::sync::mpsc::channel::<{n}Msg>(100);\n    tokio::spawn(async move {{\n        use tokio::io::{{AsyncReadExt, AsyncWriteExt}};\n        let __exe = std::env::current_exe().expect(\"current_exe\");\n        let __dir = __exe.parent().expect(\"exe dir\").to_path_buf();\n        let __bin = if cfg!(target_os = \"windows\") {{ \"secret_{n}.exe\" }} else {{ \"secret_{n}\" }};\n        let mut __child = match tokio::process::Command::new(__dir.join(__bin))\n            .kill_on_drop(true)\n            .stdin(std::process::Stdio::piped())\n            .stdout(std::process::Stdio::piped())\n            .spawn() {{\n            Ok(c) => c,\n            Err(e) => {{ eprintln!(\"[orchestrate] failed to spawn secret serverlet '{n}': {{}}\", e); return; }}\n        }};\n        let mut __cin = __child.stdin.take().expect(\"child stdin\");\n        let mut __cout = __child.stdout.take().expect(\"child stdout\");\n        // Handshake: the child sends HELLO with its protocol version and handler signatures.\n        let __hello = match __secret_read_frame(&mut __cout).await {{\n            Ok(Some(f)) if f.kind == ORCH_KIND_HELLO => f,\n            _ => {{ eprintln!(\"[orchestrate] secret serverlet '{n}' did not complete the handshake\"); return; }}\n        }};\n        let mut __pos = 0usize;\n        let __version = i64::wire_decode(&__hello.payload, &mut __pos).unwrap_or(0);\n        let __got: Vec<String> = OrchWire::wire_decode(&__hello.payload, &mut __pos).unwrap_or_default();\n        let __expected: Vec<String> = vec![{sigs}];\n        if __version != ORCH_WIRE_VERSION || __got != __expected {{\n            eprintln!(\"[orchestrate] secret serverlet '{n}' interface mismatch: expected protocol {{}} {{:?}}, got protocol {{}} {{:?}}\", ORCH_WIRE_VERSION, __expected, __version, __got);\n            let _ = __child.kill().await;\n            return;\n        }}\n        if __secret_write_frame(&mut __cin, ORCH_KIND_READY, 0, &[]).await.is_err() {{ return; }}\n        let mut __next_call: u32 = 0;\n        while let Some(msg) = rx.recv().await {{\n            match msg {{\n{arms}\n            }}\n        }}\n        let _ = __secret_write_frame(&mut __cin, ORCH_KIND_BYE, 0, &[]).await;\n        drop(__cin);\n        let _ = __child.wait().await;\n    }});\n    {n}Client {{ tx }}\n}}",
-            n = name, arms = arms.join("\n"), sigs = Self::handler_signatures(handlers)
-        )
+        include_str!("secret_mirror.rs.txt")
+            .replace("@NAME@", name)
+            .replace("@SIGNATURES@", &Self::handler_signatures(handlers))
+            .replace("@DEFAULT_ARMS@", &default_arms.join("\n"))
+            .replace("@ARMS@", &arms.join("\n"))
+            .replace("@CRASH@", &crash)
     }
 
     /// Handler signatures checked during the protocol handshake, as Rust string literals,

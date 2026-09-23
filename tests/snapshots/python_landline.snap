@@ -220,19 +220,21 @@ pub fn start_Counter() -> CounterClient {
         let exe = std::env::current_exe().expect("current_exe");
         let directory = exe.parent().expect("exe directory").join("landline_Counter");
         let mut __next_call = 0u32;
+        // Consecutive starts that failed. Each waits longer before the next try, and the
+        // calls that arrive meanwhile are answered with their default.
+        let mut __failed_starts = 0u32;
         'restart: loop {
             let python = std::env::var_os("ORCH_PYTHON").unwrap_or_else(|| "python3".into());
-            let mut __child = match tokio::process::Command::new(python)
+            let __spawned = tokio::process::Command::new(python)
                 .arg("-u").arg(directory.join("main.py"))
                 .kill_on_drop(true)
                 .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped()).spawn() {
-                Ok(child) => child,
-                Err(e) => { eprintln!("[orchestrate] cannot start Python landline 'Counter': {}", e); return; }
-            };
-            let mut __cin = __child.stdin.take().expect("child stdin");
-            let mut __cout = __child.stdout.take().expect("child stdout");
-            let handshake = async {
+                .stdout(std::process::Stdio::piped()).spawn();
+            let __startup: Result<_, String> = async {
+                let mut __child = __spawned.map_err(|e| format!("cannot start Python landline: {}", e))?;
+                let mut __cin = __child.stdin.take().expect("child stdin");
+                let mut __cout = __child.stdout.take().expect("child stdout");
+                let handshake = async {
                 let hello = __secret_read_frame(&mut __cout).await.map_err(|e| e.to_string())?.ok_or("process exited before HELLO")?;
                 if hello.kind != ORCH_KIND_HELLO || hello.call_id != 0 { return Err("expected HELLO".into()); }
                 let mut pos = 0;
@@ -244,14 +246,33 @@ pub fn start_Counter() -> CounterClient {
                 }
                 __secret_write_frame(&mut __cin, ORCH_KIND_READY, 0, &[]).await.map_err(|e| e.to_string())
             };
-            match tokio::time::timeout(std::time::Duration::from_secs(10), handshake).await {
-                Ok(Ok(())) => {},
-                result => {
-                    eprintln!("[orchestrate] landline 'Counter' startup failed: {:?}", result);
-                    let _ = __child.kill().await;
-                    return;
+                match tokio::time::timeout(std::time::Duration::from_secs(10), handshake).await {
+                    Ok(Ok(())) => Ok((__child, __cin, __cout)),
+                    Ok(Err(error)) => { let _ = __child.kill().await; Err(error) }
+                    Err(_) => { let _ = __child.kill().await; Err("no handshake within 10 s".to_string()) }
                 }
-            }
+            }.await;
+            let (mut __child, mut __cin, mut __cout) = match __startup {
+                Ok(started) => { __failed_starts = 0; started }
+                Err(__error) => {
+                    // Not closed for good: calls are answered with their default until the
+                    // next try, which comes sooner than a caller would give up waiting.
+                    __failed_starts += 1;
+                    let __delay = (100u64 << __failed_starts.min(6)).min(5000);
+                    eprintln!("[orchestrate] landline 'Counter' startup failed: {}; calls return their default until it is tried again in {} ms", __error, __delay);
+                    let __retry_at = std::time::Instant::now() + std::time::Duration::from_millis(__delay);
+                    loop {
+                        let __wait = __retry_at.saturating_duration_since(std::time::Instant::now());
+                        match tokio::time::timeout(__wait, async { rx.recv().await }).await {
+                            Err(_) => continue 'restart,
+                            Ok(None) => break 'restart,
+                            Ok(Some(msg)) => match msg {
+                                CounterMsg::Add { reply_to, .. } => { let _ = reply_to.send(Default::default()); }
+                            },
+                        }
+                    }
+                }
+            };
             while let Some(msg) = rx.recv().await {
                 match msg {
                     CounterMsg::Add { n, reply_to } => {

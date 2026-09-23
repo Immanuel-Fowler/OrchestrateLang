@@ -93,9 +93,14 @@ impl Codegen {
                 }}
             }}"#, name=name, variant=pascal_case(&h.name), bindings=bindings.join(", "), id=id, encode=encode, handler=h.name, decode=decode, recovery=recovery, skip=skip, remember=remember, kind=kind, header=header)
         }).collect::<Vec<_>>().join("\n");
+        let default_arms = handlers.iter()
+            .map(|h| format!("                                {name}Msg::{} {{ reply_to, .. }} => {{ let _ = reply_to.send(Default::default()); }}", pascal_case(&h.name)))
+            .collect::<Vec<_>>()
+            .join("\n");
         let mut code = include_str!("python_mirror.rs.txt")
             .replace("@NAME@", name)
             .replace("@SIGNATURES@", &signatures)
+            .replace("@DEFAULT_ARMS@", &default_arms)
             .replace("@ARMS@", &arms);
         if config.runtime == "typescript" {
             code = code.replace("let python = std::env::var_os(\"ORCH_PYTHON\").unwrap_or_else(|| \"python3\".into());", "let python = directory.join(if cfg!(windows) { \"serverlet.exe\" } else { \"serverlet\" });")
