@@ -780,13 +780,19 @@ impl Codegen {
 
     /// The statement `body` needs the lock if it read or wrote shared state while being
     /// compiled. `before` is the touch count from before it was compiled.
+    ///
+    /// A statement that panics while it holds the lock — a worker dividing by zero —
+    /// leaves the mutex poisoned, and `unwrap` would then panic in every other statement
+    /// that touches shared state, for the rest of the run: one crash would take every
+    /// worker down with it. The lock is taken whatever the poison says instead; the panicking
+    /// statement's writes up to the panic stand, as they would without a lock.
     pub(super) fn wrap_shared(&mut self, body: String) -> String {
         let prelude = if !self.library {
-            "let mut __shared = __orch_shared().lock().unwrap();".to_string()
+            "let mut __shared = __orch_shared().lock().unwrap_or_else(std::sync::PoisonError::into_inner);".to_string()
         } else if self.context_bound {
-            "let mut __shared = __context.shared_state().lock().unwrap();".to_string()
+            "let mut __shared = __context.shared_state().lock().unwrap_or_else(std::sync::PoisonError::into_inner);".to_string()
         } else {
-            "let __orch_ctx = crate::__orch_context(); let mut __shared = __orch_ctx.shared_state().lock().unwrap();".to_string()
+            "let __orch_ctx = crate::__orch_context(); let mut __shared = __orch_ctx.shared_state().lock().unwrap_or_else(std::sync::PoisonError::into_inner);".to_string()
         };
         format!("{{ {prelude} {body} }}")
     }
