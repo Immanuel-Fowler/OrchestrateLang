@@ -1,0 +1,2 @@
+fn f(match: int) -> int { return match }
+orchestrator main() { stop_orch() }

@@ -68,10 +68,25 @@ fn stop_orch() {{
     std::process::exit(0);
 }}
 
-fn clock_micros() -> i64 {{
+/// The monotonic clock both `clock_micros` and `clock_nanos` read, from the first read.
+fn __orch_clock_start() -> std::time::Instant {{
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    START.get_or_init(std::time::Instant::now).elapsed().as_micros() as i64
+    *START.get_or_init(std::time::Instant::now)
 }}
+
+fn clock_micros() -> i64 {{
+    __orch_clock_start().elapsed().as_micros() as i64
+}}
+
+/// As fine as the platform's monotonic clock: nanoseconds on Linux and macOS.
+fn clock_nanos() -> i64 {{
+    __orch_clock_start().elapsed().as_nanos() as i64
+}}
+
+/// `pow`: an int to an int power, or a float to a float power.
+trait __OrchPow {{ fn orch_pow(self, exponent: Self) -> Self; }}
+impl __OrchPow for i64 {{ fn orch_pow(self, exponent: i64) -> i64 {{ self.pow(exponent as u32) }} }}
+impl __OrchPow for f64 {{ fn orch_pow(self, exponent: f64) -> f64 {{ self.powf(exponent) }} }}
 
 {process_ref}"#, print_macro = print_macro, process_ref = process_ref)
 }
@@ -421,6 +436,8 @@ pub struct Codegen {
     /// The name a `let` is binding, while its value is compiled, for messages that name
     /// what they are about: a worker's restart report.
     pub(super) naming: Option<String>,
+    /// The program's own `fn` names, which a math builtin of the same name defers to.
+    pub(super) user_functions: HashSet<String>,
 }
 
 impl Codegen {
@@ -462,6 +479,7 @@ impl Codegen {
             top_level_handler: false,
             module_types: Vec::new(),
             naming: None,
+            user_functions: HashSet::new(),
         }
     }
 
@@ -756,7 +774,7 @@ impl Codegen {
     pub fn functions_and_tasks_contain(&self, name: &str) -> bool {
         self.tasks.contains(name)
             || matches!(name, "print" | "to_string" | "to_int" | "to_float" | "parse_int" | "parse_float"
-                            | "length" | "append" | "remove" | "sleep" | "stop_orch" | "clock_micros"
+                            | "length" | "append" | "remove" | "sleep" | "stop_orch" | "clock_micros" | "clock_nanos"
                             | "range" | "map" | "filter" | "reduce" | "find" | "any" | "all")
     }
 
@@ -999,7 +1017,7 @@ impl Codegen {
     /// two are already safe to call concurrently and the third is not data.
     fn shareable(ty: &Type) -> bool {
         match ty {
-            Type::Int | Type::Float | Type::Bool | Type::Str => true,
+            Type::Int | Type::Float | Type::Bool | Type::Str | Type::Handle => true,
             Type::Array(inner, _) => Self::shareable(inner),
             Type::Option(inner) => Self::shareable(inner),
             Type::Named(_) => true,
@@ -1190,6 +1208,10 @@ impl Codegen {
 
     pub fn generate(&mut self, stmts: &[Stmt], is_main: bool) -> String {
         self.is_main = is_main;
+        self.user_functions = stmts.iter().filter_map(|s| match &s.node {
+            StmtNode::FnDecl { name, .. } => Some(name.clone()),
+            _ => None,
+        }).collect();
         self.scan_tasks(stmts);
         self.scan_modules(stmts);
         self.scan_events(stmts);

@@ -18,9 +18,16 @@ pub enum Precedence {
     And = 4,
     Equality = 5,
     Comparison = 6,
-    Sum = 7,
-    Product = 8,
-    Call = 9,
+    // Bitwise operators bind tighter than comparisons, as in Rust, so `flags & 2 == 2`
+    // is `(flags & 2) == 2`.
+    BitOr = 7,
+    BitXor = 8,
+    BitAnd = 9,
+    Shift = 10,
+    Sum = 11,
+    Product = 12,
+    Prefix = 13,
+    Call = 14,
 }
 
 pub struct Parser {
@@ -66,6 +73,61 @@ impl Parser {
     }
 
     fn is_at_end(&self) -> bool { self.peek().kind == TokenKind::EOF }
+
+    /// A `>` that closes a type. The lexer reads `>>` as a shift, so where a nested type
+    /// closes two at once — `option<option<int>>` — the first `>` is taken and the second
+    /// is left in its place.
+    fn consume_closing_angle(&mut self, msg: &str) -> Result<(), String> {
+        if self.peek().kind == TokenKind::Shr {
+            let token = &mut self.tokens[self.pos];
+            token.kind = TokenKind::Gt;
+            token.col += 1;
+            return Ok(());
+        }
+        self.consume(TokenKind::Gt, msg).map(|_| ())
+    }
+
+    /// A name a declaration binds: an identifier, or one of the keywords that cannot be
+    /// mistaken for anything else where a name goes — `start` and `on` — since both are
+    /// ordinary words a program wants for a parameter or a variable.
+    fn parse_binding_name(&mut self, what: &str) -> Result<String, String> {
+        let tok = self.advance().clone();
+        match &tok.kind {
+            TokenKind::Identifier(s) if s == "none" => Err(format!(
+                "'none' is the empty option value, so it cannot name a {what}; choose another name, at line {}, col {}",
+                tok.line, tok.col
+            )),
+            TokenKind::Identifier(s) => Ok(s.clone()),
+            TokenKind::Start => Ok("start".to_string()),
+            TokenKind::On => Ok("on".to_string()),
+            other => match Self::keyword_text(other) {
+                Some(keyword) => Err(format!(
+                    "'{keyword}' is a keyword, so it cannot name a {what}; choose another name, at line {}, col {}",
+                    tok.line, tok.col
+                )),
+                None => Err(format!("Expected {what} name at line {}, col {}", tok.line, tok.col)),
+            },
+        }
+    }
+
+    /// The spelling of a keyword token, for messages that say a keyword cannot be a name.
+    fn keyword_text(kind: &TokenKind) -> Option<&'static str> {
+        Some(match kind {
+            TokenKind::Let => "let", TokenKind::Fn => "fn", TokenKind::Task => "task",
+            TokenKind::Parallel => "parallel", TokenKind::If => "if", TokenKind::Else => "else",
+            TokenKind::While => "while", TokenKind::Return => "return", TokenKind::True => "true",
+            TokenKind::False => "false", TokenKind::Use => "use", TokenKind::Module => "module",
+            TokenKind::Load => "load", TokenKind::LoadForeign => "load_foreign",
+            TokenKind::Serverlet => "serverlet", TokenKind::Process => "process",
+            TokenKind::Orchestrator => "orchestrator", TokenKind::Automatic => "automatic",
+            TokenKind::Trigger => "trigger", TokenKind::OnStart => "on_start",
+            TokenKind::OnStop => "on_stop", TokenKind::OnCrash => "on_crash",
+            TokenKind::Struct => "struct", TokenKind::Enum => "enum", TokenKind::Try => "try",
+            TokenKind::Catch => "catch", TokenKind::Match => "match", TokenKind::For => "for",
+            TokenKind::In => "in", TokenKind::Break => "break", TokenKind::Continue => "continue",
+            _ => return None,
+        })
+    }
 
     pub fn parse(&mut self) -> Result<Vec<Stmt>, String> {
         let mut statements = Vec::new();
@@ -444,11 +506,7 @@ impl Parser {
     }
 
     fn parse_let_statement_with(&mut self, shared: bool) -> Result<StmtNode, String> {
-        let tok = self.advance().clone();
-        let name = match &tok.kind {
-            TokenKind::Identifier(s) => s.clone(),
-            _ => return Err(format!("Expected identifier after 'let' at line {}, col {}", tok.line, tok.col)),
-        };
+        let name = self.parse_binding_name("variable")?;
         let mut ty = None;
         if self.match_token(TokenKind::Colon) { ty = Some(self.parse_type()?); }
         self.consume(TokenKind::Eq, "Expected '=' in variable declaration")?;
@@ -527,7 +585,7 @@ impl Parser {
             }
             if !self.match_token(TokenKind::Comma) { break; }
         }
-        self.consume(TokenKind::Gt, "Expected '>' after type parameters")?;
+        self.consume_closing_angle("Expected '>' after type parameters")?;
         self.type_param_ctx = params.iter().cloned().collect();
         Ok(params)
     }
@@ -672,20 +730,12 @@ impl Parser {
     fn parse_params(&mut self) -> Result<Vec<Param>, String> {
         let mut params = Vec::new();
         if self.peek().kind == TokenKind::RParen { return Ok(params); }
-        let tok = self.advance().clone();
-        let name = match &tok.kind {
-            TokenKind::Identifier(s) => s.clone(),
-            _ => return Err(format!("Expected parameter name at line {}, col {}", tok.line, tok.col)),
-        };
+        let name = self.parse_binding_name("parameter")?;
         self.consume(TokenKind::Colon, "Expected ':' after parameter name")?;
         let ty = self.parse_type()?;
         params.push(Param { name, ty });
         while self.match_token(TokenKind::Comma) {
-            let tok = self.advance().clone();
-            let name = match &tok.kind {
-                TokenKind::Identifier(s) => s.clone(),
-                _ => return Err(format!("Expected parameter name at line {}, col {}", tok.line, tok.col)),
-            };
+            let name = self.parse_binding_name("parameter")?;
             self.consume(TokenKind::Colon, "Expected ':' after parameter name")?;
             let ty = self.parse_type()?;
             params.push(Param { name, ty });
@@ -743,7 +793,7 @@ impl Parser {
                 "option" => {
                     self.consume(TokenKind::Lt, "Expected '<' after 'option'")?;
                     let inner = self.parse_type()?;
-                    self.consume(TokenKind::Gt, "Expected '>' after option inner type")?;
+                    self.consume_closing_angle("Expected '>' after option inner type")?;
                     Ok(Type::Option(Box::new(inner)))
                 }
                 "result" => {
@@ -751,7 +801,7 @@ impl Parser {
                     let inner = self.parse_type()?;
                     // The error type defaults to string, so result<T> keeps its meaning.
                     let error = if self.match_token(TokenKind::Comma) { self.parse_type()? } else { Type::Str };
-                    self.consume(TokenKind::Gt, "Expected '>' after result inner type")?;
+                    self.consume_closing_angle("Expected '>' after result inner type")?;
                     Ok(Type::Result(Box::new(inner), Box::new(error)))
                 }
                 s => {
@@ -809,6 +859,10 @@ impl Parser {
             TokenKind::AndAnd => Precedence::And,
             TokenKind::EqEq | TokenKind::BangEq => Precedence::Equality,
             TokenKind::Lt | TokenKind::Gt | TokenKind::LtEq | TokenKind::GtEq => Precedence::Comparison,
+            TokenKind::Bar => Precedence::BitOr,
+            TokenKind::Caret => Precedence::BitXor,
+            TokenKind::Amp => Precedence::BitAnd,
+            TokenKind::Shl | TokenKind::Shr => Precedence::Shift,
             TokenKind::Plus | TokenKind::Minus => Precedence::Sum,
             TokenKind::Star | TokenKind::Slash | TokenKind::Percent => Precedence::Product,
             // `[` indexes only on the same line, so a line starting with an array literal
@@ -1029,6 +1083,12 @@ impl Parser {
                 let operand = self.parse_expression(Precedence::Product)?;
                 Ok(ExprNode::Unary { op: crate::ast::UnaryOp::Neg, operand: Box::new(operand) })
             }
+            TokenKind::Bang => {
+                self.advance();
+                // Binds tighter than any binary operator: `!a && b` is `(!a) && b`.
+                let operand = self.parse_expression(Precedence::Prefix)?;
+                Ok(ExprNode::Unary { op: crate::ast::UnaryOp::Not, operand: Box::new(operand) })
+            }
             TokenKind::Str(v) => {
                 let v = v.clone();
                 let span = Span::new(tok.line, tok.col);
@@ -1125,6 +1185,12 @@ impl Parser {
                 })
             }
             TokenKind::LBrace => Ok(self.parse_block()?.node),
+            // `start` begins a start only before the name of what it starts; anywhere
+            // else it is a name, so a parameter called `start` can be used.
+            TokenKind::Start if !matches!(self.peek_at(1).kind, TokenKind::Identifier(_)) => {
+                self.tokens[self.pos].kind = TokenKind::Identifier("start".to_string());
+                self.parse_prefix_node()
+            }
             TokenKind::Start => {
                 self.advance();
                 let expr = self.parse_expression(Precedence::Lowest)?;
@@ -1194,6 +1260,11 @@ impl Parser {
                     Some((err_name, Box::new(handler_body)))
                 } else { None };
                 Ok(ExprNode::AutomaticBlock { body: Box::new(body), restart_policy, backoff_ms, crash_handler })
+            }
+            // `on` declares a handler only as `on name(`; anywhere else it is a name.
+            TokenKind::On if !(matches!(self.peek_at(1).kind, TokenKind::Identifier(_)) && self.peek_at(2).kind == TokenKind::LParen) => {
+                self.tokens[self.pos].kind = TokenKind::Identifier("on".to_string());
+                self.parse_prefix_node()
             }
             TokenKind::On => {
                 self.advance();
@@ -1310,6 +1381,11 @@ impl Parser {
                     TokenKind::GtEq => BinaryOp::Ge,
                     TokenKind::AndAnd => BinaryOp::And,
                     TokenKind::OrOr => BinaryOp::Or,
+                    TokenKind::Amp => BinaryOp::BitAnd,
+                    TokenKind::Bar => BinaryOp::BitOr,
+                    TokenKind::Caret => BinaryOp::BitXor,
+                    TokenKind::Shl => BinaryOp::Shl,
+                    TokenKind::Shr => BinaryOp::Shr,
                     _ => unreachable!(),
                 };
                 let rhs = self.parse_expression(op_prec)?;

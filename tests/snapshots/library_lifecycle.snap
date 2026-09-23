@@ -64,10 +64,25 @@ fn to_string<T: std::fmt::Display>(val: T) -> String {
 
 
 
-fn clock_micros() -> i64 {
+/// The monotonic clock both `clock_micros` and `clock_nanos` read, from the first read.
+fn __orch_clock_start() -> std::time::Instant {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    START.get_or_init(std::time::Instant::now).elapsed().as_micros() as i64
+    *START.get_or_init(std::time::Instant::now)
 }
+
+fn clock_micros() -> i64 {
+    __orch_clock_start().elapsed().as_micros() as i64
+}
+
+/// As fine as the platform's monotonic clock: nanoseconds on Linux and macOS.
+fn clock_nanos() -> i64 {
+    __orch_clock_start().elapsed().as_nanos() as i64
+}
+
+/// `pow`: an int to an int power, or a float to a float power.
+trait __OrchPow { fn orch_pow(self, exponent: Self) -> Self; }
+impl __OrchPow for i64 { fn orch_pow(self, exponent: i64) -> i64 { self.pow(exponent as u32) } }
+impl __OrchPow for f64 { fn orch_pow(self, exponent: f64) -> f64 { self.powf(exponent) } }
 
 type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send + Sync + 'static>;
 

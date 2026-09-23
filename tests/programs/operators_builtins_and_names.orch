@@ -1,0 +1,20 @@
+// `!`, bitwise operators and shifts, math builtins, `start` and `on` as names, a nested
+// generic type that closes with `>>`, and an empty array typed by its annotation. Each
+// was refused by check before 0.16.
+fn span(start: int, end: int) -> int { return end - start }
+
+orchestrator main() {
+    let quiet = false
+    if !quiet { print("loud") }
+    let flags = 6
+    print("{flags & 2} {flags | 1} {flags ^ 4} {1 << 4} {64 >> 2} {flags & 2 == 2}")
+    let on = 1
+    let start = 3
+    print("{on} {span(start, 10)} {start + 1}")
+    print("{floor(sqrt(2.0) * 1000.0)} {floor(atan2(1.0, 1.0) * 1000.0)} {pow(2, 10)} {abs(-3)} {abs(-2.5)} {min(3, 4)} {max(1.5, 2.5)}")
+    print("{floor(3.7)} {ceil(3.2)} {round(2.5)} {floor(exp(1.0) * 100.0)} {ln(1.0)} {floor(sin(0.0))} {cos(0.0)} {tan(0.0)}")
+    let nested: option<option<int>> = some(some(3))
+    let readings: float[] = []
+    print("{length(readings)} {2.0 |> sqrt |> floor}")
+    stop_orch()
+}

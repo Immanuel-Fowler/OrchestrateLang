@@ -1,0 +1,28 @@
+// An `if` whose branch waits in one statement and writes shared state in another was
+// refused as one statement. It is not one unit: its condition and each statement in its
+// branches take the lock, or wait, on their own. An `if` that does not wait is still one
+// statement, and atomic.
+shared let n = 0
+shared let log: string[] = []
+
+serverlet Source { on get() -> int { return 5 } }
+
+orchestrator main() {
+    let source = start Source()
+    let go = true
+    if go {
+        sleep(1)
+        n = n + 1
+        let got = source.get()
+        n = n + got
+        append(log, "waited")
+    } else if n > 100 {
+        sleep(1)
+    } else {
+        n = 0
+    }
+    if n > 1 { n = n * 2 }
+    let v = n
+    print("{v} {length(log)}")
+    stop_orch()
+}

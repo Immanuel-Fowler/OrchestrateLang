@@ -942,6 +942,15 @@ fn library_rules(input_file: &str, ast: &[ast::Stmt], modules: &[&[ast::Stmt]], 
         }
     }
     typechecker::TypeChecker::check_captured_writes(ast, library).map_err(|e| type_error_in(input_file, &e))?;
+    // Foreign code is attached to a module, whose alias names its functions; in the entry
+    // file it would be compiled into nothing and its functions reported unknown.
+    if let Some(stmt) = ast.iter().find(|s| matches!(s.node, ast::StmtNode::LoadForeign { .. })) {
+        let ast::StmtNode::LoadForeign { language, path, .. } = &stmt.node else { unreachable!() };
+        return Err(format!(
+            "{}:line {}, col {}: load_foreign belongs in a module, not the entry file. Put `load_foreign \"{}\" \"{}\"` in a module's module.orch, import it with `use module m: \"./that_module\"`, and call its functions as `m.name(...)`",
+            input_file, stmt.span.line, stmt.span.col, language, path
+        ));
+    }
     for stmts in modules {
         // A module has no instance state of its own for a handler to reach.
         typechecker::TypeChecker::check_captured_writes(stmts, false)?;

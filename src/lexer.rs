@@ -60,6 +60,12 @@ pub enum TokenKind {
     AndAnd,     // &&
     OrOr,       // ||
     Question,   // ?
+    Bang,       // !
+    Amp,        // &
+    Bar,        // |
+    Caret,      // ^
+    Shl,        // <<
+    Shr,        // >> (split back into two `>` where a type closes)
 
     // Punctuation
     LParen,     // (
@@ -225,13 +231,16 @@ impl Lexer {
                         self.advance();
                         TokenKind::BangEq
                     } else {
-                        return Err(format!("Unexpected character '!' at line {}, col {}", start_line, start_col));
+                        TokenKind::Bang
                     }
                 }
                 '<' => {
                     if self.peek() == Some('=') {
                         self.advance();
                         TokenKind::LtEq
+                    } else if self.peek() == Some('<') {
+                        self.advance();
+                        TokenKind::Shl
                     } else {
                         TokenKind::Lt
                     }
@@ -240,10 +249,14 @@ impl Lexer {
                     if self.peek() == Some('=') {
                         self.advance();
                         TokenKind::GtEq
+                    } else if self.peek() == Some('>') {
+                        self.advance();
+                        TokenKind::Shr
                     } else {
                         TokenKind::Gt
                     }
                 }
+                '^' => TokenKind::Caret,
                 '|' => {
                     if self.peek() == Some('>') {
                         self.advance();
@@ -252,7 +265,7 @@ impl Lexer {
                         self.advance();
                         TokenKind::OrOr
                     } else {
-                        return Err(format!("Unexpected character '|' at line {}, col {}", start_line, start_col));
+                        TokenKind::Bar
                     }
                 }
                 '&' => {
@@ -260,7 +273,7 @@ impl Lexer {
                         self.advance();
                         TokenKind::AndAnd
                     } else {
-                        return Err(format!("Unexpected character '&' at line {}, col {}", start_line, start_col));
+                        TokenKind::Amp
                     }
                 }
                 _ => return Err(format!("Unexpected character '{}' at line {}, col {}", c, start_line, start_col)),

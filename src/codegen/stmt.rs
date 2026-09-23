@@ -56,6 +56,12 @@ impl Codegen {
             }
             StmtNode::Break => "break".to_string(),
             StmtNode::Continue => "continue".to_string(),
+            // An `if` that waits somewhere is not one unit: its condition takes the lock by
+            // itself, and each statement in its branches takes it or waits on its own. One
+            // that does not wait stays one unit, so `if n < 10 { n = n + 1 }` is atomic.
+            StmtNode::Expr(expr) if !self.guard_held && matches!(expr.node, ExprNode::If { .. }) && self.may_wait(expr) => {
+                self.compile_split_if(expr)
+            }
             StmtNode::Expr(expr) => {
                 let before = self.shared_touches.get();
                 let awaits_before = self.awaits;
@@ -703,6 +709,55 @@ impl Codegen {
             "#[tokio::main]\nasync fn main() -> Result<(), Box<dyn std::error::Error>> {{\n    {}\n}}",
             main_body.replace("\n", "\n    ")
         )
+    }
+
+    /// An `if` whose branches wait: see `compile_stmt`.
+    fn compile_split_if(&mut self, expr: &Expr) -> String {
+        let ExprNode::If { cond, then_branch, else_branch } = &expr.node else { unreachable!() };
+        let before = self.shared_touches.get();
+        let awaits_before = self.awaits;
+        let outer = std::mem::replace(&mut self.guard_held, true);
+        let cond_str = self.compile_expr(cond);
+        self.guard_held = outer;
+        if self.shared_touches.get() != before && self.awaits != awaits_before {
+            self.errors.push(
+                "a statement cannot both wait and touch shared state: the lock would be held across the wait, blocking every other reader. Split it into two statements.".to_string()
+            );
+        }
+        let cond_str = if self.shared_touches.get() != before { self.wrap_shared(cond_str) } else { cond_str };
+        let then_str = self.compile_statement_body(then_branch);
+        match else_branch {
+            Some(branch) if matches!(branch.node, ExprNode::If { .. }) => {
+                let else_str = self.compile_split_if(branch);
+                format!("if {cond_str} {then_str} else {else_str}")
+            }
+            Some(branch) => format!("if {cond_str} {then_str} else {}", self.compile_statement_body(branch)),
+            None => format!("if {cond_str} {then_str}"),
+        }
+    }
+
+    /// Whether `expr` waits — calls a task, `sleep`, or a serverlet, or has a `parallel`
+    /// block — outside any closure, worker, or handler inside it, which wait on their own.
+    /// Codegen's own rule, from `require_async`, read before anything is compiled.
+    pub(super) fn may_wait(&self, expr: &Expr) -> bool {
+        let mut waits = false;
+        crate::ast::walk_expr_within(expr, &mut |node| {
+            waits |= match node {
+                crate::ast::Node::Stmt(stmt) => matches!(stmt.node, StmtNode::Parallel(_)),
+                crate::ast::Node::Expr(e) => match &e.node {
+                    ExprNode::Call { callee, .. } => callee == "sleep" || self.tasks.contains(callee),
+                    ExprNode::ModuleCall { module_local_name, function, .. } => {
+                        if self.modules.contains(module_local_name) {
+                            self.tasks.contains(&format!("{}::{}", module_local_name, function))
+                        } else {
+                            self.is_binding_receiver(module_local_name)
+                        }
+                    }
+                    _ => false,
+                },
+            };
+        });
+        waits
     }
 
     /// A compiled statement with its terminating semicolon.

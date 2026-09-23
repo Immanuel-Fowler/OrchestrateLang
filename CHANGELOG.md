@@ -10,12 +10,36 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 ## [Unreleased]
 
 ### Added
+- **`!`, bitwise operators, and shifts.** `!` negates a `bool`; `&`, `|`, `^`, `<<`, and
+  `>>` work on `int`, with Rust's precedence, so `flags & 2 == 2` is `(flags & 2) == 2`.
+  Status bits were read with `/` and `%` before. A nested type that closes with `>>`,
+  `option<option<int>>`, still parses.
+- **Math builtins:** `abs`, `min`, `max`, `pow` on ints or floats, and `sqrt`, `exp`, `ln`,
+  `floor`, `ceil`, `round`, `sin`, `cos`, `tan`, `atan2` on floats. They are builtins, so
+  a sandboxed handler, which cannot call the program's functions, can use them — a
+  plugin computed a square root by Newton's method and an arctangent by a polynomial,
+  inline, before. A program's own `fn` of the same name takes precedence.
+- **`clock_nanos()`**, on the same monotonic clock as `clock_micros`, whose resolution
+  was the floor under every per-call measurement.
+- **`start` and `on` can be names** where they cannot begin a start or a handler — a
+  parameter called `start` was refused with "Expected parameter name". Any other keyword
+  used as a name, and `none`, is refused with a message saying the word is reserved.
+- **A shared `handle`.** `shared let h = m.make()` was refused; every statement that uses
+  a shared handle holds the lock, so its native object is used one statement at a time.
 - **`automatic(..., backoff: "50ms")` declares the wait before each restart.** The
   default is unchanged — a second, doubling with each restart up to thirty — and was the
   only choice: a heartbeat worker's one-second restart outlasted its devices' 500 ms
   heartbeat window, and the whole fleet it served went link-lost while it waited.
 
 ### Changed
+- **An `if` whose branches wait is not one statement for the shared-state rule.** An `if`
+  that waited in one statement and wrote shared state in another was refused as though
+  it were one statement that both waits and touches shared state; a whole worker body was
+  written flat to get around it. Its condition now takes the lock by itself, and each
+  statement in its branches waits or takes the lock on its own. An `if` that does not
+  wait is still one statement, and atomic.
+- **`load_foreign` in the entry file is refused with a message** saying foreign code goes
+  in a module; it was accepted and then its functions were reported unknown.
 - **`late: "latest"` is documented as per handler, with the rule it needs.** A late call
   returns the handler's most recent answer to any call, so a late `echo(2)` can return
   what `echo(1)` answered — what `latest` is for, a sampled signal whose arguments change
@@ -134,6 +158,9 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   and it ran. The module check now has the entry file's host groups, as the build does,
   so the valid grant passes and an ungranted call inside a module is a `check` error. The
   build runs the same module check, so the two cannot drift.
+- **A pipeline into a builtin is typed.** `2.0 |> sqrt` was typed `void`, since the checker
+  looked only among declared functions; a pipeline is now checked as the call it stands
+  for, as codegen compiles it.
 - **An empty array literal takes its type from where it goes.** `let xs: float[] = []`
   was refused with "expected float[], found int[]". `[]` now fits any array an
   annotation, a field, a parameter, or a return type asks for; unannotated, it is still

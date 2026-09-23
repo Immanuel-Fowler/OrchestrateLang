@@ -1,0 +1,15 @@
+// A sandboxed handler cannot call the program's functions, so math it needs has to be a
+// builtin: a plugin computed a square root by Newton's method and an arctangent by a
+// polynomial, inline, before these existed.
+serverlet Geometry sandbox(memory_limit: "8mb", timeout: "200ms") {
+    on distance(x: float, y: float) -> float { return sqrt(x * x + y * y) }
+    on heading(x: float, y: float) -> float { return floor(atan2(y, x) * 1000.0) }
+    on low_nibble(status: int) -> int { return (status & 255) >> 4 }
+    on ready(status: int) -> bool { return !(status & 1 == 0) }
+}
+
+orchestrator main() {
+    let g = start Geometry()
+    print("{g.distance(3.0, 4.0)} {g.heading(1.0, 1.0)} {g.low_nibble(1000)} {g.ready(3)}")
+    stop_orch()
+}

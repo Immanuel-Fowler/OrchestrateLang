@@ -80,7 +80,7 @@ impl TypeChecker {
 
         let builtins = vec![
             "print", "to_string", "to_int", "to_float", "parse_int", "parse_float",
-            "sleep", "stop_orch", "clock_micros",
+            "sleep", "stop_orch", "clock_micros", "clock_nanos",
             "length", "append", "remove",
             "map", "filter", "reduce", "find", "any", "all", "range",
         ];
@@ -392,6 +392,36 @@ impl TypeChecker {
         Ok(())
     }
 
+    /// The math builtins: `sqrt`, `abs`, `floor`, `ceil`, `round`, `pow`, `sin`, `cos`,
+    /// `tan`, `atan2`, `exp`, `ln`, `min`, and `max`, or `None` for any other name.
+    /// `abs`, `pow`, `min`, and `max` take ints or floats, both the same; the rest take
+    /// floats, since an int argument usually means a missing `to_float`.
+    pub fn math_builtin(callee: &str, args: &[Type], line: usize, col: usize) -> Option<Result<Type, String>> {
+        let arity = match callee {
+            "sqrt" | "abs" | "floor" | "ceil" | "round" | "sin" | "cos" | "tan" | "exp" | "ln" => 1,
+            "pow" | "atan2" | "min" | "max" => 2,
+            _ => return None,
+        };
+        if args.len() != arity {
+            return Some(Err(format!("line {line}, col {col}: {callee} takes {arity} argument{}, got {}", if arity == 1 { "" } else { "s" }, args.len())));
+        }
+        let numeric = |t: &Type| matches!(t, Type::Int | Type::Float);
+        Some(match callee {
+            "abs" if numeric(&args[0]) => Ok(args[0].clone()),
+            "pow" | "min" | "max" if numeric(&args[0]) && args[0] == args[1] => Ok(args[0].clone()),
+            "pow" | "min" | "max" => Err(format!(
+                "line {line}, col {col}: {callee} takes two ints or two floats, got {} and {}; convert one with to_float or to_int",
+                args[0].display_name(), args[1].display_name()
+            )),
+            _ if args.iter().all(|t| *t == Type::Float) => Ok(Type::Float),
+            _ => Err(format!(
+                "line {line}, col {col}: {callee} takes float{}, got {}; convert an int with to_float",
+                if arity == 1 { "" } else { "s" },
+                args.iter().map(|t| t.display_name()).collect::<Vec<_>>().join(" and ")
+            )),
+        })
+    }
+
     /// An array whose element type is still unknown, as an unannotated binding keeps it:
     /// `int` elements, nested arrays likewise.
     fn default_unknown_elements(ty: Type) -> Type {
@@ -415,7 +445,9 @@ impl TypeChecker {
     /// codegen applies to a `shared let`.
     fn shareable(ty: &Type) -> bool {
         match ty {
-            Type::Int | Type::Float | Type::Bool | Type::Str | Type::Named(_) => true,
+            // A handle is shared too: every statement that uses it holds the lock, so its
+            // native object is used by one statement at a time.
+            Type::Int | Type::Float | Type::Bool | Type::Str | Type::Named(_) | Type::Handle => true,
             Type::Array(inner, _) | Type::Option(inner) => Self::shareable(inner),
             _ => false,
         }
@@ -619,6 +651,13 @@ impl TypeChecker {
     }
 
     fn check_shared_waits_unit(&self, unit: Node, locals: &HashSet<String>) -> Result<(), String> {
+        // An `if` statement that waits is not one unit: codegen locks its condition alone
+        // and each statement in its branches on its own, so each is checked on its own.
+        if let Node::Stmt(Stmt { node: StmtNode::Expr(expr @ Expr { node: ExprNode::If { .. }, .. }), .. }) = unit {
+            if self.first_wait(expr, false).is_some() {
+                return self.check_shared_waits_if(expr, locals);
+            }
+        }
         let touches = Self::search_node(unit, false, &mut |node| match node {
             Node::Expr(expr) => match &expr.node {
                 ExprNode::Identifier(name) if self.shared_names.contains(name) && !locals.contains(name) => Some(()),
@@ -659,6 +698,17 @@ impl TypeChecker {
             self.check_shared_waits_body(body, &names)?;
         }
         Ok(())
+    }
+
+    fn check_shared_waits_if(&self, expr: &Expr, locals: &HashSet<String>) -> Result<(), String> {
+        let ExprNode::If { cond, then_branch, else_branch } = &expr.node else { return Ok(()) };
+        self.check_shared_waits_unit(Node::Expr(cond), locals)?;
+        self.check_shared_waits_body(then_branch, locals)?;
+        match else_branch {
+            Some(branch) if matches!(branch.node, ExprNode::If { .. }) => self.check_shared_waits_if(branch, locals),
+            Some(branch) => self.check_shared_waits_body(branch, locals),
+            None => Ok(()),
+        }
     }
 
     /// Every name a body declares: parameters, `let`s, loop variables, match, catch, and
@@ -1279,6 +1329,11 @@ impl TypeChecker {
                         "line {}, col {}: cannot negate a value of type {}",
                         expr.span.line, expr.span.col, ty.display_name()
                     )),
+                    crate::ast::UnaryOp::Not if ty == Type::Bool => Ok(Type::Bool),
+                    crate::ast::UnaryOp::Not => Err(format!(
+                        "line {}, col {}: '!' needs a bool, got {}",
+                        expr.span.line, expr.span.col, ty.display_name()
+                    )),
                 }
             }
             ExprNode::Index { object, index } => {
@@ -1336,6 +1391,15 @@ impl TypeChecker {
                     }
                     return Ok(Type::Bool);
                 }
+                if [BinaryOp::BitAnd, BinaryOp::BitOr, BinaryOp::BitXor, BinaryOp::Shl, BinaryOp::Shr].contains(op) {
+                    if lhs_ty != Type::Int || rhs_ty != Type::Int {
+                        return Err(format!(
+                            "line {}, col {}: bitwise operators and shifts work on int, got {} and {}",
+                            expr.span.line, expr.span.col, lhs_ty.display_name(), rhs_ty.display_name()
+                        ));
+                    }
+                    return Ok(Type::Int);
+                }
                 if [BinaryOp::And, BinaryOp::Or].contains(op) {
                     if lhs_ty != Type::Bool || rhs_ty != Type::Bool {
                         return Err(format!(
@@ -1377,6 +1441,14 @@ impl TypeChecker {
                     }
                 }
 
+                // Math on numbers. A program's own function of the same name comes first,
+                // so one written before these existed keeps its meaning.
+                if !self.functions.contains_key(callee) {
+                    if let Some(result) = Self::math_builtin(callee, &arg_types, expr.span.line, expr.span.col) {
+                        return result;
+                    }
+                }
+
                 // Higher-order builtins
                 match callee.as_str() {
                     "range" => {
@@ -1385,7 +1457,7 @@ impl TypeChecker {
                     "to_string" => {
                         return Ok(Type::Str);
                     }
-                    "clock_micros" if args.is_empty() => {
+                    "clock_micros" | "clock_nanos" if args.is_empty() => {
                         return Ok(Type::Int);
                     }
                     "to_int" if args.len() == 1 => {
@@ -1521,53 +1593,16 @@ impl TypeChecker {
                 }
                 Ok(Type::Str)
             }
+            // `x |> f(a)` is `f(x, a)`, checked as that call, as codegen compiles it.
             ExprNode::Pipeline { value, function } => {
-                let val_ty = self.infer_expr(value)?;
-                match &function.node {
-                    ExprNode::Call { callee, args } => {
-                        for a in args {
-                            self.infer_expr(a)?;
-                        }
-                        if let Some((expected_args, ret_ty)) = self.functions.get(callee).cloned() {
-                            let effective_arg_count = args.len() + 1;
-                            if expected_args.len() != effective_arg_count {
-                                return Err(format!(
-                                    "line {}, col {}: {} expects {} arguments, got {} (including piped value)",
-                                    expr.span.line, expr.span.col, callee, expected_args.len(), effective_arg_count
-                                ));
-                            }
-                            if !self.generic_functions.contains_key(callee) && !self.types_compatible(&expected_args[0], &val_ty) {
-                                return Err(format!(
-                                    "line {}, col {}: {} expects {} as its piped first argument, got {}",
-                                    expr.span.line, expr.span.col, callee, expected_args[0].display_name(), val_ty.display_name()
-                                ));
-                            }
-                            Ok(ret_ty)
-                        } else {
-                            Ok(Type::Void)
-                        }
-                    }
-                    ExprNode::Identifier(name) => {
-                        if let Some((expected_args, ret_ty)) = self.functions.get(name).cloned() {
-                            if expected_args.len() != 1 {
-                                return Err(format!(
-                                    "line {}, col {}: {} expects {} arguments, got 1 (piped value)",
-                                    expr.span.line, expr.span.col, name, expected_args.len()
-                                ));
-                            }
-                            if !self.generic_functions.contains_key(name) && !self.types_compatible(&expected_args[0], &val_ty) {
-                                return Err(format!(
-                                    "line {}, col {}: {} expects {} as its piped argument, got {}",
-                                    expr.span.line, expr.span.col, name, expected_args[0].display_name(), val_ty.display_name()
-                                ));
-                            }
-                            Ok(ret_ty)
-                        } else {
-                            Ok(Type::Void)
-                        }
-                    }
-                    _ => self.infer_expr(function),
-                }
+                let (callee, rest) = match &function.node {
+                    ExprNode::Identifier(name) => (name.clone(), Vec::new()),
+                    ExprNode::Call { callee, args } => (callee.clone(), args.clone()),
+                    _ => return Err(format!("line {}, col {}: the right side of |> must be a function or a call", expr.span.line, expr.span.col)),
+                };
+                let mut args = vec![(**value).clone()];
+                args.extend(rest);
+                self.infer_expr_inner(&Expr { span: expr.span, node: ExprNode::Call { callee, args } })
             }
             ExprNode::Block(stmts) => {
                 self.push_env();

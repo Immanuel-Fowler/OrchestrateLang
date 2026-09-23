@@ -67,6 +67,10 @@ let active = true            // bool
 let threshold: int = 100
 ```
 
+A name may be any identifier that is not a keyword. `start` and `on` are also ordinary
+names wherever they cannot begin a start or a handler — `fn span(start: int, end: int)`,
+`let on = true` — and `none` cannot be a name, since it is the empty option.
+
 Variables are mutable by default. Reassign with `=`:
 
 ```orchestrate
@@ -125,13 +129,19 @@ may touch shared state** even though it may not call a serverlet.
 One rule follows from the lock: **a statement may wait, or touch shared state, not both.**
 Holding the lock across a wait would block every other reader, so
 `total = total + fetch()`, where `fetch` is a task, is refused and asks you to split it.
+An `if` whose branches wait is not one statement for this rule: its condition takes the lock
+on its own, and each statement in its branches waits or takes the lock on its own. An `if`
+that does not wait is one statement, so `if n < 10 { n = n + 1 }` is atomic.
 
 A change made in place — `xs[i] = v`, `p.field = v`, `append`, `remove` — changes the
 shared binding itself, under the same lock, and reading one element reads it where it
 lives rather than copying the whole array first.
 
-`int`, `float`, `bool`, `string`, arrays, options and structs can be shared. A serverlet
-client, a process, or a closure cannot — the first two are already safe to use
+`int`, `float`, `bool`, `string`, arrays, options, structs, and a foreign `handle` can be
+shared. Every statement that uses a shared handle holds the lock, so its native object is
+used by one statement at a time — from whichever thread runs that statement, so a native
+library that must stay on one thread belongs with the hooks instead. A serverlet client, a
+process, or a closure cannot be shared — the first two are already safe to use
 concurrently, and the third is not data. A program that never writes `shared` gains no
 mutex and no cost.
 
@@ -203,7 +213,21 @@ a >= b    // greater than or equal
 ```orchestrate
 a && b    // and
 a || b    // or
+!a        // not
 ```
+
+#### Bitwise (on `int`)
+```orchestrate
+flags & 2     // and
+flags | 1     // or
+flags ^ 4     // exclusive or
+1 << 4        // shift left
+status >> 8   // shift right, keeping the sign
+```
+
+As in Rust, bitwise operators bind tighter than comparisons, so `flags & 2 == 2` is
+`(flags & 2) == 2`, and shifts bind tighter than `&`. A shift by 64 or more, or by a
+negative amount, panics in a debug build and wraps in a release build, as `+` does.
 
 #### Assignment
 ```orchestrate
@@ -366,6 +390,28 @@ trigger update_orchestrator([])
 | `sleep` | `sleep(ms: int)` | Asynchronously pauses for the given number of milliseconds |
 | `stop_orch` | `stop_orch()` | Immediately exits the program |
 | `clock_micros` | `clock_micros() -> int` | Microseconds on a monotonic clock; subtract two readings to measure elapsed time |
+| `clock_nanos` | `clock_nanos() -> int` | Nanoseconds on the same clock, for work shorter than a microsecond. Its resolution is the platform's monotonic clock: nanoseconds on Linux and macOS |
+| `to_int` | `to_int(x) -> int` | A `float` rounded toward zero, or an `int` unchanged |
+| `to_float` | `to_float(x) -> float` | An `int` as a `float` |
+| `parse_int` | `parse_int(s: string) -> result<int>` | The number a string spells, or an error saying why not |
+| `parse_float` | `parse_float(s: string) -> result<float>` | The same for a `float` |
+
+#### Math
+
+| Function | Signature | Description |
+| :--- | :--- | :--- |
+| `abs` | `abs(x) -> same type` | Absolute value of an `int` or a `float` |
+| `min`, `max` | `min(a, b) -> same type` | The smaller or larger of two ints or two floats |
+| `pow` | `pow(base, exponent) -> same type` | Two ints, or two floats |
+| `sqrt`, `exp`, `ln` | `sqrt(x: float) -> float` | Square root, e to the power, natural logarithm |
+| `floor`, `ceil`, `round` | `floor(x: float) -> float` | Down, up, or to the nearest whole number (halves away from zero), as a `float` |
+| `sin`, `cos`, `tan` | `sin(x: float) -> float` | Of an angle in radians |
+| `atan2` | `atan2(y: float, x: float) -> float` | The angle of the point (x, y), from -π to π |
+
+The math functions are builtins, so a sandboxed handler — which cannot call the
+program's own functions — can use them. A program's own `fn` of the same name takes
+precedence. Functions that take a `float` refuse an `int` and say to use `to_float`, since
+an `int` there usually means a missing conversion.
 
 #### Array Functions
 
@@ -1053,7 +1099,9 @@ All functions and tasks in the loaded files become part of the module namespace 
 ### 6.4 Calling Foreign Functions (`load_foreign`)
 
 OrchestrateLang loads Rust, C, C++, Zig, Swift, C#, TypeScript, and WebAssembly functions
-into a module's namespace. Native C-ABI calls are in-process and stateless. TypeScript uses a
+into a module's namespace. `load_foreign` goes in a module's `module.orch`, and the
+functions are called through the module's alias, `m.total(...)`; in the entry file it is
+refused with a message saying so. Native C-ABI calls are in-process and stateless. TypeScript uses a
 generated, synchronous executable bridge and is also stateless; use a landline serverlet
 for persistent state. C, C++, Zig, and Swift functions take and return `int`, `float`,
 `bool`, `string`, `handle`, and `void`. TypeScript supports `int`, `float`, `bool`,

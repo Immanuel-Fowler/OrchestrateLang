@@ -16,6 +16,7 @@ impl Codegen {
                 let operand_str = self.compile_expr(operand);
                 match op {
                     crate::ast::UnaryOp::Neg => format!("(-{})", operand_str),
+                    crate::ast::UnaryOp::Not => format!("(!{})", operand_str),
                 }
             }
             // The element is read out of the array where it lives; the array itself is not
@@ -49,6 +50,11 @@ impl Codegen {
                         BinaryOp::Ge => ">=",
                         BinaryOp::And => "&&",
                         BinaryOp::Or => "||",
+                        BinaryOp::BitAnd => "&",
+                        BinaryOp::BitOr => "|",
+                        BinaryOp::BitXor => "^",
+                        BinaryOp::Shl => "<<",
+                        BinaryOp::Shr => ">>",
                         BinaryOp::Assign | BinaryOp::Add => unreachable!(),
                     };
                     format!("({} {} {})", lhs_str, op_str, rhs_str)
@@ -71,6 +77,9 @@ impl Codegen {
                     return format!("{{ {}.remove(({}) as usize); }}", self.compile_place(&args[0]), index);
                 }
 
+                if let Some(math) = self.compile_math(callee, args) {
+                    return math;
+                }
                 if callee == "print" || callee == "to_string" {
                     // Both only display their argument, so it is lent, not copied.
                     let args_str = args.iter().map(|a| self.compile_lent(a)).collect::<Vec<_>>().join(", ");
@@ -609,6 +618,43 @@ impl Codegen {
              let __orch_process: ProcessRef = {code}; \
              let _ = __orch_self_slot.set(std::sync::Arc::downgrade(&__orch_process)); __orch_process }}"
         )
+    }
+
+    /// A math builtin as the Rust method it is, or `None` when `callee` is not one — or is
+    /// the program's own function of that name, which comes first.
+    fn compile_math(&mut self, callee: &str, args: &[Expr]) -> Option<String> {
+        if self.user_functions.contains(callee) { return None; }
+        let method = match (callee, args.len()) {
+            ("sqrt" | "abs" | "floor" | "ceil" | "round" | "sin" | "cos" | "tan" | "exp", 1) => callee,
+            ("ln", 1) => "ln",
+            ("atan2" | "min" | "max", 2) => callee,
+            ("pow", 2) => "pow",
+            _ => return None,
+        };
+        let receiver = self.compile_numeric(&args[0]);
+        let other = args.get(1).map(|arg| self.compile_numeric(arg));
+        Some(match (callee, other) {
+            // Floats only, so named on `f64`, which also settles a bare literal's type.
+            ("abs", None) => format!("({receiver}).abs()"),
+            (_, None) => format!("f64::{method}({receiver})"),
+            ("atan2", Some(other)) => format!("f64::atan2({receiver}, {other})"),
+            // `powf` for floats and `pow` for ints, chosen by the arguments' own type.
+            ("pow", Some(other)) => format!("__OrchPow::orch_pow({receiver}, {other})"),
+            (_, Some(other)) => format!("({receiver}).{method}({other})"),
+        })
+    }
+
+    /// A number whose type a method call has to know: a bare literal gets its suffix, since
+    /// `(-3).abs()` names no type; anything else already has one.
+    fn compile_numeric(&mut self, expr: &Expr) -> String {
+        match &expr.node {
+            ExprNode::Literal(Literal::Int(v)) => format!("{v}i64"),
+            ExprNode::Literal(Literal::Float(v)) => format!("{v:?}f64"),
+            ExprNode::Unary { op: crate::ast::UnaryOp::Neg, operand } if matches!(operand.node, ExprNode::Literal(Literal::Int(_) | Literal::Float(_))) => {
+                format!("(-{})", self.compile_numeric(operand))
+            }
+            _ => self.compile_expr(expr),
+        }
     }
 
     /// The names a match pattern binds, which shadow program fields in its arm.

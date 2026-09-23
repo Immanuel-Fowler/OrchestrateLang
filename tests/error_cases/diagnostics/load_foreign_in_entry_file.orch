@@ -1,0 +1,2 @@
+load_foreign "c" "./modules/typed_c/m.c"
+orchestrator main() { stop_orch() }

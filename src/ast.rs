@@ -33,12 +33,16 @@ pub enum BinaryOp {
     Add, Sub, Mul, Div, Mod,
     Eq, Ne, Lt, Gt, Le, Ge,
     And, Or,
+    /// Bitwise and shifts on `int`: `&`, `|`, `^`, `<<`, `>>`.
+    BitAnd, BitOr, BitXor, Shl, Shr,
     Assign,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
     Neg,
+    /// `!` on a `bool`.
+    Not,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -418,62 +422,78 @@ pub enum Node<'a> {
 /// Visits `expr` and everything inside it — statements, closure and handler bodies,
 /// serverlet handlers — parent before children.
 pub fn walk_expr<'a>(expr: &'a Expr, visit: &mut dyn FnMut(Node<'a>)) {
-    visit(Node::Expr(expr));
-    match &expr.node {
-        ExprNode::Literal(_) | ExprNode::Identifier(_) | ExprNode::NoneLiteral => {}
-        ExprNode::Unary { operand, .. } => walk_expr(operand, visit),
-        ExprNode::Binary { lhs, rhs, .. } => { walk_expr(lhs, visit); walk_expr(rhs, visit); }
-        ExprNode::Call { args, .. } | ExprNode::ModuleCall { args, .. } | ExprNode::StartServerlet { args, .. }
-        | ExprNode::ArrayLiteral(args) => for arg in args { walk_expr(arg, visit); },
-        ExprNode::Pipeline { value, function } => { walk_expr(value, visit); walk_expr(function, visit); }
-        ExprNode::Block(stmts) => for stmt in stmts { walk_stmt(stmt, visit); },
-        ExprNode::If { cond, then_branch, else_branch } => {
-            walk_expr(cond, visit);
-            walk_expr(then_branch, visit);
-            if let Some(branch) = else_branch { walk_expr(branch, visit); }
-        }
-        ExprNode::AutomaticBlock { body, crash_handler, .. } => {
-            walk_expr(body, visit);
-            if let Some((_, handler)) = crash_handler { walk_expr(handler, visit); }
-        }
-        ExprNode::TriggeredBlock { body, .. } | ExprNode::Closure { body, .. } => walk_expr(body, visit),
-        ExprNode::StartProcess { target } => walk_expr(target, visit),
-        ExprNode::StructLiteral { fields, .. } => for (_, value) in fields { walk_expr(value, visit); },
-        ExprNode::FieldAccess { object, .. } => walk_expr(object, visit),
-        ExprNode::Index { object, index } => { walk_expr(object, visit); walk_expr(index, visit); }
-        ExprNode::SomeLiteral(inner) | ExprNode::OkLiteral(inner) | ExprNode::ErrLiteral(inner) | ExprNode::Propagate(inner) => {
-            walk_expr(inner, visit)
-        }
-        ExprNode::TryCatch { body, handler, .. } => { walk_expr(body, visit); walk_expr(handler, visit); }
-        ExprNode::EnumVariantLiteral { payload, .. } => if let Some(payload) = payload { walk_expr(payload, visit); },
-        ExprNode::Match { value, arms } => {
-            walk_expr(value, visit);
-            for arm in arms {
-                if let MatchPattern::Guard { condition, .. } = &arm.pattern { walk_expr(condition, visit); }
-                walk_expr(&arm.body, visit);
-            }
-        }
-        ExprNode::StringInterp { parts } => for part in parts {
-            if let StringPart::Expr(inner) = part { walk_expr(inner, visit); }
-        },
-    }
+    walk_expr_inner(expr, visit, true);
+}
+
+/// `walk_expr`, without entering closure, `automatic`, or event-handler bodies, which run
+/// later and on their own.
+pub fn walk_expr_within<'a>(expr: &'a Expr, visit: &mut dyn FnMut(Node<'a>)) {
+    walk_expr_inner(expr, visit, false);
 }
 
 /// `walk_expr` for a statement.
 pub fn walk_stmt<'a>(stmt: &'a Stmt, visit: &mut dyn FnMut(Node<'a>)) {
+    walk_stmt_inner(stmt, visit, true);
+}
+
+fn walk_expr_inner<'a>(expr: &'a Expr, visit: &mut dyn FnMut(Node<'a>), deferred: bool) {
+    visit(Node::Expr(expr));
+    let mut go = |e: &'a Expr, visit: &mut dyn FnMut(Node<'a>)| walk_expr_inner(e, visit, deferred);
+    match &expr.node {
+        ExprNode::Literal(_) | ExprNode::Identifier(_) | ExprNode::NoneLiteral => {}
+        ExprNode::Unary { operand, .. } => go(operand, visit),
+        ExprNode::Binary { lhs, rhs, .. } => { go(lhs, visit); go(rhs, visit); }
+        ExprNode::Call { args, .. } | ExprNode::ModuleCall { args, .. } | ExprNode::StartServerlet { args, .. }
+        | ExprNode::ArrayLiteral(args) => for arg in args { go(arg, visit); },
+        ExprNode::Pipeline { value, function } => { go(value, visit); go(function, visit); }
+        ExprNode::Block(stmts) => for stmt in stmts { walk_stmt_inner(stmt, visit, deferred); },
+        ExprNode::If { cond, then_branch, else_branch } => {
+            go(cond, visit);
+            go(then_branch, visit);
+            if let Some(branch) = else_branch { go(branch, visit); }
+        }
+        ExprNode::AutomaticBlock { body, crash_handler, .. } => if deferred {
+            go(body, visit);
+            if let Some((_, handler)) = crash_handler { go(handler, visit); }
+        },
+        ExprNode::TriggeredBlock { body, .. } | ExprNode::Closure { body, .. } => if deferred { go(body, visit); },
+        ExprNode::StartProcess { target } => go(target, visit),
+        ExprNode::StructLiteral { fields, .. } => for (_, value) in fields { go(value, visit); },
+        ExprNode::FieldAccess { object, .. } => go(object, visit),
+        ExprNode::Index { object, index } => { go(object, visit); go(index, visit); }
+        ExprNode::SomeLiteral(inner) | ExprNode::OkLiteral(inner) | ExprNode::ErrLiteral(inner) | ExprNode::Propagate(inner) => {
+            go(inner, visit)
+        }
+        ExprNode::TryCatch { body, handler, .. } => { go(body, visit); go(handler, visit); }
+        ExprNode::EnumVariantLiteral { payload, .. } => if let Some(payload) = payload { go(payload, visit); },
+        ExprNode::Match { value, arms } => {
+            go(value, visit);
+            for arm in arms {
+                if let MatchPattern::Guard { condition, .. } = &arm.pattern { go(condition, visit); }
+                go(&arm.body, visit);
+            }
+        }
+        ExprNode::StringInterp { parts } => for part in parts {
+            if let StringPart::Expr(inner) = part { go(inner, visit); }
+        },
+    }
+}
+
+fn walk_stmt_inner<'a>(stmt: &'a Stmt, visit: &mut dyn FnMut(Node<'a>), deferred: bool) {
     visit(Node::Stmt(stmt));
+    let mut go = |e: &'a Expr, visit: &mut dyn FnMut(Node<'a>)| walk_expr_inner(e, visit, deferred);
     match &stmt.node {
-        StmtNode::Let { value, .. } | StmtNode::Expr(value) | StmtNode::Return(Some(value)) => walk_expr(value, visit),
+        StmtNode::Let { value, .. } | StmtNode::Expr(value) | StmtNode::Return(Some(value)) => go(value, visit),
         StmtNode::FnDecl { body, .. } | StmtNode::TaskDecl { body, .. } | StmtNode::ProcessDecl { body, .. }
         | StmtNode::OrchestratorDecl { body, .. } | StmtNode::OnTick { body, .. } | StmtNode::OnFixedTick { body, .. }
-        | StmtNode::OnStart(body) | StmtNode::OnStop(body) => walk_expr(body, visit),
-        StmtNode::Trigger { args, .. } => for arg in args { walk_expr(arg, visit); },
-        StmtNode::Parallel(stmts) => for inner in stmts { walk_stmt(inner, visit); },
-        StmtNode::While { cond, body } | StmtNode::ForIn { iter: cond, body, .. } => { walk_expr(cond, visit); walk_expr(body, visit); }
+        | StmtNode::OnStart(body) | StmtNode::OnStop(body) => go(body, visit),
+        StmtNode::Trigger { args, .. } => for arg in args { go(arg, visit); },
+        StmtNode::Parallel(stmts) => for inner in stmts { walk_stmt_inner(inner, visit, deferred); },
+        StmtNode::While { cond, body } | StmtNode::ForIn { iter: cond, body, .. } => { go(cond, visit); go(body, visit); }
         StmtNode::Serverlet { state, handlers, crash_handler, .. } => {
-            for s in state { walk_stmt(s, visit); }
-            for h in handlers { walk_expr(&h.body, visit); }
-            if let Some((_, handler)) = crash_handler { walk_expr(handler, visit); }
+            for s in state { walk_stmt_inner(s, visit, deferred); }
+            for h in handlers { go(&h.body, visit); }
+            if let Some((_, handler)) = crash_handler { go(handler, visit); }
         }
         StmtNode::Return(None) | StmtNode::UseModule { .. } | StmtNode::Load { .. } | StmtNode::LoadForeign { .. }
         | StmtNode::Host { .. } | StmtNode::Break | StmtNode::Continue | StmtNode::StructDef { .. } | StmtNode::EnumDef { .. } => {}
