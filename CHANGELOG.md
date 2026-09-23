@@ -9,6 +9,12 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 
 ## [Unreleased]
 
+### Added
+- **`automatic(..., backoff: "50ms")` declares the wait before each restart.** The
+  default is unchanged — a second, doubling with each restart up to thirty — and was the
+  only choice: a heartbeat worker's one-second restart outlasted its devices' 500 ms
+  heartbeat window, and the whole fleet it served went link-lost while it waited.
+
 ### Changed
 - **A worker, a handler, or a closure that writes a binding declared outside it is a
   compile error.** Each works on copies of what it names from outside — a worker and a
@@ -22,6 +28,31 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   write, which is why this release is a minor one.
 
 ### Fixed
+- **`restart: N` is a limit, and `restart: never` means never.** The orchestrator's
+  liveness monitor restarted every finished worker once a second with a fresh count,
+  including one that had just spent its restarts, so every policy meant `always`. The
+  worker's own policy is now the only thing that restarts it; `restart: 3` is at most
+  three restarts after crashes, and a worker that has spent them stays stopped and says
+  so once. The count was also off by one: `restart: 1` restarted nothing. Stopping a
+  worker, by `update_orchestrator`, now stops its current run too, which kept going
+  before.
+- **A crash while holding the shared-state lock no longer takes every worker down.** A
+  statement that panicked with the lock held — a worker dividing by zero inside an `if`
+  that reads shared state — poisoned the mutex, and every later statement that touched
+  shared state panicked with it, for the rest of the run. The lock is now taken whatever
+  the poison says; the crashing statement's writes up to the panic stand.
+- **A dead secret serverlet is restarted, and `on_crash` runs for it.** A child that died
+  — killed, crashed, or exited — was never restarted: every later call answered its
+  default, with "is not reachable" on stderr. The mirror now notices at the next call, or
+  during one, runs `on_crash` on the host with the reason, and starts a fresh child,
+  whose state starts over. A child that cannot start is tried again at the first call
+  after a backoff (100 ms, doubling to 5 s) instead of closing the serverlet for the
+  rest of the run. `on_crash` on a secret serverlet runs on the host, so `check` refuses
+  one that uses the state, which lived in the child.
+- **A landline whose startup fails is retried.** A failed handshake closed the client for
+  good, so every later call answered its default and a program polling a `ready()`
+  handler waited forever. Startup is now retried after the same backoff, with calls in
+  between answered by their default.
 - **A change made in place reaches a `shared let`.** `xs[i] = v`, `p.field = v`,
   `append`, and `remove` on a shared binding were made to a copy that was then dropped:
   the program built, ran, and quietly did nothing. They now change the binding itself,

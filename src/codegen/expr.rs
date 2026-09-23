@@ -211,7 +211,8 @@ impl Codegen {
                 let args_str = self.compile_values(args);
                 format!("{}({})", start_fn, args_str)
             }
-            ExprNode::AutomaticBlock { body, restart_policy, crash_handler } => {
+            ExprNode::AutomaticBlock { body, restart_policy, backoff_ms, crash_handler } => {
+                let worker = self.naming.take().map(|name| format!(" '{name}'")).unwrap_or_default();
                 let mut free_vars = HashSet::new();
                 self.get_free_vars_expr(expr, &mut HashSet::new(), &mut free_vars);
                 // In name order: set order changes between runs, and so would the output.
@@ -238,26 +239,16 @@ impl Codegen {
                 let deferred = self.enter_deferred_body();
                 let bind = if self.library { "let __context = crate::__orch_context(); let __host = &*__context.host;\n            " } else { "" };
 
-                let crash_handler_code = if let Some((err_name, handler)) = crash_handler {
+                // What a crash does before the policy is asked: the declared `on_crash`,
+                // with the error bound, or a report.
+                let crash_code = if let Some((err_name, handler)) = crash_handler {
                     self.push_scope();
                     self.define_local(err_name);
-                    let handler_str = self.compile_expr(handler);
+                    let handler_str = self.compile_statement_body(handler);
                     self.pop_scope();
-                    format!(
-                        r#"Err(__e) => {{
-                    let {} = format!("{{:?}}", __e);
-                    {};
-                    let __delay_ms = (1000u64 * 2u64.saturating_pow(__restart_count.min(5))).min(30000);
-                    tokio::time::sleep(std::time::Duration::from_millis(__delay_ms)).await;
-                }}"#,
-                        err_name, handler_str
-                    )
+                    format!("let {} = format!(\"{{:?}}\", __e);\n                {}", rust_ident(err_name), handler_str)
                 } else {
-                    r#"Err(__e) => {
-                    eprintln!("[orchestrate] automatic block panicked (restart #{}): {:?}", __restart_count, __e);
-                    let __delay_ms = (1000u64 * 2u64.saturating_pow(__restart_count.min(5))).min(30000);
-                    tokio::time::sleep(std::time::Duration::from_millis(__delay_ms)).await;
-                }"#.to_string()
+                    format!("eprintln!(\"[orchestrate] automatic block{worker} panicked (after {{}} restarts): {{:?}}\", __restarts, __e);")
                 };
 
                 // Generate the body
@@ -281,10 +272,19 @@ impl Codegen {
                 let setup_inner = setup_code.join("\n                ");
                 let loop_inner = loop_code.join("\n                    ");
 
-                let restart_policy_str = match restart_policy {
-                    crate::ast::RestartPolicy::Always => "true".to_string(),
-                    crate::ast::RestartPolicy::Never => "false".to_string(),
-                    crate::ast::RestartPolicy::MaxAttempts(n) => format!("__restart_count < {}", n),
+                // The policy is the only thing that restarts a worker: `restart: N` is at
+                // most N restarts after crashes, and a worker that has spent them stays
+                // stopped, saying so once.
+                let (allowed, spent) = match restart_policy {
+                    crate::ast::RestartPolicy::Always => ("true".to_string(), String::new()),
+                    crate::ast::RestartPolicy::Never => ("false".to_string(), "its policy is restart: never".to_string()),
+                    crate::ast::RestartPolicy::MaxAttempts(n) => (format!("__restarts < {n}"), format!("its policy, restart: {n}, allows no more restarts")),
+                };
+                // A declared backoff is the wait before every restart; the default starts at
+                // a second and doubles with each restart, up to thirty.
+                let delay = match backoff_ms {
+                    Some(ms) => format!("{ms}u64"),
+                    None => "(1000u64 * 2u64.saturating_pow((__restarts - 1).min(5))).min(30000)".to_string(),
                 };
 
                 let setup_block = if setup_code.is_empty() {
@@ -297,22 +297,27 @@ impl Codegen {
                     r#"{{
     {capture}std::sync::Arc::new(move || {{
         {recapture}tokio::spawn(async move {{
-            {bind}let mut __restart_count: u32 = 0;
+            {bind}let mut __restarts: u32 = 0;
             loop {{
                 {setup}{recapture}let __inner_handle = tokio::spawn(async move {{
                     {bind}loop {{
                         {loop_body}
                     }}
                 }});
-                match __inner_handle.await {{
+                // Stopping the worker stops its current run with it.
+                let __run = __OrchAbortOnDrop(__inner_handle.abort_handle());
+                let __e = match __inner_handle.await {{
                     Ok(_) => break,
-                    {crash_handler}
-                }}
-                __restart_count += 1;
-                if !({restart_check}) {{
-                    eprintln!("[orchestrate] automatic block stopped after {{}} restarts", __restart_count);
+                    Err(__e) => __e,
+                }};
+                drop(__run);
+                {crash}
+                if !({allowed}) {{
+                    eprintln!("[orchestrate] automatic block{worker} crashed and stays stopped: {spent}");
                     break;
                 }}
+                __restarts += 1;
+                tokio::time::sleep(std::time::Duration::from_millis({delay})).await;
             }}
         }})
     }}) as ProcessRef
@@ -322,8 +327,11 @@ impl Codegen {
                     bind = bind,
                     setup = setup_block,
                     loop_body = loop_inner,
-                    crash_handler = crash_handler_code,
-                    restart_check = restart_policy_str,
+                    crash = crash_code,
+                    allowed = allowed,
+                    worker = worker,
+                    spent = spent,
+                    delay = delay,
                 )
             }
             ExprNode::TriggeredBlock { event_name, params, body } => {

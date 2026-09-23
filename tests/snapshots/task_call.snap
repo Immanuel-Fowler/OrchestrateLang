@@ -75,6 +75,13 @@ fn clock_micros() -> i64 {
 
 type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send + Sync + 'static>;
 
+/// Aborts a task when dropped: a worker's supervisor holds its current run in one, so
+/// stopping the worker stops the run too.
+struct __OrchAbortOnDrop(tokio::task::AbortHandle);
+impl Drop for __OrchAbortOnDrop {
+    fn drop(&mut self) { self.0.abort(); }
+}
+
 // orch:2:1
 async fn add(a: i64, b: i64) -> i64 {
     // orch:3:5

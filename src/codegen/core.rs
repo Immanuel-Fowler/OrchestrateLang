@@ -4,7 +4,11 @@ use std::collections::HashSet;
 pub fn runtime_preamble(print_to_stderr: bool, include_process_ref: bool) -> String {
     let print_macro = if print_to_stderr { "eprintln!" } else { "println!" };
     let process_ref = if include_process_ref {
-        "type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send + Sync + 'static>;\n\n"
+        "type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send + Sync + 'static>;\n\n\
+         /// Aborts a task when dropped: a worker's supervisor holds its current run in one, so\n\
+         /// stopping the worker stops the run too.\n\
+         struct __OrchAbortOnDrop(tokio::task::AbortHandle);\n\
+         impl Drop for __OrchAbortOnDrop {\n    fn drop(&mut self) { self.0.abort(); }\n}\n\n"
     } else {
         ""
     };
@@ -414,6 +418,9 @@ pub struct Codegen {
     /// For the entry file: the struct and enum declarations of every imported module,
     /// which the entry file defines at the crate root so each is one type.
     pub module_types: Vec<Stmt>,
+    /// The name a `let` is binding, while its value is compiled, for messages that name
+    /// what they are about: a worker's restart report.
+    pub(super) naming: Option<String>,
 }
 
 impl Codegen {
@@ -454,6 +461,7 @@ impl Codegen {
             program_fields: std::collections::BTreeMap::new(),
             top_level_handler: false,
             module_types: Vec::new(),
+            naming: None,
         }
     }
 

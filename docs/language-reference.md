@@ -561,6 +561,32 @@ let poller = automatic {
 
 You never call `start poller` yourself. When your orchestrator has a `process[]` parameter, the compiler automatically collects every top-level automatic block and starts them all.
 
+#### Restarts and backoff
+
+A worker whose body panics is restarted by its own policy, declared beside it:
+
+```orchestrate
+let heartbeat = automatic(restart: always, backoff: "50ms") {
+    link.ping()
+    sleep(100)
+} on_crash e {
+    print("heartbeat crashed: " + e)
+}
+```
+
+| Option | Meaning |
+|---|---|
+| `restart: always` | Restart after every crash (the default) |
+| `restart: 3` | Restart after at most 3 crashes; the fourth leaves it stopped |
+| `restart: never` | Never restart; the first crash leaves it stopped |
+| `backoff: "50ms"` | Wait this long before each restart |
+| no `backoff` | Wait 1 s before the first restart, doubling with each one up to 30 s |
+
+`on_crash` runs after each crash, before the policy is asked. A worker that has spent its
+restarts stays stopped and says so once on stderr; nothing else restarts it. A worker
+whose body ends on its own — a `return` or a `break` out of its loop — has finished, not
+crashed, and is not restarted either.
+
 ### 3.2 Serverlet Lifetime Inside Automatic Blocks
 
 When you write `let x = start Module.Service()` inside an automatic block, the compiler **automatically hoists that line before the loop**. The serverlet is created exactly once when the process block first starts, and it lives until that process block is either removed from the orchestrator or the program exits.
@@ -1791,8 +1817,9 @@ The SDK supports primitive values, lists, and dataclasses matching same-file str
 
 Exceptions log errors and return default values while preserving process state.
 A process failure during a call invokes `on_crash`, returns a default without replaying
-the failed call, and restarts with fresh state. Startup failures close the client and
-log a diagnostic. There are no configurable restart policies yet.
+the failed call, and restarts with fresh state. A startup failure is logged and tried
+again after a backoff — 100 ms, doubling to 5 s — with calls in between answered by
+their default. There are no configurable restart policies for landlines yet.
 
 `budget: "2ms"` (units `us`, `ms`, `s`) bounds how long each call waits. A call with no
 reply in time returns right away: with `late: "drop"` (the default) it returns the

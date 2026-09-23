@@ -253,6 +253,9 @@ pub enum ExprNode {
     AutomaticBlock {
         body: Box<Expr>,
         restart_policy: RestartPolicy,
+        /// `backoff: "50ms"`: the fixed wait before each restart. Absent, the wait starts
+        /// at a second and doubles with each restart, up to thirty.
+        backoff_ms: Option<u64>,
         crash_handler: Option<(String, Box<Expr>)>,
     },
     TriggeredBlock {

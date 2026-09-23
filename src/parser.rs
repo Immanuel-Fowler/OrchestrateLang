@@ -1,6 +1,6 @@
 use crate::ast::{
     BinaryOp, EnumVariant, Expr, ExprNode, Handler, Literal, MatchArm, MatchPattern, Param,
-    RestartPolicy, Span, Spanned, Stmt, StmtNode, StringPart, Type,
+    RestartPolicy, SandboxConfig, Span, Spanned, Stmt, StmtNode, StringPart, Type,
 };
 use crate::lexer::{Token, TokenKind};
 
@@ -1137,30 +1137,51 @@ impl Parser {
             }
             TokenKind::Automatic => {
                 self.advance();
-                let restart_policy = if self.peek().kind == TokenKind::LParen {
+                // `automatic(restart: 3, backoff: "50ms")`: each option at most once, in
+                // any order.
+                let mut restart_policy = None;
+                let mut backoff_ms = None;
+                if self.peek().kind == TokenKind::LParen {
                     self.advance();
-                    let kw_tok = self.advance().clone();
-                    let kw = match &kw_tok.kind {
-                        TokenKind::Identifier(s) => s.clone(),
-                        _ => return Err(format!("Expected 'restart' inside automatic(...) at line {}, col {}", kw_tok.line, kw_tok.col)),
-                    };
-                    if kw != "restart" {
-                        return Err(format!("Expected 'restart' inside automatic(...), got '{}' at line {}", kw, kw_tok.line));
+                    loop {
+                        let kw_tok = self.advance().clone();
+                        let kw = match &kw_tok.kind {
+                            TokenKind::Identifier(s) => s.clone(),
+                            _ => return Err(format!("Expected 'restart' or 'backoff' inside automatic(...) at line {}, col {}", kw_tok.line, kw_tok.col)),
+                        };
+                        self.consume(TokenKind::Colon, &format!("Expected ':' after '{}'", kw))?;
+                        let value_tok = self.advance().clone();
+                        match kw.as_str() {
+                            "restart" if restart_policy.is_none() => {
+                                restart_policy = Some(match &value_tok.kind {
+                                    TokenKind::Identifier(s) => match s.as_str() {
+                                        "always" => RestartPolicy::Always,
+                                        "never" => RestartPolicy::Never,
+                                        _ => return Err(format!("Unknown restart policy '{}' at line {}", s, value_tok.line)),
+                                    },
+                                    TokenKind::Int(n) if *n >= 0 => RestartPolicy::MaxAttempts(*n as u32),
+                                    _ => return Err(format!("Expected restart policy at line {}", value_tok.line)),
+                                });
+                            }
+                            "backoff" if backoff_ms.is_none() => {
+                                let text = match &value_tok.kind {
+                                    TokenKind::Str(text) => text.clone(),
+                                    _ => return Err(format!("Expected a duration such as \"50ms\" after 'backoff:' at line {}", value_tok.line)),
+                                };
+                                let config = SandboxConfig { memory_limit: String::new(), timeout: text.clone() };
+                                backoff_ms = Some(config.timeout_ms().ok_or_else(|| format!(
+                                    "Invalid backoff \"{}\" at line {}: write a duration of at least 1ms, such as \"50ms\" or \"2s\"", text, value_tok.line
+                                ))?);
+                            }
+                            "restart" | "backoff" => return Err(format!("Duplicate '{}' inside automatic(...) at line {}", kw, kw_tok.line)),
+                            _ => return Err(format!("Expected 'restart' or 'backoff' inside automatic(...), got '{}' at line {}", kw, kw_tok.line)),
+                        }
+                        if self.peek().kind == TokenKind::Comma { self.advance(); continue; }
+                        self.consume(TokenKind::RParen, "Expected ')' after automatic options")?;
+                        break;
                     }
-                    self.consume(TokenKind::Colon, "Expected ':' after 'restart'")?;
-                    let policy_tok = self.advance().clone();
-                    let policy = match &policy_tok.kind {
-                        TokenKind::Identifier(s) => match s.as_str() {
-                            "always" => RestartPolicy::Always,
-                            "never" => RestartPolicy::Never,
-                            _ => return Err(format!("Unknown restart policy '{}' at line {}", s, policy_tok.line)),
-                        },
-                        TokenKind::Int(n) => RestartPolicy::MaxAttempts(*n as u32),
-                        _ => return Err(format!("Expected restart policy at line {}", policy_tok.line)),
-                    };
-                    self.consume(TokenKind::RParen, "Expected ')' after automatic restart policy")?;
-                    policy
-                } else { RestartPolicy::Always };
+                }
+                let restart_policy = restart_policy.unwrap_or(RestartPolicy::Always);
                 let body = self.parse_block()?;
                 let crash_handler = if self.peek().kind == TokenKind::OnCrash {
                     self.advance();
@@ -1172,7 +1193,7 @@ impl Parser {
                     let handler_body = self.parse_block()?;
                     Some((err_name, Box::new(handler_body)))
                 } else { None };
-                Ok(ExprNode::AutomaticBlock { body: Box::new(body), restart_policy, crash_handler })
+                Ok(ExprNode::AutomaticBlock { body: Box::new(body), restart_policy, backoff_ms, crash_handler })
             }
             TokenKind::On => {
                 self.advance();

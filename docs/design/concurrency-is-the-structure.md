@@ -96,7 +96,9 @@ in [benchmarks/README.md](../../benchmarks/README.md).
 ## Failure is structural too
 
 A worker declares what happens when its body panics — `automatic(restart: 3)`,
-`always`, `never` — and an `on_crash` handler beside it receives the error. A serverlet
+`always`, `never`, and how long to wait before each restart, `backoff: "50ms"` — and an
+`on_crash` handler beside it receives the error. The policy is the only thing that
+restarts a worker: one that has spent its restarts stays stopped. A serverlet
 declares its own `on_crash`. What that handler means is a property of the boundary, which
 is the subject of [polyglot coordination and attachment](polyglot-coordination-and-attachment.md):
 a panic in-process, a transport failure on a landline, a trap in a sandbox. In every case

@@ -25,7 +25,9 @@ impl Codegen {
                 let before = self.shared_touches.get();
                 let awaits_before = self.awaits;
                 let outer = std::mem::replace(&mut self.guard_held, true);
+                if matches!(value.node, ExprNode::AutomaticBlock { .. }) { self.naming = Some(name.clone()); }
                 let val_str = self.compile_value(value);
+                self.naming = None;
                 self.guard_held = outer;
                 if self.shared_touches.get() != before && self.awaits != awaits_before {
                     self.errors.push(
@@ -616,28 +618,7 @@ impl Codegen {
         locked.handles = handles;
     }}
 
-    // Liveness monitor: restart processes that exit unexpectedly
-    let state_monitor = state.clone();
-    tokio::spawn(async move {{
-        loop {{
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            let mut locked = state_monitor.lock().unwrap();
-            let mut to_restart = Vec::new();
-            locked.handles.retain(|(p, h)| {{
-                if h.is_finished() {{
-                    to_restart.push(p.clone());
-                    false
-                }} else {{
-                    true
-                }}
-            }});
-            for p in to_restart {{
-                eprintln!("[orchestrate] process exited unexpectedly — restarting");
-                let handle = p();
-                locked.handles.push((p, handle));
-            }}
-        }}
-    }});
+    // A worker's restarts are its own policy's to decide; nothing here restarts it.
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<std::sync::Arc<Vec<ProcessRef>>>(100);
     get_registry_update_orchestrator().lock().unwrap().push(tx);

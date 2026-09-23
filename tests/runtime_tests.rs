@@ -1147,6 +1147,53 @@ fn runtime_design_document_example_runs() {
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "created 42: Mina");
 }
 
+/// `restart: N` is at most N restarts after crashes, `never` is none, and `always` has no
+/// limit; a worker that has spent its restarts stays stopped. Before, the orchestrator
+/// restarted every finished worker once a second with a fresh count, so each of these
+/// meant `always`. A declared backoff is the wait before each restart; the default starts
+/// at a second, so the last worker has run only twice when the program stops.
+#[test]
+fn runtime_restart_policy_is_a_limit_and_backoff_is_declarable() {
+    let out = run_orch("restart_policy", r#"
+shared let never_runs = 0
+shared let three_runs = 0
+shared let always_runs = 0
+shared let default_runs = 0
+
+let never_worker = automatic(restart: never, backoff: "10ms") {
+    never_runs = never_runs + 1
+    let zero = never_runs - never_runs
+    let boom = 1 / zero
+}
+let three_worker = automatic(restart: 3, backoff: "10ms") {
+    three_runs = three_runs + 1
+    let zero = three_runs - three_runs
+    let boom = 1 / zero
+}
+let always_worker = automatic(restart: always, backoff: "10ms") {
+    always_runs = always_runs + 1
+    if always_runs < 8 {
+        let zero = always_runs - always_runs
+        let boom = 1 / zero
+    }
+    sleep(100000)
+}
+let default_worker = automatic(restart: 5) {
+    default_runs = default_runs + 1
+    let zero = default_runs - default_runs
+    let boom = 1 / zero
+}
+
+orchestrator main(procs: process[never_worker, three_worker, always_worker, default_worker]) {
+    sleep(1500)
+    let counts = "{never_runs} {three_runs} {always_runs} {default_runs}"
+    print(counts)
+    stop_orch()
+}
+"#);
+    assert_eq!(out.trim(), "1 4 8 2");
+}
+
 /// Builds `source` into a scratch directory and runs it, calling `during` with the
 /// running process's id after `after`, then collects everything it printed.
 #[cfg(unix)]

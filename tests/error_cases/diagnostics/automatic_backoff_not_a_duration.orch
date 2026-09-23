@@ -1,0 +1,2 @@
+let w = automatic(restart: 3, backoff: "soon") { sleep(10) }
+orchestrator main(procs: process[w]) { stop_orch() }
