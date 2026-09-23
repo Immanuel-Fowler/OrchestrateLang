@@ -18,6 +18,7 @@ Cases:
   instance_let   a top-level `let` incremented in the tick (a struct field)
   shared_let     a `shared let` incremented in the tick (one mutex, taken once)
   event          one host-fired event handled before the tick, with one host call
+  measured       the empty tick under `measure hooks`: what recording one hook costs
 
 Writes tick_cost.csv, tick_cost.json, and tick_cost.md under --out (default
 benchmarks/results/), with the same environment header as the boundary ladder.
@@ -44,6 +45,7 @@ CASES = collections.OrderedDict([
     ("instance_let", "host world { fn count() }\nlet ticks = 0\non_tick(dt: float) { ticks = ticks + 1 }\non_stop { if ticks < 0 { world.count() } }\norchestrator main() {}\n"),
     ("shared_let", "host world { fn count() }\nshared let hits = 0\non_tick(dt: float) { hits = hits + 1 }\non_stop { if hits < 0 { world.count() } }\norchestrator main() {}\n"),
     ("event", "host world { fn count() }\non hit(n: int) { world.count() }\non_tick(dt: float) { }\norchestrator main() {}\n"),
+    ("measured", "measure hooks\nhost world { fn count() }\non_tick(dt: float) { }\norchestrator main() {}\n"),
 ])
 
 HOST_TEMPLATE = r'''
@@ -171,7 +173,10 @@ def markdown(env, rows):
                   f"{fastest['empty']:.2f} ns; each host call in a tick costs {per_call:.2f} ns "
                   f"(five calls minus one, over four), against {fastest['host_method_alone']:.2f} ns for the trait "
                   f"method called through its vtable alone. The empty tick and the one-call tick are within noise "
-                  f"of each other at this resolution.",
+                  f"of each other at this resolution."
+                  + (f" Measuring the one hook (`measure hooks`) costs {fastest['measured'] - fastest['empty']:.2f} ns a tick: "
+                     f"three clock readings, two of the thread's CPU time, and three histogram updates."
+                     if "measured" in fastest else ""),
                   "",
                   "Medians overlap between cases within a few nanoseconds: the OS moves the thread between core "
                   "types and clock states during a run, which is why the fastest round is reported beside them. "

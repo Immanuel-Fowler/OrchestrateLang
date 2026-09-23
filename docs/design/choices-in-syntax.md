@@ -38,6 +38,8 @@ properties config does not:
 | `on_tick(dt: float) every "100ms"` | A hook at a divisor of the host's clock | A counter per hook |
 | `via python(..., every: "100ms")` | A serverlet the runtime calls on that cadence | One call per period, inside the tick |
 | `automatic(every: "20ms")` | A worker on a fixed rate | A timer per run |
+| `measure serverlets, hooks, workers` | Counts and timings, read with `stats()` | A few clock readings per measured call |
+| `unmeasured` | One thing left out of `measure` | Nothing |
 | `budget: "2ms"`, `late: "latest"` | A call that cannot hold the tick | A default or a stale result when it is late |
 | `automatic(restart: 3) { } on_crash e { }` | A supervised worker | A task |
 | `shared let x = 0` | State any task may touch | One mutex, about 9 ns a statement |

@@ -1229,6 +1229,90 @@ fn main() {
     assert_eq!(output.trim(), "[(0, 1), (1, 10), (0, 1), (2, 20), (9, 105), (0, 4)]");
 }
 
+/// `measure` in a library, read by the host with `Scripts::stats()`: a handler, an event
+/// handler that waits (so no CPU time), a cadenced hook counted only when it runs, and an
+/// `unmeasured` hook left out.
+#[test]
+fn library_measure_records_hooks_events_and_handlers() {
+    let root = root("measure");
+    build(&root, r#"
+measure serverlets, hooks
+host world { fn record(n: int) }
+serverlet Book {
+    let filled = 0
+    on place(qty: int) -> int {
+        filled = filled + qty
+        return filled
+    }
+}
+let book = start Book()
+on hit(n: int) {
+    world.record(book.place(n))
+}
+on_tick(dt: float) every 3 ticks {
+    world.record(0)
+}
+on_tick(dt: float) {
+    world.record(1)
+}
+on_tick(dt: float) unmeasured {
+    world.record(2)
+}
+orchestrator main() {}
+"#);
+    let output = host(&root, r#"
+struct Host;
+impl scripts::Host for Host { fn world_record(&self, _n: i64) -> Result<(), String> { Ok(()) } }
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let mut scripts = scripts::start(runtime.handle(), Host).unwrap();
+    scripts.ready_blocking(&runtime).unwrap();
+    for i in 0..9 {
+        if i % 2 == 0 { scripts.trigger_hit(i).unwrap(); }
+        scripts.tick_sync(&runtime, 0.01).unwrap();
+    }
+    for s in scripts.stats() {
+        println!("{}|{}|{}|{}|{}|{}|{}", s.unit, s.kind, s.calls, s.failures, s.duration.is_some(), s.start_delay.is_some(), s.cpu.is_some());
+    }
+    scripts.shutdown_blocking(&runtime).unwrap();
+}
+"#);
+    assert_eq!(output.trim(), [
+        "Book.place|handler|5|0|true|true|true",
+        "on hit|event|5|0|true|true|false",
+        "on_tick|hook|9|0|true|true|true",
+        "on_tick every 3 ticks|hook|3|0|true|true|true",
+    ].join("\n"));
+}
+
+/// A measured typed hook: its output crosses the record, a `return` in it included.
+#[test]
+fn library_measure_keeps_a_typed_hooks_output() {
+    let root = root("measure_typed");
+    build(&root, r#"
+measure hooks
+struct Frame { n: int }
+on_tick(dt: float, input: Frame) -> int {
+    if input.n < 0 { return 0 }
+    return input.n * 2
+}
+orchestrator main() {}
+"#);
+    let output = host(&root, r#"
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let mut scripts = scripts::start(runtime.handle(), ()).unwrap();
+    scripts.ready_blocking(&runtime).unwrap();
+    let a = scripts.tick_sync(&runtime, 0.01, scripts::Frame { n: 21 }).unwrap();
+    let b = scripts.tick_sync(&runtime, 0.01, scripts::Frame { n: -4 }).unwrap();
+    let stats = scripts.stats();
+    println!("{a} {b} {} {}", stats[0].unit, stats[0].calls);
+    scripts.shutdown_blocking(&runtime).unwrap();
+}
+"#);
+    assert_eq!(output.trim(), "42 0 on_tick 2");
+}
+
 /// A cadence is a divisor of the host's clock. Over 10,000 ticks of varying `dt`, a
 /// sandboxed serverlet declared `every: "100ms"`, a hook `every "250ms"`, and a hook
 /// `every 7 ticks` each run exactly as often as a schedule computed here from the same

@@ -1070,6 +1070,53 @@ orchestrator main(procs: process[]) { }
 
 ---
 
+### 4.7 Measuring What Runs: `measure`
+
+One line at the top of the entry file says what the runtime keeps records of:
+
+```orchestrate
+measure serverlets, hooks, workers      // or any of the three
+
+serverlet Logger unmeasured { ... }     // left out
+serverlet Book {
+    on place(qty: int) -> int { ... }
+    on ping() -> int unmeasured { ... } // one handler left out
+}
+on_tick(dt: float) unmeasured { ... }
+on hit(n: int) unmeasured { ... }
+let heartbeat = automatic(restart: always) unmeasured { ... }
+
+orchestrator main() {
+    ...
+    print(stats())
+}
+```
+
+`stats()` returns the records as a table, one unit a line:
+
+```
+unit        kind     calls  failed  p50     p90     p99     max     late p99  cpu p50
+Book.place  handler  20     0       12.3us  32.8us  43.3us  43.3us  28.7us    1.8us
+on hit      event    5      0       511ns   583ns   583ns   583ns   19.6us    511ns
+paced       worker   13     0       1.0us   2.0us   2.0us   2.0us   2.4ms     -
+```
+
+| Unit | calls | failed | duration | late (start delay) | CPU |
+|---|---|---|---|---|---|
+| a serverlet handler (`serverlets`) | calls made | a panic, trap, crash, missed budget, or a process that could not start — 2.2's failures; a `result` handler's own `err` is an answer | as the caller saw it, answer or failure | from being sent to the handler starting on it | in-process handlers only |
+| a tick hook (`hooks`) | runs; a cadenced hook counts only when it runs | — | the hook's run | how long the tick ran before it: cadenced serverlets called, events handled, earlier hooks | when it does not wait |
+| an event handler (`hooks`) | events handled | — | the handler's run | from its event being triggered | when it does not wait |
+| a worker (`workers`) | runs through its body | crashes | one run | for a paced worker, how late the run started after it was due | — |
+
+Durations are kept in histograms a quarter of a doubling wide, so each percentile is within
+a fifth. CPU time is read from the thread's clock, which is exact only for code that runs
+without waiting, and is left out elsewhere; it is available on Linux, macOS, and FreeBSD.
+
+`measure` is declared in the source, so nothing that is not measured pays anything:
+without the line no timing code is generated at all, and each measured unit costs a few
+clock readings a call — the tick-cost benchmark's `measured` row is one hook's share. A library's host reads the same records with `Scripts::stats()`.
+`stats()` in a program without a `measure` line is refused by `check`.
+
 ## Chapter 5 · CLI Reference
 
 ### Commands

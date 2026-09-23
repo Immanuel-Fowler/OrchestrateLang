@@ -136,6 +136,9 @@ fn test_error_cases() {
     assert_check_fails("diagnostics/for_over_a_map.orch", "loop over keys(m) or values(m)");
     assert_check_fails("diagnostics/method_on_a_non_client.orch", "only a serverlet client has handlers");
     assert_check_fails("diagnostics/client_to_a_secret_handler.orch", "means nothing in another");
+    // `stats()` reports what `measure` declares, and a program declares that once.
+    assert_check_fails("diagnostics/stats_without_measure.orch", "this program measures nothing");
+    assert_check_fails("diagnostics/measure_twice.orch", "a program has one `measure` line");
     // A queue is reached through its five operations, by its own name, from where it may wait.
     assert_check_fails("diagnostics/queue_as_a_value.orch", "is used through push, pop, drain, take, and length");
     assert_check_fails("diagnostics/queue_take_in_a_fn.orch", "fn 'next' calls take");

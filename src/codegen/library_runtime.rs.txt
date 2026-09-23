@@ -99,6 +99,8 @@ struct OrchContext {
     draining_program: std::sync::atomic::AtomicPtr<__OrchProgram>,
     /// The instances of serverlets declared with `every:`, in the order they started.
     cadenced: std::sync::Mutex<Vec<OrchCadenced>>,
+    /// What `measure` records, per unit, for this instance.
+    units: std::sync::Mutex<Vec<std::sync::Arc<__OrchUnit>>>,
 @SHARED_FIELD@
 @EVENT_FIELDS@
 }
@@ -332,6 +334,16 @@ async fn __orch_sleep(duration: std::time::Duration) {
     assert!(ORCH_EVENT.try_with(|_| ()).is_ok(), "deterministic sleep is supported only in event handlers");
     let deadline = context.clock_nanos.load(std::sync::atomic::Ordering::Relaxed).saturating_add(duration.as_nanos().min(u64::MAX as u128) as u64);
     __orch_until(move |context| context.clock_nanos.load(std::sync::atomic::Ordering::Relaxed) >= deadline).await
+}
+/// The unit `name` in this instance's records, found or added.
+fn __orch_unit(name: &str, kind: &'static str) -> std::sync::Arc<__OrchUnit> { __orch_unit_in(&__orch_context().units, name, kind) }
+/// `stats()`: this instance's records, as a table.
+fn __orch_stats() -> String { __orch_stats_table(&__orch_unit_stats(&__orch_context().units)) }
+impl Scripts {
+    /// What `measure` has recorded so far, one entry per unit in name order: calls,
+    /// failures, and percentiles of duration, start delay, and CPU time. Empty when the
+    /// program measures nothing.
+    pub fn stats(&self) -> Vec<UnitStats> { __orch_unit_stats(&self.context.units) }
 }
 /// A `take` on an empty queue in a deterministic run: the handler gives up its turn, the
 /// drain puts it back in the queue, and it looks again at the next drain, in order.
@@ -687,7 +699,7 @@ pub fn start_with_options(runtime: &tokio::runtime::Handle, host: impl Host, opt
     let context = std::sync::Arc::new(OrchContext {
         host: std::sync::Arc::new(host), options, events: Default::default(), batch: Default::default(), clock_nanos: 0.into(), frame: 0.into(), dt_bits: 0.into(), stop_requested: false.into(), closing, shutdown,
         tasks: Default::default(), active: 0.into(), idle: tokio::sync::Notify::new(), assets, runtime: runtime.clone(),
-        program: OrchSlot::new(), has_events: false.into(), draining_program: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()), panicked: std::sync::OnceLock::new(), children: Default::default(), host_sleeping: false.into(), cadenced: Default::default(),
+        program: OrchSlot::new(), has_events: false.into(), draining_program: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()), panicked: std::sync::OnceLock::new(), children: Default::default(), host_sleeping: false.into(), cadenced: Default::default(), units: Default::default(),
 @SHARED_INIT@
 @EVENT_INIT@
     });

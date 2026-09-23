@@ -147,6 +147,9 @@ impl Codegen {
                     format!("(({}) as i64)", self.compile_expr(&args[0]))
                 } else if callee == "to_float" && args.len() == 1 {
                     format!("(({}) as f64)", self.compile_expr(&args[0]))
+                } else if callee == "stats" && args.is_empty() && !self.user_functions.contains(callee) {
+                    // What `measure` has recorded so far, as a table.
+                    "crate::__orch_stats()".to_string()
                 } else if callee == "latest" && args.len() == 1 && !self.user_functions.contains(callee) {
                     // `latest(p.tick)`: the client keeps what the runtime's last call answered.
                     match &args[0].node {
@@ -268,7 +271,7 @@ impl Codegen {
                 let args_str = self.compile_values(args);
                 format!("{}({})", start_fn, args_str)
             }
-            ExprNode::AutomaticBlock { body, restart_policy, backoff_ms, every_micros, crash_handler } => {
+            ExprNode::AutomaticBlock { body, restart_policy, backoff_ms, every_micros, unmeasured, crash_handler } => {
                 let own_name = self.naming.take();
                 let worker = own_name.as_ref().map(|name| format!(" '{name}'")).unwrap_or_default();
                 let mut free_vars = HashSet::new();
@@ -359,15 +362,35 @@ impl Codegen {
                     ),
                     None => String::new(),
                 };
+                // `measure workers`: each run's time, its crashes, and for a paced worker how
+                // late each run started after it was due.
+                let measured = self.measure.workers && !unmeasured;
+                let late = if measured { "__unit_run.started_late(__now.saturating_duration_since(__due));\n                        " } else { "" };
                 let wait = if every_micros.is_some() {
-                    "let __now = std::time::Instant::now();\n                        \
-                     if __due > __now { tokio::time::sleep(__due - __now).await; }\n                        \
-                     let __now = std::time::Instant::now();\n                        \
-                     __due += __period;\n                        \
-                     if __due <= __now { __due += __period * ((((__now - __due).as_nanos() / __period.as_nanos()) + 1).min(u32::MAX as u128) as u32); }\n                        "
+                    format!(
+                        "let __now = std::time::Instant::now();\n                        \
+                         if __due > __now {{ tokio::time::sleep(__due - __now).await; }}\n                        \
+                         let __now = std::time::Instant::now();\n                        \
+                         {late}__due += __period;\n                        \
+                         if __due <= __now {{ __due += __period * ((((__now - __due).as_nanos() / __period.as_nanos()) + 1).min(u32::MAX as u128) as u32); }}\n                        "
+                    )
                 } else {
-                    ""
+                    String::new()
                 };
+                // A run ends where the loop comes back round — at the end of the body or at a
+                // `continue` — so its time is recorded there, before the wait for the next.
+                let (unit, unit_run, run_ends, run_starts, crashed) = if measured {
+                    (
+                        format!("let __unit = crate::__orch_unit({:?}, \"worker\");\n            ", own_name.clone().unwrap_or_else(|| "automatic".to_string())),
+                        "let __unit_run = __unit.clone();\n                ".to_string(),
+                        "if let Some(__began) = __run_began.take() { __unit_run.called(__began.elapsed()); }\n                        ".to_string(),
+                        "__run_began = Some(std::time::Instant::now());\n                        ".to_string(),
+                        "__unit.failed();\n                ".to_string(),
+                    )
+                } else {
+                    Default::default()
+                };
+                let pace = if measured { format!("{pace}let mut __run_began: Option<std::time::Instant> = None;\n                    ") } else { pace };
 
                 let setup_block = if setup_code.is_empty() {
                     String::new()
@@ -379,11 +402,11 @@ impl Codegen {
                     r#"{{
     {capture}std::sync::Arc::new(move || {{
         {recapture}__orch_spawn_worker({worker_label:?}, async move {{
-            {bind}let mut __restarts: u32 = 0;
+            {bind}{unit}let mut __restarts: u32 = 0;
             loop {{
-                {setup}{recapture}let __inner_handle = tokio::spawn(async move {{
+                {setup}{recapture}{unit_run}let __inner_handle = tokio::spawn(async move {{
                     {bind}{pace}loop {{
-                        {wait}{loop_body}
+                        {run_ends}{wait}{run_starts}{loop_body}
                     }}
                 }});
                 // Stopping the worker stops its current run with it.
@@ -393,7 +416,7 @@ impl Codegen {
                     Err(__e) => __e,
                 }};
                 drop(__run);
-                {crash}
+                {crashed}{crash}
                 if !({allowed}) {{
                     eprintln!("[orchestrate] automatic block{worker} crashed and stays stopped: {spent}");
                     break;
@@ -411,6 +434,11 @@ impl Codegen {
                     loop_body = loop_inner,
                     pace = pace,
                     wait = wait,
+                    unit = unit,
+                    unit_run = unit_run,
+                    run_ends = run_ends,
+                    run_starts = run_starts,
+                    crashed = crashed,
                     crash = crash_code,
                     allowed = allowed,
                     worker_label = own_name.as_ref().map(|n| format!("'{n}'")).unwrap_or_else(|| "(unnamed)".to_string()),
@@ -420,7 +448,7 @@ impl Codegen {
                 );
                 Self::fill_self_slot(worker_code, &self_slot)
             }
-            ExprNode::TriggeredBlock { event_name, params, body } => {
+            ExprNode::TriggeredBlock { event_name, params, unmeasured, body } => {
                 // A library's top-level handler runs inside a tick, one at a time, so it
                 // reaches instance state where the tick does rather than holding a copy.
                 let reaches_program = self.library && std::mem::take(&mut self.top_level_handler);
@@ -489,19 +517,42 @@ impl Codegen {
                 if reaches_program {
                     self.state_rewrite = outer_rewrite;
                 }
+                // `measure hooks`: how late the handler started after its event was
+                // triggered, how long it took, and its CPU time if it runs without waiting.
+                // The body runs in a block of its own, so a `return` in it is recorded too.
+                let measured = self.measure.hooks && !unmeasured && event_name != "update_orchestrator";
+                let (unit, body_str) = if measured {
+                    let (cpu, used) = if self.may_wait(body) { ("", "") } else { ("let __cpu = crate::__orch_thread_cpu(); ", " __unit.used(__cpu);") };
+                    (
+                        format!("let __unit = crate::__orch_unit({:?}, \"event\"); ", format!("on {}", event_name)),
+                        format!("{{ __unit.started_late(__queued.elapsed()); let __began = std::time::Instant::now(); {cpu}async {{ {body_str} }}.await; __unit.called(__began.elapsed());{used} }}"),
+                    )
+                } else {
+                    (String::new(), body_str)
+                };
+                let (queued, unit_clone) = if measured { ("let __queued = std::time::Instant::now(); ", "let __unit = __unit.clone(); ") } else { ("", "") };
                 if handler {
                     // Instance state is reached through a pointer the tick sets while it
                     // drains events, and only then: see `OrchContext::program_ptr`.
                     let body_str = if reaches_program { format!("#[allow(unused_unsafe)] unsafe {body_str}") } else { body_str };
-                    return format!("{{ {capture_code} std::sync::Arc::new(move || {{ {recapture} crate::{func_name}().lock().unwrap().push(std::sync::Arc::new(move |msg: {arc_type_str}| {{ {recapture} Box::pin(async move {{ let __context = crate::__orch_context(); let __host = &*__context.host; let {bindings} = (*msg).clone(); {body_str}; }}) as crate::OrchEvent }})); }}) }}");
+                    return format!("{{ {capture_code} std::sync::Arc::new(move || {{ {recapture} {unit}crate::{func_name}().lock().unwrap().push(std::sync::Arc::new(move |msg: {arc_type_str}| {{ {recapture} {unit_clone}{queued}Box::pin(async move {{ let __context = crate::__orch_context(); let __host = &*__context.host; let {bindings} = (*msg).clone(); {body_str}; }}) as crate::OrchEvent }})); }}) }}");
                 }
 
                 // A process: starting it registers the handler and spawns its receive loop,
                 // whose handle is the process's, so stopping it ends the loop; its sender
                 // then reads as closed and a trigger drops it.
+                // A measured program's events carry when they were triggered, beside what
+                // they carry; a handler that is not measured ignores it.
+                let timed = self.measure.hooks && event_name != "update_orchestrator";
+                let (ty, bindings) = if timed {
+                    (format!("std::sync::Arc<(std::time::Instant, {types_str})>"), format!("(__queued, {bindings})"))
+                } else {
+                    (arc_type_str, bindings)
+                };
+                let each = format!("{recapture}{unit_clone}");
                 format!(
-                    "{{\n    {capture}std::sync::Arc::new(move || {{\n        {recapture}let (tx, mut rx) = tokio::sync::mpsc::channel::<{ty}>(100);\n        {registry}().lock().unwrap().push(tx);\n        tokio::spawn(async move {{\n            while let Some(msg) = rx.recv().await {{\n                let {bindings} = (*msg).clone();\n                {recapture}tokio::spawn(async move {body});\n            }}\n        }})\n    }}) as ProcessRef\n}}",
-                    capture = capture_code, recapture = recapture, ty = arc_type_str, registry = func_name, bindings = bindings, body = body_str
+                    "{{\n    {capture}std::sync::Arc::new(move || {{\n        {recapture}{unit}let (tx, mut rx) = tokio::sync::mpsc::channel::<{ty}>(100);\n        {registry}().lock().unwrap().push(tx);\n        tokio::spawn(async move {{\n            while let Some(msg) = rx.recv().await {{\n                let {bindings} = (*msg).clone();\n                {each}tokio::spawn(async move {body});\n            }}\n        }})\n    }}) as ProcessRef\n}}",
+                    capture = capture_code, recapture = recapture, ty = ty, registry = func_name, bindings = bindings, body = body_str, unit = unit, each = each
                 )
             }
             ExprNode::StartProcess { target } => {

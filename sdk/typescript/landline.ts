@@ -126,6 +126,15 @@ function encode(type: string, value: any, schema: Schema): Uint8Array {
     if (!schema[type] || value == null) throw new Error('invalid struct ' + type);
     return join(schema[type].map(f => encode(f.type, value[f.name], schema)));
 }
+// A reply the host is no longer there to read — a late answer after it exited — ends this
+// process quietly instead of with an unhandled EPIPE.
+function reply(kind: number, id: number, payload: Uint8Array): void {
+    try { write(kind, id, payload); }
+    catch (error: any) {
+        if (error && (error.code === 'EPIPE' || error.code === 'ECONNRESET')) (globalThis as any).process.exit(0);
+        throw error;
+    }
+}
 export async function serve(factory: (context: Context) => any, methods: Method[], schema: Schema): Promise<void> {
     // stdout carries protocol bytes exclusively, including during module initialization.
     const signatures = methods.map(m => `${m.name}(${m.args.join(',')})->${m.result}`);
@@ -170,7 +179,7 @@ export async function serve(factory: (context: Context) => any, methods: Method[
             active = true;
             let value;
             try { value = await instance[m.name](...args); } finally { active = false; }
-            write(4, call.id, encode(m.result, value, schema));
-        } catch (error) { write(5, call.id, encode('string', String(error), schema)); }
+            reply(4, call.id, encode(m.result, value, schema));
+        } catch (error) { reply(5, call.id, encode('string', String(error), schema)); }
     }
 }

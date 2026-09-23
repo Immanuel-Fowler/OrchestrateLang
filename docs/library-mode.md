@@ -49,6 +49,10 @@ the host when there are no host functions.
 - `stop_orch()` sets this instance's stop-request flag. It does not exit Rust,
   automatically shut down the library, or affect other instances. A later tick returns
   an error; the host should call `shutdown()`.
+- `stats()` returns what the program's `measure` line records, one `UnitStats` per unit
+  in name order: calls, failures, and `Percentiles` (p50, p90, p99, max) of duration,
+  start delay, and CPU time. It is empty when the program measures nothing. See the
+  language reference, §4.7.
 - `child_processes()` lists the child processes the instance has running now — one per
   secret or landline serverlet that has started — as `(serverlet name, OS process id)`,
   for a host supervising its processes. A child that died drops out when its serverlet

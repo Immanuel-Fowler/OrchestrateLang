@@ -108,6 +108,202 @@ impl __OrchActor {
 
 "#;
 
+/// `measure serverlets, hooks, workers`: which kinds of unit the runtime keeps records of.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Measure { pub serverlets: bool, pub hooks: bool, pub workers: bool }
+impl Measure {
+    pub fn any(&self) -> bool { self.serverlets || self.hooks || self.workers }
+    pub fn of(stmts: &[Stmt]) -> Measure {
+        stmts.iter().find_map(|stmt| match &stmt.node {
+            StmtNode::Measure { serverlets, hooks, workers } => Some(Measure { serverlets: *serverlets, hooks: *hooks, workers: *workers }),
+            _ => None,
+        }).unwrap_or_default()
+    }
+}
+
+/// What `measure` keeps, per unit: counts, and a histogram each of how long a call took,
+/// how late it started, and the CPU time it used, recorded without a lock. Emitted into a
+/// library always, so `Scripts::stats()` exists whatever the program measures, and into a
+/// binary that declares `measure`.
+pub const MEASURE_RUNTIME: &str = r#"/// Durations in nanoseconds, in buckets a quarter of a doubling wide — from 1 ns to
+/// centuries in 256 of them — so a percentile is within a fifth of the truth and recording
+/// one takes no lock and no allocation.
+struct __OrchHistogram {
+    buckets: [std::sync::atomic::AtomicU64; 256],
+    count: std::sync::atomic::AtomicU64,
+    max: std::sync::atomic::AtomicU64,
+}
+impl __OrchHistogram {
+    fn new() -> Self {
+        __OrchHistogram { buckets: std::array::from_fn(|_| std::sync::atomic::AtomicU64::new(0)), count: 0.into(), max: 0.into() }
+    }
+    fn bucket(nanos: u64) -> usize {
+        if nanos < 4 { return nanos as usize; }
+        let log = 63 - nanos.leading_zeros() as usize;
+        (log - 1) * 4 + ((nanos >> (log - 2)) & 3) as usize
+    }
+    /// The largest duration a bucket holds.
+    fn upper(index: usize) -> u64 {
+        if index < 4 { return index as u64; }
+        let (log, quarter) = (index / 4 + 1, (index % 4) as u64);
+        ((4 + quarter + 1) << (log - 2)).saturating_sub(1)
+    }
+    fn record(&self, nanos: u64) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.buckets[Self::bucket(nanos)].fetch_add(1, Relaxed);
+        self.count.fetch_add(1, Relaxed);
+        self.max.fetch_max(nanos, Relaxed);
+    }
+    fn percentiles(&self) -> Option<Percentiles> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let count = self.count.load(Relaxed);
+        if count == 0 { return None; }
+        let max = self.max.load(Relaxed);
+        let at = |fraction: f64| {
+            let target = ((count as f64 * fraction).ceil() as u64).max(1);
+            let mut seen = 0;
+            for (index, bucket) in self.buckets.iter().enumerate() {
+                seen += bucket.load(Relaxed);
+                if seen >= target { return std::time::Duration::from_nanos(Self::upper(index).min(max)); }
+            }
+            std::time::Duration::from_nanos(max)
+        };
+        Some(Percentiles { p50: at(0.5), p90: at(0.9), p99: at(0.99), max: std::time::Duration::from_nanos(max) })
+    }
+}
+
+/// Four points of a distribution, each to within a fifth.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Percentiles {
+    pub p50: std::time::Duration,
+    pub p90: std::time::Duration,
+    pub p99: std::time::Duration,
+    pub max: std::time::Duration,
+}
+
+/// What `measure` recorded for one unit: a serverlet handler (`Book.place`), a hook
+/// (`on_tick`, `on hit`), or a worker. `failures` are calls that did not answer — a panic, a
+/// trap, a crash, a missed budget, a process that could not start — or a worker's crashes.
+/// `start_delay` is how late it started: a handler's call from being sent to running, an
+/// event handler from its trigger, a tick hook from the tick's start, a paced worker's run
+/// from when it was due. `cpu` is recorded only for code that runs without waiting.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UnitStats {
+    pub unit: String,
+    pub kind: &'static str,
+    pub calls: u64,
+    pub failures: u64,
+    pub duration: Option<Percentiles>,
+    pub start_delay: Option<Percentiles>,
+    pub cpu: Option<Percentiles>,
+}
+
+impl std::fmt::Debug for __OrchUnit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{} ({})", self.name, self.kind) }
+}
+struct __OrchUnit {
+    name: String,
+    kind: &'static str,
+    calls: std::sync::atomic::AtomicU64,
+    failures: std::sync::atomic::AtomicU64,
+    duration: __OrchHistogram,
+    delay: __OrchHistogram,
+    cpu: __OrchHistogram,
+}
+impl __OrchUnit {
+    fn new(name: &str, kind: &'static str) -> Self {
+        __OrchUnit { name: name.to_string(), kind, calls: 0.into(), failures: 0.into(), duration: __OrchHistogram::new(), delay: __OrchHistogram::new(), cpu: __OrchHistogram::new() }
+    }
+    fn called(&self, took: std::time::Duration) {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.duration.record(took.as_nanos().min(u64::MAX as u128) as u64);
+    }
+    fn failed(&self) { self.failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+    fn started_late(&self, by: std::time::Duration) { self.delay.record(by.as_nanos().min(u64::MAX as u128) as u64); }
+    /// CPU time between two readings of `__orch_thread_cpu`, where the platform has one.
+    fn used(&self, before: Option<u64>) {
+        if let (Some(before), Some(after)) = (before, __orch_thread_cpu()) { self.cpu.record(after.saturating_sub(before)); }
+    }
+    fn stats(&self) -> UnitStats {
+        UnitStats {
+            unit: self.name.clone(),
+            kind: self.kind,
+            calls: self.calls.load(std::sync::atomic::Ordering::Relaxed),
+            failures: self.failures.load(std::sync::atomic::Ordering::Relaxed),
+            duration: self.duration.percentiles(),
+            start_delay: self.delay.percentiles(),
+            cpu: self.cpu.percentiles(),
+        }
+    }
+}
+
+/// This thread's CPU time in nanoseconds, where the platform says: Linux, macOS, FreeBSD.
+fn __orch_thread_cpu() -> Option<u64> {
+    #[cfg(all(target_pointer_width = "64", any(target_os = "linux", target_os = "android", target_os = "macos", target_os = "ios", target_os = "freebsd")))]
+    {
+        #[repr(C)]
+        struct Timespec { seconds: i64, nanos: i64 }
+        unsafe extern "C" { fn clock_gettime(clock: i32, time: *mut Timespec) -> i32; }
+        const THREAD_CPU: i32 = if cfg!(any(target_os = "macos", target_os = "ios")) { 16 } else if cfg!(target_os = "freebsd") { 14 } else { 3 };
+        let mut time = Timespec { seconds: 0, nanos: 0 };
+        // SAFETY: `time` is a valid timespec for the call to write.
+        if unsafe { clock_gettime(THREAD_CPU, &mut time) } == 0 {
+            return Some(time.seconds as u64 * 1_000_000_000 + time.nanos as u64);
+        }
+    }
+    None
+}
+
+/// The units registered in `units`, found by name or added.
+fn __orch_unit_in(units: &std::sync::Mutex<Vec<std::sync::Arc<__OrchUnit>>>, name: &str, kind: &'static str) -> std::sync::Arc<__OrchUnit> {
+    let mut units = units.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(unit) = units.iter().find(|unit| unit.name == name) { return unit.clone(); }
+    let unit = std::sync::Arc::new(__OrchUnit::new(name, kind));
+    units.push(unit.clone());
+    unit
+}
+
+/// Every unit's record, in name order.
+fn __orch_unit_stats(units: &std::sync::Mutex<Vec<std::sync::Arc<__OrchUnit>>>) -> Vec<UnitStats> {
+    let mut stats: Vec<UnitStats> = units.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().map(|unit| unit.stats()).collect();
+    stats.sort_by(|a, b| a.unit.cmp(&b.unit));
+    stats
+}
+
+/// `stats()`: the records as a table, one unit a line.
+fn __orch_stats_table(stats: &[UnitStats]) -> String {
+    fn shown(duration: std::time::Duration) -> String {
+        let nanos = duration.as_nanos();
+        if nanos < 1_000 { format!("{}ns", nanos) }
+        else if nanos < 1_000_000 { format!("{:.1}us", nanos as f64 / 1e3) }
+        else if nanos < 1_000_000_000 { format!("{:.1}ms", nanos as f64 / 1e6) }
+        else { format!("{:.2}s", nanos as f64 / 1e9) }
+    }
+    let pick = |p: &Option<Percentiles>, f: fn(&Percentiles) -> std::time::Duration| p.as_ref().map(|p| shown(f(p))).unwrap_or_else(|| "-".to_string());
+    let mut rows = vec![["unit", "kind", "calls", "failed", "p50", "p90", "p99", "max", "late p99", "cpu p50"].map(String::from).to_vec()];
+    for s in stats {
+        rows.push(vec![
+            s.unit.clone(), s.kind.to_string(), s.calls.to_string(), s.failures.to_string(),
+            pick(&s.duration, |p| p.p50), pick(&s.duration, |p| p.p90), pick(&s.duration, |p| p.p99), pick(&s.duration, |p| p.max),
+            pick(&s.start_delay, |p| p.p99), pick(&s.cpu, |p| p.p50),
+        ]);
+    }
+    let widths: Vec<usize> = (0..10).map(|column| rows.iter().map(|row| row[column].chars().count()).max().unwrap_or(0)).collect();
+    rows.iter()
+        .map(|row| row.iter().zip(&widths).map(|(cell, width)| format!("{:<width$}", cell, width = width)).collect::<Vec<_>>().join("  ").trim_end().to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+"#;
+
+/// A binary's own registry of what `measure` records.
+pub const MEASURE_STANDALONE: &str = r#"static __ORCH_UNITS: std::sync::Mutex<Vec<std::sync::Arc<__OrchUnit>>> = std::sync::Mutex::new(Vec::new());
+fn __orch_unit(name: &str, kind: &'static str) -> std::sync::Arc<__OrchUnit> { __orch_unit_in(&__ORCH_UNITS, name, kind) }
+fn __orch_stats() -> String { __orch_stats_table(&__orch_unit_stats(&__ORCH_UNITS)) }
+
+"#;
+
 /// `shared queue`: items in the order they were pushed, behind a lock of the queue's own,
 /// with a capacity and what a push to a full queue does. `take` waits for an item without
 /// holding the lock, so a consumer needs no poll loop.
@@ -679,6 +875,10 @@ pub struct Codegen {
     pub module_types: Vec<Stmt>,
     /// Whether any file in the program declares a serverlet with `every:`.
     pub has_cadenced: bool,
+    /// What the program's `measure` line names, from the entry file, for every file.
+    pub measure: Measure,
+    /// The handlers of the serverlet being compiled that are measured, in their stats slots.
+    pub(super) measured_handlers: Vec<String>,
     /// Each `shared queue`: its name, item type, capacity, and whether a full one drops
     /// its oldest item.
     pub queues: Vec<(String, Type, u64, bool)>,
@@ -732,6 +932,8 @@ impl Codegen {
             top_level_handler: false,
             module_types: Vec::new(),
             has_cadenced: false,
+            measure: Measure::default(),
+            measured_handlers: Vec::new(),
             queues: Vec::new(),
             generic_bounds: Default::default(),
             naming: None,
@@ -843,7 +1045,7 @@ impl Codegen {
                 self.scan_events_in_expr(body);
                 if let Some((_, handler)) = crash_handler { self.scan_events_in_expr(handler); }
             }
-            ExprNode::TriggeredBlock { event_name, params, body } => {
+            ExprNode::TriggeredBlock { event_name, params, body, .. } => {
                 let types = params.iter().map(|p| p.ty.clone()).collect();
                 self.events.insert(event_name.clone(), types);
                 self.scan_events_in_expr(body);
@@ -1050,7 +1252,7 @@ impl Codegen {
             || matches!(name, "print" | "to_string" | "to_int" | "to_float" | "parse_int" | "parse_float"
                             | "length" | "append" | "remove" | "sleep" | "stop_orch" | "clock_micros" | "clock_nanos"
                             | "range" | "map" | "filter" | "reduce" | "find" | "any" | "all" | "latest"
-                            | "get" | "has" | "keys" | "values")
+                            | "get" | "has" | "keys" | "values" | "stats")
     }
 
     /// A closure body runs later and on its own, so it is its own statement context: it
@@ -1563,7 +1765,12 @@ impl Codegen {
                     format!("({})", compiled_tys)
                 };
 
-                let arc_type_str = format!("std::sync::Arc<{}>", type_str);
+                // A measured binary's events carry when they were triggered.
+                let arc_type_str = if !self.library && self.measure.hooks && event_name != "update_orchestrator" {
+                    format!("std::sync::Arc<(std::time::Instant, {})>", type_str)
+                } else {
+                    format!("std::sync::Arc<{}>", type_str)
+                };
                 let var_name = format!("REGISTRY_{}", event_name.to_uppercase());
                 let func_name = format!("get_registry_{}", event_name);
 
@@ -1608,6 +1815,12 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
             let shared = self.shared_state_code(stmts);
             code.push_str(&shared);
             code.push_str(&self.queue_code(stmts));
+            // A library carries the records always, for `Scripts::stats()`; a binary only
+            // when it measures something.
+            if !self.library && self.measure.any() {
+                code.push_str(MEASURE_RUNTIME);
+                code.push_str(MEASURE_STANDALONE);
+            }
         }
 
         // A struct or enum is one type however many files name it: the entry file defines

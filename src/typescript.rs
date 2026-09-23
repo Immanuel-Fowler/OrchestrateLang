@@ -96,6 +96,7 @@ pub fn sidecar(source: &str) -> Result<Vec<Handler>, String> {
             name,
             params,
             return_type,
+            unmeasured: false,
             body: crate::ast::Spanned {
                 node: crate::ast::ExprNode::Block(Vec::new()),
                 span: crate::ast::Span::new(1, 1),

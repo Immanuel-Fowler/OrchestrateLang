@@ -44,6 +44,11 @@ impl Codegen {
         let arms = handlers.iter().enumerate().map(|(id, h)| {
             let mut bindings = h.params.iter().map(|p| rust_ident(&p.name)).collect::<Vec<_>>();
             bindings.push("reply_to".into());
+            // A measured handler: how late its call reached the process's turn.
+            let started = match self.measured_slot(h) {
+                Some(slot) => { bindings.push("__sent".into()); format!("__orch_stats[{slot}].started_late(__sent.elapsed());") }
+                None => String::new(),
+            };
             let encode = h.params.iter().map(|p| format!("{}.wire_encode(&mut __payload);", rust_ident(&p.name))).collect::<Vec<_>>().join("\n");
             let answers_failure = super::stmt::answers_failure(h);
             let decode = if h.return_type == Type::Void {
@@ -58,9 +63,11 @@ impl Codegen {
             let raised = if answers_failure {
                 "return Ok(Err(error));".to_string()
             } else {
-                format!("eprintln!(\"[orchestrate] landline '{}' handler '{}' failed: {{}}\", error);\n                        return Ok(Default::default());", name, h.name)
+                // Not the handler's answer: a failed call, counted as one when measured.
+                let counted = self.measured_slot(h).map(|slot| format!("__orch_stats[{slot}].failed(); ")).unwrap_or_default();
+                format!("{counted}eprintln!(\"[orchestrate] landline '{}' handler '{}' failed: {{}}\", error);\n                        return Ok(Default::default());", name, h.name)
             };
-            let crashed = super::stmt::failure_reply(h, &format!("format!(\"landline '{}' crashed during a call to '{}': {{}}\", __error)", name, h.name));
+            let crashed = self.failure_reply(h, &format!("format!(\"landline '{}' crashed during a call to '{}': {{}}\", __error)", name, h.name));
             // With a budget, a call whose caller already stopped waiting is not sent.
             let skip = if config.budget_micros.is_some() { "if reply_to.is_closed() { continue; }" } else { "" };
             // `late: "latest"` keeps each handler's most recent result for timed-out callers.
@@ -75,7 +82,7 @@ impl Codegen {
                 "(crate::__orch_context().frame.load(std::sync::atomic::Ordering::Relaxed) as i64).wire_encode(&mut __payload); f64::from_bits(crate::__orch_context().dt_bits.load(std::sync::atomic::Ordering::Relaxed)).wire_encode(&mut __payload);"
             } else { "" };
             format!(r#"{name}Msg::{variant} {{ {bindings} }} => {{
-                {skip}
+                {started}{skip}
                 __next_call = __next_call.wrapping_add(1);
                 let mut __payload = Vec::new();
                 {header}
@@ -104,11 +111,11 @@ impl Codegen {
                         continue 'restart;
                     }}
                 }}
-            }}"#, name=name, variant=pascal_case(&h.name), bindings=bindings.join(", "), id=id, encode=encode, decode=decode, recovery=recovery, skip=skip, remember=remember, kind=kind, header=header, raised=raised, crashed=crashed)
+            }}"#, name=name, variant=pascal_case(&h.name), bindings=bindings.join(", "), id=id, encode=encode, decode=decode, recovery=recovery, skip=skip, remember=remember, kind=kind, header=header, raised=raised, crashed=crashed, started=started)
         }).collect::<Vec<_>>().join("\n");
         let default_arms = handlers.iter()
             .map(|h| {
-                let failed = super::stmt::failure_reply(h, &format!("format!(\"landline '{}' is not running: its startup failed ({{}})\", __error)", name));
+                let failed = self.failure_reply(h, &format!("format!(\"landline '{}' is not running: its startup failed ({{}})\", __error)", name));
                 format!("                                {name}Msg::{} {{ reply_to, .. }} => {{ let _ = reply_to.send({}); }}", pascal_case(&h.name), failed)
             })
             .collect::<Vec<_>>()

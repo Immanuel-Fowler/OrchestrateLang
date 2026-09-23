@@ -183,6 +183,7 @@ impl Parser {
             let return_type = if self.match_token(TokenKind::Arrow) { self.parse_type()? } else { Type::Void };
             if fixed && return_type != Type::Void { return Err("on_fixed_tick cannot return a value".into()); }
             let every = self.parse_hook_cadence()?;
+            let unmeasured = self.parse_unmeasured();
             // The body is read before the error is reported, so recovery resumes after it.
             let body = self.parse_block()?;
             if every.is_some() && (input.is_some() || return_type != Type::Void) {
@@ -191,7 +192,7 @@ impl Parser {
                     span.line, span.col
                 ));
             }
-            if fixed { StmtNode::OnFixedTick { param, every, body } } else { StmtNode::OnTick { param, input, return_type, every, body } }
+            if fixed { StmtNode::OnFixedTick { param, every, unmeasured, body } } else { StmtNode::OnTick { param, input, return_type, every, unmeasured, body } }
         } else if self.match_token(TokenKind::Use) {
             self.parse_use_statement()?
         } else if self.match_token(TokenKind::Load) {
@@ -200,6 +201,26 @@ impl Parser {
             self.parse_load_foreign_statement()?
         } else if self.match_token(TokenKind::Serverlet) {
             self.parse_serverlet_statement()?
+        } else if matches!(&self.peek().kind, TokenKind::Identifier(word) if word == "measure")
+            && matches!(&self.peek_at(1).kind, TokenKind::Identifier(word) if matches!(word.as_str(), "serverlets" | "hooks" | "workers"))
+        {
+            // `measure` is contextual, so a binding may still be called measure.
+            self.advance();
+            let (mut serverlets, mut hooks, mut workers) = (false, false, false);
+            loop {
+                let kind = self.advance().clone();
+                let seen = match &kind.kind {
+                    TokenKind::Identifier(word) if word == "serverlets" => &mut serverlets,
+                    TokenKind::Identifier(word) if word == "hooks" => &mut hooks,
+                    TokenKind::Identifier(word) if word == "workers" => &mut workers,
+                    _ => return Err(format!("line {}, col {}: `measure` takes serverlets, hooks, workers, or some of them", kind.line, kind.col)),
+                };
+                if std::mem::replace(seen, true) {
+                    return Err(format!("line {}, col {}: `measure` names each kind once", kind.line, kind.col));
+                }
+                if !self.match_token(TokenKind::Comma) { break; }
+            }
+            StmtNode::Measure { serverlets, hooks, workers }
         } else if matches!(&self.peek().kind, TokenKind::Identifier(word) if word == "shared")
             && matches!(&self.peek_at(1).kind, TokenKind::Identifier(word) if word == "queue")
             && matches!(&self.peek_at(2).kind, TokenKind::Identifier(_))
@@ -406,6 +427,7 @@ impl Parser {
                 backend,
             });
         }
+        let unmeasured = self.parse_unmeasured();
         self.consume(TokenKind::LBrace, "Expected '{' to start serverlet body")?;
         let mut state = Vec::new();
         let mut handlers = Vec::new();
@@ -444,6 +466,10 @@ impl Parser {
             }
         }
         self.consume(TokenKind::RBrace, "Expected '}' to end serverlet body")?;
+        // `serverlet X unmeasured { }` leaves out every handler it declares.
+        if unmeasured {
+            for handler in &mut handlers { handler.unmeasured = true; }
+        }
         Ok(StmtNode::Serverlet { name, state, handlers, secret, crash_handler, sandbox, landline, grants })
     }
 
@@ -477,6 +503,13 @@ impl Parser {
             ));
         };
         Ok(StmtNode::SharedQueue { name, ty, capacity, drop_oldest })
+    }
+
+    /// `unmeasured` before a body: left out of what `measure` records.
+    fn parse_unmeasured(&mut self) -> bool {
+        let found = matches!(&self.peek().kind, TokenKind::Identifier(word) if word == "unmeasured");
+        if found { self.advance(); }
+        found
     }
 
     /// `every "100ms"` or `every 5 ticks` after a tick hook's signature, if it has one.
@@ -568,12 +601,13 @@ impl Parser {
         self.consume(TokenKind::RParen, "Expected ')' after parameters")?;
         let mut return_type = Type::Void;
         if self.match_token(TokenKind::Arrow) { return_type = self.parse_type()?; }
+        let unmeasured = self.parse_unmeasured();
         let body = if foreign {
             if self.peek().kind == TokenKind::LBrace { return Err("Landline handlers must not have bodies".into()); }
             let _ = self.match_token(TokenKind::Semicolon);
             Spanned { node: ExprNode::Block(Vec::new()), span: Span::new(tok.line, tok.col) }
         } else { self.parse_block()? };
-        Ok(Handler { name, params, return_type, body })
+        Ok(Handler { name, params, return_type, unmeasured, body })
     }
 
     fn parse_let_statement(&mut self) -> Result<StmtNode, String> {
@@ -1382,6 +1416,7 @@ impl Parser {
                     }
                 }
                 let restart_policy = restart_policy.unwrap_or(RestartPolicy::Always);
+                let unmeasured = self.parse_unmeasured();
                 let body = self.parse_block()?;
                 let crash_handler = if self.peek().kind == TokenKind::OnCrash {
                     self.advance();
@@ -1393,7 +1428,7 @@ impl Parser {
                     let handler_body = self.parse_block()?;
                     Some((err_name, Box::new(handler_body)))
                 } else { None };
-                Ok(ExprNode::AutomaticBlock { body: Box::new(body), restart_policy, backoff_ms, every_micros, crash_handler })
+                Ok(ExprNode::AutomaticBlock { body: Box::new(body), restart_policy, backoff_ms, every_micros, unmeasured, crash_handler })
             }
             // `on` declares a handler only as `on name(`; anywhere else it is a name.
             TokenKind::On if !(matches!(self.peek_at(1).kind, TokenKind::Identifier(_)) && self.peek_at(2).kind == TokenKind::LParen) => {
@@ -1410,8 +1445,9 @@ impl Parser {
                 self.consume(TokenKind::LParen, "Expected '(' after event name")?;
                 let params = self.parse_params()?;
                 self.consume(TokenKind::RParen, "Expected ')' after parameters")?;
+                let unmeasured = self.parse_unmeasured();
                 let body = self.parse_block()?;
-                Ok(ExprNode::TriggeredBlock { event_name, params, body: Box::new(body) })
+                Ok(ExprNode::TriggeredBlock { event_name, params, unmeasured, body: Box::new(body) })
             }
             TokenKind::LBracket => {
                 self.advance();

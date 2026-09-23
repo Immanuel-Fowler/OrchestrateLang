@@ -257,6 +257,7 @@ impl Codegen {
             .replace("@TICK_PARAM@", &input_param).replace("@TICK_ARG@", input_arg)
             .replace("@TICK_FIELD@", &input_field).replace("@TICK_OUTPUT@", &output);
         runtime.push_str(&format!("\nimpl Scripts {{ {} }}\n", triggers));
+        runtime.push_str(super::core::MEASURE_RUNTIME);
         if self.host_functions.is_empty() {
             runtime.push_str("\nimpl Host for () {}\n");
         }
@@ -283,17 +284,55 @@ impl Codegen {
         let hooks = self.local_stmts.iter().chain(self.body_hooks.iter()).cloned().collect::<Vec<_>>();
         // Each cadenced hook's own count of host time, kept with the instance's state.
         let mut cadences = 0usize;
-        let mut cadenced = |every: Option<crate::ast::Cadence>, compiled: String, param: &str| -> String {
-            let Some(every) = every else {
-                return format!("{{ let {} = __dt; {}; }}\n", rust_ident(param), compiled);
+        // The measured hooks' records, by name, kept with the instance's state too.
+        let mut hook_units: Vec<String> = Vec::new();
+        let (mut tick_measured, mut fixed_measured) = (false, false);
+        // `measure hooks`: a hook's record, unless it is `unmeasured` — how long the tick ran
+        // before it started, how long it took, and its CPU time if it runs without waiting.
+        let measured = |units: &mut Vec<String>, name: String, waits: bool, inner: String| -> String {
+            let slot = units.len();
+            units.push(name);
+            let unit = format!("__program.__hooks[{slot}]");
+            let (cpu, used) = if waits { (String::new(), String::new()) } else {
+                ("let __cpu = crate::__orch_thread_cpu(); ".to_string(), format!(" {unit}.used(__cpu);"))
             };
-            let index = cadences;
-            cadences += 1;
-            let due = match every {
-                crate::ast::Cadence::Micros(micros) => format!("every_nanos(__dt, {}u64)", micros.saturating_mul(1_000)),
-                crate::ast::Cadence::Ticks(count) => format!("every_ticks(__dt, {}u64)", count),
+            format!("{{ let __hook = std::time::Instant::now(); {unit}.started_late(__hook.saturating_duration_since(__tick_began)); {cpu}{inner} {unit}.called(__hook.elapsed());{used} }}\n")
+        };
+        let mut cadenced = |every: Option<crate::ast::Cadence>, compiled: String, param: &str, measure: Option<(&mut Vec<String>, String, bool)>| -> String {
+            let (inner, binding) = match every {
+                None => (None, "__dt".to_string()),
+                Some(every) => {
+                    let index = cadences;
+                    cadences += 1;
+                    let due = match every {
+                        crate::ast::Cadence::Micros(micros) => format!("every_nanos(__dt, {}u64)", micros.saturating_mul(1_000)),
+                        crate::ast::Cadence::Ticks(count) => format!("every_ticks(__dt, {}u64)", count),
+                    };
+                    (Some(format!("__program.__cadence[{index}].{due}")), "__since".to_string())
+                }
             };
-            format!("if let Some(__since) = __program.__cadence[{index}].{due} {{ let {} = __since; {}; }}\n", rust_ident(param), compiled)
+            let body = format!("{{ let {} = {}; {}; }}", rust_ident(param), binding, compiled);
+            let body = match measure {
+                Some((units, name, waits)) => measured(units, name, waits, body),
+                None => format!("{body}\n"),
+            };
+            match inner {
+                Some(due) => format!("if let Some(__since) = {due} {body}"),
+                None => body,
+            }
+        };
+        // A hook's name in the records: `on_tick`, `on_tick every 100ms`, and `#2` on from
+        // the second of the same name.
+        let mut names_used: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut hook_name = |base: &str, every: Option<crate::ast::Cadence>| -> String {
+            let name = match every {
+                None => base.to_string(),
+                Some(crate::ast::Cadence::Micros(micros)) => format!("{base} every {}", crate::ast::display_micros(micros)),
+                Some(crate::ast::Cadence::Ticks(count)) => format!("{base} every {count} ticks"),
+            };
+            let seen = names_used.entry(name.clone()).or_insert(0);
+            *seen += 1;
+            if *seen == 1 { name } else { format!("{name} #{seen}") }
         };
         for stmt in hooks {
             match stmt.node {
@@ -303,16 +342,20 @@ impl Codegen {
                 StmtNode::OnStop(body) => {
                     stop.push_str(&format!("{};\n", self.compile_expr(&body)))
                 }
-                StmtNode::OnFixedTick { param, every, body } => {
+                StmtNode::OnFixedTick { param, every, unmeasured, body } => {
                     // Hook bodies run after the bindings are packed, so they read the struct.
                     let mut scope = std::collections::HashSet::new();
                     scope.insert(param.clone());
                     self.state_rewrite = Some(StateRewrite { fields: rewrite_fields.clone(), scopes: vec![scope], receiver: "__program" });
                     let compiled = self.compile_expr(&body);
                     self.state_rewrite = None;
-                    fixed.push_str(&cadenced(every, compiled, &param));
+                    let measure = (self.measure.hooks && !unmeasured).then(|| {
+                        fixed_measured = true;
+                        (&mut hook_units, hook_name("on_fixed_tick", every), self.may_wait(&body))
+                    });
+                    fixed.push_str(&cadenced(every, compiled, &param, measure));
                 }
-                StmtNode::OnTick { param, input, return_type, every, body } => {
+                StmtNode::OnTick { param, input, return_type, every, unmeasured, body } => {
                     let bind = input.as_ref().map(|p| format!("let {} = __input;", rust_ident(&p.name))).unwrap_or_default();
                     let mut scope = std::collections::HashSet::new();
                     scope.insert(param.clone());
@@ -320,9 +363,24 @@ impl Codegen {
                     self.state_rewrite = Some(StateRewrite { fields: rewrite_fields.clone(), scopes: vec![scope], receiver: "__program" });
                     let compiled = self.compile_expr(&body);
                     self.state_rewrite = None;
+                    let waits = self.may_wait(&body);
+                    let measured_here = self.measure.hooks && !unmeasured;
+                    tick_measured |= measured_here;
                     if input.is_some() || return_type != Type::Void {
-                        tick = format!("let {} = __dt; {} {}", rust_ident(&param), bind, compiled);
-                    } else { tick.push_str(&cadenced(every, compiled, &param)); }
+                        // The one typed hook: its value is the tick's output, kept across the
+                        // record when it is measured.
+                        let body = format!("let {} = __dt; {} {}", rust_ident(&param), bind, compiled);
+                        tick = if measured_here {
+                            // In a block of its own, so a `return` in it — the tick's output — is
+                            // recorded too.
+                            let record = measured(&mut hook_units, hook_name("on_tick", None), waits, "let __out = async { BODY }.await;".to_string());
+                            let record = record.trim_end();
+                            format!("{} __out }}", record[..record.len() - 1].replacen("BODY", &body, 1))
+                        } else { body };
+                    } else {
+                        let measure = measured_here.then(|| (&mut hook_units, hook_name("on_tick", every), waits));
+                        tick.push_str(&cadenced(every, compiled, &param, measure));
+                    }
                 },
                 _ => {}
             }
@@ -334,7 +392,10 @@ impl Codegen {
         let errors = fields.iter().filter_map(|f| f.error.as_ref().map(|e| format!("compile_error!({e:?});\n"))).collect::<String>();
         // The cadenced hooks' counters ride with the bindings, so an instance has its own.
         let cadence_field = (cadences > 0).then(|| format!("__cadence: [__OrchCadence; {cadences}]"));
-        let members = fields.iter().map(|f| format!("    {}: {},", rust_ident(&f.name), f.rust_type)).chain(cadence_field.iter().map(|c| format!("    {c},"))).collect::<Vec<_>>();
+        let hooks_field = (!hook_units.is_empty()).then(|| format!("__hooks: [std::sync::Arc<crate::__OrchUnit>; {}]", hook_units.len()));
+        let members = fields.iter().map(|f| format!("    {}: {},", rust_ident(&f.name), f.rust_type))
+            .chain(cadence_field.iter().chain(hooks_field.iter()).map(|c| format!("    {c},")))
+            .collect::<Vec<_>>();
         let program_struct = if members.is_empty() {
             "struct __OrchProgram {}".to_string()
         } else {
@@ -344,19 +405,27 @@ impl Codegen {
         let pack = literal(
             fields.iter().map(|f| if f.boxed { format!("{0}: Box::new({0})", rust_ident(&f.name)) } else { rust_ident(&f.name) })
                 .chain((cadences > 0).then(|| format!("__cadence: [__OrchCadence::NEW; {cadences}]")))
+                .chain((!hook_units.is_empty()).then(|| format!(
+                    "__hooks: [{}]",
+                    hook_units.iter().map(|name| format!("crate::__orch_unit({name:?}, \"hook\")")).collect::<Vec<_>>().join(", ")
+                )))
                 .collect()
         );
         let unpack = literal(
             fields.iter().map(|f| format!("mut {}", rust_ident(&f.name)))
                 .chain((cadences > 0).then(|| "__cadence: _".to_string()))
+                .chain((!hook_units.is_empty()).then(|| "__hooks: _".to_string()))
                 .collect()
         );
         let cadenced = if self.has_cadenced { "__context.run_cadenced(__dt).await;\n    " } else { "" };
+        // When the tick started, for how late each measured hook started within it.
+        let tick_clock = if tick_measured { "let __tick_began = std::time::Instant::now();\n    " } else { "" };
+        let fixed_clock = if fixed_measured { "let __tick_began = std::time::Instant::now();\n    " } else { "" };
         format!(
             r#"{errors}/// The top-level bindings the hooks reach, owned by the instance rather than by a task.
 {program_struct}
 async fn __orch_run_tick(__context: &OrchContext, __program: &mut __OrchProgram, __dt: f64{input_param}) -> {output} {{
-    __context.advance_time(__dt);
+    {tick_clock}__context.advance_time(__dt);
     {cadenced}if __context.events_pending() {{ __context.drain_events_with(__program).await; }}
     let __host = &*__context.host;
     let __output = async {{ {tick} }}.await;
@@ -364,7 +433,7 @@ async fn __orch_run_tick(__context: &OrchContext, __program: &mut __OrchProgram,
     __output
 }}
 async fn __orch_run_fixed_tick(__context: &OrchContext, __program: &mut __OrchProgram, __dt: f64) {{
-    if __context.events_pending() {{ __context.drain_events_with(__program).await; }}
+    {fixed_clock}if __context.events_pending() {{ __context.drain_events_with(__program).await; }}
     let __host = &*__context.host;
     {fixed}
     if __context.events_pending() {{ __context.drain_events_with(__program).await; }}

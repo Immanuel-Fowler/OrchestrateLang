@@ -27,6 +27,8 @@ impl Codegen {
         match &stmt.node {
             // Declared with the other queues, where they live; nothing to run here.
             StmtNode::SharedQueue { .. } => String::new(),
+            // Read before any code is generated; nothing to run here.
+            StmtNode::Measure { .. } => String::new(),
             StmtNode::Let { name, ty, value, shared } => {
                 if *shared {
                     // The binding lives in the shared struct, initialised there; nothing
@@ -228,6 +230,8 @@ impl Codegen {
                     }
                     return format!("let context = crate::__orch_context(); let value = std::sync::Arc::new({payload}); let handlers = {func_name}().lock().unwrap().clone(); for handler in handlers {{ context.queue_event(handler(value.clone())); }}");
                 }
+                // A measured binary's events carry when they were triggered.
+                let payload = if self.measure.hooks && event_name != "update_orchestrator" { format!("(std::time::Instant::now(), {payload})") } else { payload };
                 // A subscriber that has stopped — a handler taken out of the active set —
                 // has a closed channel, and is dropped here rather than warned about.
                 format!(
@@ -349,6 +353,13 @@ impl Codegen {
                     h
                 }).collect();
                 let handlers = &host_handlers;
+                // `measure serverlets`: each handler not declared `unmeasured` has a record,
+                // its slot in the serverlet's `stats` its place in this list.
+                self.measured_handlers = if self.measure.serverlets {
+                    handlers.iter().filter(|h| !h.unmeasured).map(|h| h.name.clone()).collect()
+                } else {
+                    Vec::new()
+                };
                 let mut enum_variants = Vec::new();
                 for h in handlers {
                     let variant_name = pascal_case(&h.name);
@@ -357,6 +368,8 @@ impl Codegen {
                         .collect::<Vec<String>>();
                     let ret_ty = self.compile_type(&h.return_type);
                     fields.push(format!("reply_to: tokio::sync::oneshot::Sender<{}>", ret_ty));
+                    // When the call was sent, for how late the handler started on it.
+                    if self.measured_slot(h).is_some() { fields.push("__sent: std::time::Instant".to_string()); }
                     enum_variants.push(format!("    {} {{ {} }},", variant_name, fields.join(", ")));
                 }
 
@@ -376,6 +389,8 @@ impl Codegen {
                     let variant_name = pascal_case(&h.name);
                     let mut send_fields = h.params.iter().map(|p| rust_ident(&p.name)).collect::<Vec<String>>();
                     send_fields.push("reply_to: reply_tx".to_string());
+                    let slot = self.measured_slot(h);
+                    if slot.is_some() { send_fields.push("__sent: __begun".to_string()); }
 
                     // The reply is awaited through the actor, which in a deterministic run is
                     // what runs the actor.
@@ -404,7 +419,7 @@ impl Codegen {
                             Some(crate::ast::LatePolicy::Latest) if h.return_type != Type::Void => {
                                 format!("self.latest.{}.lock().unwrap().clone().unwrap_or_default()", rust_ident(&h.name))
                             }
-                            _ => failure_reply(h, &missed),
+                            _ => self.failure_reply(h, &missed),
                         };
                         // A deterministic run ignores the budget, since a result that depends
                         // on wall time cannot replay; a host can also lift budgets itself.
@@ -419,6 +434,13 @@ impl Codegen {
                         )
                     };
 
+                    // A measured call is timed as its caller sees it, answer or failure.
+                    let body = match slot {
+                        Some(slot) => format!(
+                            "        let __begun = std::time::Instant::now();\n        let __orch_stats = &self.stats;\n        let __answer = async {{\n{body}\n        }}.await;\n        __orch_stats[{slot}].called(__begun.elapsed());\n        __answer"
+                        ),
+                        None => body,
+                    };
                     if unwrapped_tick && h.name == "tick" {
                         // The runtime's call, and the program's, which answers as declared.
                         let declared = self.compile_type(answered_type(&h.return_type));
@@ -468,15 +490,25 @@ impl Codegen {
                     (String::new(), String::new())
                 };
 
+                // The records of its measured handlers, shared by every copy of the client and
+                // its actor.
+                let stats_field = if self.measured_handlers.is_empty() {
+                    String::new()
+                } else {
+                    format!("    stats: std::sync::Arc<[std::sync::Arc<crate::__OrchUnit>; {}]>,\n", self.measured_handlers.len())
+                };
                 let client_struct = format!(
-                    "{}#[derive(Clone, Debug)]\npub struct {}Client {{\n    tx: tokio::sync::mpsc::Sender<{}Msg>,\n    actor: __OrchActor,\n{}{}}}\n\nimpl {}Client {{\n{}{}\n}}",
-                    latest_struct, name, name, latest_field, cadence_field, name, client_methods.join("\n\n"), cadence_method
+                    "{}#[derive(Clone, Debug)]\npub struct {}Client {{\n    tx: tokio::sync::mpsc::Sender<{}Msg>,\n    actor: __OrchActor,\n{}{}{}}}\n\nimpl {}Client {{\n{}{}\n}}",
+                    latest_struct, name, name, latest_field, cadence_field, stats_field, name, client_methods.join("\n\n"), cadence_method
                 );
+                let measured = !self.measured_handlers.is_empty();
 
                 if let Some(config) = landline {
                     let start_fn = self.compile_python_mirror(name, handlers, crash_handler, grants, config);
+                    let start_fn = self.measure_start(start_fn, name, &["latest", "actor"]);
+                    let fields: &[&str] = if measured { &["latest", "actor", "stats"] } else { &["latest", "actor"] };
                     let start_fn = match every {
-                        Some(micros) => Self::register_cadence(start_fn, name, micros, &["latest", "actor"], tick_answer.is_some(), unwrapped_tick),
+                        Some(micros) => Self::register_cadence(start_fn, name, micros, fields, tick_answer.is_some(), unwrapped_tick),
                         None => start_fn,
                     };
                     return format!("{}\n\n{}\n\n{}", msg_enum, client_struct, start_fn);
@@ -496,7 +528,7 @@ impl Codegen {
 
                     // The panic's own message, which `on_crash` binds and a `result` handler's
                     // caller gets as its `err`.
-                    let failed = failure_reply(h, &format!("format!(\"serverlet '{name}' handler '{handler_name_str}' panicked: {{}}\", __panic_text)"));
+                    let failed = self.failure_reply(h, &format!("format!(\"serverlet '{name}' handler '{handler_name_str}' panicked: {{}}\", __panic_text)"));
                     let crash_recovery = if let Some((err_name, crash_body)) = crash_handler {
                         let crash_body_str = self.compile_expr(crash_body);
                         format!(
@@ -514,9 +546,19 @@ impl Codegen {
                         )
                     };
 
+                    // A measured handler: how late it started on the call, and the CPU time it
+                    // used, which is exact here, since it runs to the end without waiting.
+                    let (bindings_str, before, after) = match self.measured_slot(h) {
+                        Some(slot) => (
+                            format!("{bindings_str}, __sent"),
+                            format!("__orch_stats[{slot}].started_late(__sent.elapsed());\n                    let __cpu = crate::__orch_thread_cpu();\n                    "),
+                            format!("\n                    __orch_stats[{slot}].used(__cpu);"),
+                        ),
+                        None => (bindings_str, String::new(), String::new()),
+                    };
                     match_arms.push(format!(
-                        "                {}Msg::{} {{ {} }} => {{\n                    #[allow(unused_mut)]\n                    let mut __handler = std::panic::AssertUnwindSafe(||{} {{ {} }});\n                    match std::panic::catch_unwind(__handler) {{\n                        Ok(res) => {{ let _ = reply_to.send(res); }}\n                        {}\n                    }}\n                }}",
-                        name, variant_name, bindings_str, self.handler_return_annotation(h), body_str, crash_recovery
+                        "                {}Msg::{} {{ {} }} => {{\n                    {}#[allow(unused_mut)]\n                    let mut __handler = std::panic::AssertUnwindSafe(||{} {{ {} }});\n                    match std::panic::catch_unwind(__handler) {{\n                        Ok(res) => {{ let _ = reply_to.send(res); }}\n                        {}\n                    }}{}\n                }}",
+                        name, variant_name, bindings_str, before, self.handler_return_annotation(h), body_str, crash_recovery, after
                     ));
                 }
 
@@ -544,6 +586,7 @@ impl Codegen {
                             .replace("__secret_read_frame(", "crate::__orch_read_frame(")
                             .replace("rx.recv().await", "crate::__orch_recv(&mut rx).await");
                     }
+                    let start_fn = self.measure_start(start_fn, name, &["actor"]);
                     let child_program = self.compile_secret_program(name, state, handlers);
                     self.secret_programs.push((format!("secret_{}", name), child_program));
                     return format!("{}\n\n{}\n\n{}", msg_enum, client_struct, start_fn);
@@ -559,8 +602,10 @@ impl Codegen {
                     } else {
                         start_fn
                     };
+                    let start_fn = self.measure_start(start_fn, name, &["actor"]);
+                    let fields: &[&str] = if measured { &["actor", "stats"] } else { &["actor"] };
                     let start_fn = match every {
-                        Some(micros) => Self::register_cadence(start_fn, name, micros, &["actor"], tick_answer.is_some(), unwrapped_tick),
+                        Some(micros) => Self::register_cadence(start_fn, name, micros, fields, tick_answer.is_some(), unwrapped_tick),
                         None => start_fn,
                     };
                     return format!("{}\n\n{}\n\n{}", msg_enum, client_struct, start_fn);
@@ -573,6 +618,7 @@ impl Codegen {
                     match_arms.join("\n\n"),
                     name
                 );
+                let start_fn = self.measure_start(start_fn, name, &["actor"]);
 
                 format!("{}\n\n{}\n\n{}", msg_enum, client_struct, start_fn)
             }
@@ -903,6 +949,11 @@ impl Codegen {
             } else {
                 format!("{}, reply_to", param_names.join(", "))
             };
+            // A measured handler: how late its call reached the child's turn.
+            let (binding, started) = match self.measured_slot(h) {
+                Some(slot) => (format!("{binding}, __sent"), format!("__orch_stats[{slot}].started_late(__sent.elapsed());\n                    ")),
+                None => (binding, String::new()),
+            };
 
             // CALL payload: the handler id, then each argument in the wire encoding.
             let encode_args = h.params.iter()
@@ -910,7 +961,7 @@ impl Codegen {
                 .collect::<String>();
 
             // A reply the host cannot read is a failed call, not an answer.
-            let unreadable = failure_reply(h, &format!("{:?}.to_string()", format!("secret serverlet '{}' handler '{}' answered with a reply that could not be read", name, h.name)));
+            let unreadable = self.failure_reply(h, &format!("{:?}.to_string()", format!("secret serverlet '{}' handler '{}' answered with a reply that could not be read", name, h.name)));
             let decode = if h.return_type == Type::Void {
                 "()".to_string()
             } else if answers_failure(h) {
@@ -920,13 +971,13 @@ impl Codegen {
             };
             // The child reports a handler that panicked, or a call it could not make, with
             // an error frame; the child itself is fine.
-            let failed = failure_reply(h, &format!("format!(\"secret serverlet '{}' handler '{}' failed: {{}}\", __msg)", name, h.name));
-            let lost = failure_reply(h, "__why.clone()");
-            let not_running = failure_reply(h, &format!("format!(\"secret serverlet '{}' is not running: it could not start ({{}})\", __start_error)", name));
+            let failed = self.failure_reply(h, &format!("format!(\"secret serverlet '{}' handler '{}' failed: {{}}\", __msg)", name, h.name));
+            let lost = self.failure_reply(h, "__why.clone()");
+            let not_running = self.failure_reply(h, &format!("format!(\"secret serverlet '{}' is not running: it could not start ({{}})\", __start_error)", name));
 
             arms.push(format!(
 "                {n}Msg::{v} {{ {b} }} => {{
-                    __next_call = __next_call.wrapping_add(1);
+                    {started}__next_call = __next_call.wrapping_add(1);
                     let mut __payload = Vec::new();
                     {k}i64.wire_encode(&mut __payload);
 {args}                    let __call: Result<_, String> = async {{
@@ -953,7 +1004,7 @@ impl Codegen {
                         }}
                     }}
                 }}",
-                n = name, v = variant, b = binding, k = k, h = h.name, args = encode_args, dec = decode, failed = failed, lost = lost
+                n = name, v = variant, b = binding, k = k, h = h.name, args = encode_args, dec = decode, failed = failed, lost = lost, started = started
             ));
             default_arms.push(format!("                    {name}Msg::{variant} {{ reply_to, .. }} => {{ let _ = reply_to.send({not_running}); }}"));
         }
@@ -1117,6 +1168,43 @@ impl Codegen {
         start_fn.replacen(&built, &registered, 1)
     }
 
+    /// A measured serverlet's `start_X()`: its records, found or added by name, made before
+    /// its actor — which records how late each call started and what failed — and handed to
+    /// the client, which records how long each call took. `fields` are the client's other
+    /// fields after `tx`, as the start function builds it.
+    fn measure_start(&self, start_fn: String, name: &str, fields: &[&str]) -> String {
+        if self.measured_handlers.is_empty() {
+            return start_fn;
+        }
+        let channel = format!("let (tx, mut rx) = tokio::sync::mpsc::channel::<{}Msg>(100);", name);
+        assert!(start_fn.contains(&channel), "serverlet '{name}': channel not found for its records");
+        let units = self.measured_handlers.iter()
+            .map(|handler| format!("crate::__orch_unit({:?}, \"handler\")", format!("{}.{}", name.replace("::", "."), handler)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let built = format!("{}Client {{ tx, {} }}", name, fields.join(", "));
+        assert!(start_fn.contains(&built), "serverlet '{name}': client construction not found for its records");
+        start_fn
+            .replacen(&channel, &format!("{channel}\n    let stats = std::sync::Arc::new([{units}]);\n    let __orch_stats = stats.clone();"), 1)
+            .replacen(&built, &format!("{}Client {{ tx, {}, stats }}", name, fields.join(", ")), 1)
+    }
+
+    /// `plain_failure_reply`, counted as a failure when the handler is measured: every
+    /// boundary builds its failed call's answer here, so every failure is counted once.
+    /// `__orch_stats` is the serverlet's records, in scope in its client and its actor.
+    pub(super) fn failure_reply(&self, h: &Handler, why: &str) -> String {
+        let reply = plain_failure_reply(h, why);
+        match self.measured_slot(h) {
+            Some(slot) => format!("{{ __orch_stats[{slot}].failed(); {reply} }}"),
+            None => reply,
+        }
+    }
+
+    /// Where a measured handler's record is in its serverlet's `stats`, or `None`.
+    pub(super) fn measured_slot(&self, h: &Handler) -> Option<usize> {
+        self.measured_handlers.iter().position(|name| *name == h.name)
+    }
+
     /// The return type a handler's closure is declared with, when inference needs it: a
     /// `result` handler's body can use `?`, which cannot infer the type it returns from.
     fn handler_return_annotation(&self, h: &Handler) -> String {
@@ -1175,7 +1263,7 @@ impl Codegen {
         };
         let mut arms = Vec::new();
         for h in handlers {
-            let bail = format!("{{ eprintln!(\"[orchestrate] {{}}\", __error); __guest.reset();{crash} let _ = reply_to.send({}); continue; }}", failure_reply(h, "__error"));
+            let bail = format!("{{ eprintln!(\"[orchestrate] {{}}\", __error); __guest.reset();{crash} let _ = reply_to.send({}); continue; }}", self.failure_reply(h, "__error"));
             let bail = bail.as_str();
             let variant = pascal_case(&h.name);
             let bindings = h
@@ -1185,6 +1273,11 @@ impl Codegen {
                 .chain(std::iter::once("reply_to".to_string()))
                 .collect::<Vec<_>>()
                 .join(", ");
+            // A measured handler: how late its call reached the guest's turn.
+            let (bindings, started) = match self.measured_slot(h) {
+                Some(slot) => (format!("{bindings}, __sent"), format!("__orch_stats[{slot}].started_late(__sent.elapsed());\n                    ")),
+                None => (bindings, String::new()),
+            };
 
             // Strings, arrays, and structs are copied into guest memory first and freed
             // once the call is back; numbers go as they are.
@@ -1275,7 +1368,7 @@ impl Codegen {
 
             arms.push(format!(
                 "                {name}Msg::{variant} {{ {bindings} }} => {{\n                    \
-                     {setup}                    __guest.begin();\n                    \
+                     {started}{setup}                    __guest.begin();\n                    \
                      let __outcome = match __guest.instance.get_typed_func::<{tuple_type}, {results}>(&mut __guest.store, {handler:?}) {{\n                        \
                          Ok(__function) => {{\n                            \
                              let __called = __function.call(&mut __guest.store, ({tuple_args}));\n                            \
@@ -1300,6 +1393,7 @@ impl Codegen {
                 cleanup = cleanup,
                 convert = convert,
                 bail = bail,
+                started = started,
             ));
         }
 
@@ -1875,7 +1969,7 @@ pub(crate) fn answers_failure(h: &Handler) -> bool {
 
 /// The reply a handler gets when its call failed: `err(why)` for a `result<T>` handler,
 /// and the return type's default for any other. `why` is a Rust `String` expression.
-pub(crate) fn failure_reply(h: &Handler, why: &str) -> String {
+pub(crate) fn plain_failure_reply(h: &Handler, why: &str) -> String {
     if answers_failure(h) { format!("Err({})", why) } else { "Default::default()".to_string() }
 }
 

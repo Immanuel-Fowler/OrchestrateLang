@@ -219,6 +219,8 @@ pub struct Handler {
     pub name: String,
     pub params: Vec<Param>,
     pub return_type: Type,
+    /// `unmeasured`: left out of what `measure serverlets` records.
+    pub unmeasured: bool,
     pub body: Expr,
 }
 
@@ -315,11 +317,15 @@ pub enum ExprNode {
         /// `every: "20ms"`: the body runs once per period, on wall time, rather than in a
         /// loop as fast as it goes.
         every_micros: Option<u64>,
+        /// `unmeasured`: left out of what `measure workers` records.
+        unmeasured: bool,
         crash_handler: Option<(String, Box<Expr>)>,
     },
     TriggeredBlock {
         event_name: String,
         params: Vec<Param>,
+        /// `unmeasured`: left out of what `measure hooks` records.
+        unmeasured: bool,
         body: Box<Expr>,
     },
     StartProcess {
@@ -466,9 +472,13 @@ pub enum StmtNode {
     },
     Host { name: String, functions: Vec<Handler> },
     /// `every` makes it a cadenced hook: it runs when its period of host time has passed,
-    /// and its parameter is the host time since it last ran.
-    OnTick { param: String, input: Option<Param>, return_type: Type, every: Option<Cadence>, body: Expr },
-    OnFixedTick { param: String, every: Option<Cadence>, body: Expr },
+    /// and its parameter is the host time since it last ran. `unmeasured` leaves it out of
+    /// what `measure hooks` records.
+    OnTick { param: String, input: Option<Param>, return_type: Type, every: Option<Cadence>, unmeasured: bool, body: Expr },
+    OnFixedTick { param: String, every: Option<Cadence>, unmeasured: bool, body: Expr },
+    /// `measure serverlets, hooks, workers`: what the runtime keeps counts and timings of,
+    /// for `stats()` and `Scripts::stats()`.
+    Measure { serverlets: bool, hooks: bool, workers: bool },
     OnStart(Expr),
     OnStop(Expr),
     Break,
@@ -560,7 +570,7 @@ fn walk_stmt_inner<'a>(stmt: &'a Stmt, visit: &mut dyn FnMut(Node<'a>), deferred
     let go = |e: &'a Expr, visit: &mut dyn FnMut(Node<'a>)| walk_expr_inner(e, visit, deferred);
     match &stmt.node {
         StmtNode::Let { value, .. } | StmtNode::Expr(value) | StmtNode::Return(Some(value)) => go(value, visit),
-        StmtNode::SharedQueue { .. } => {}
+        StmtNode::SharedQueue { .. } | StmtNode::Measure { .. } => {}
         StmtNode::FnDecl { body, .. } | StmtNode::TaskDecl { body, .. } | StmtNode::ProcessDecl { body, .. }
         | StmtNode::OrchestratorDecl { body, .. } | StmtNode::OnTick { body, .. } | StmtNode::OnFixedTick { body, .. }
         | StmtNode::OnStart(body) | StmtNode::OnStop(body) => go(body, visit),

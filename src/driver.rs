@@ -509,6 +509,7 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
     for ((local_name, module_stmts, module_path), bounds) in modules_data.into_iter().zip(module_bounds) {
         let mut generator = codegen::Codegen::new(all_tasks.clone());
         generator.generic_bounds = bounds;
+        generator.measure = codegen::core::Measure::of(&ast);
         generator.library = library.is_some();
         generator.serverlet_state_types = type_checker.serverlet_state.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         generator.host_functions = host_functions.clone();
@@ -633,6 +634,8 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
     }).collect();
     if library.is_some() { generator.scan_events(&module_event_stmts); }
     generator.module_types = module_event_stmts.iter().filter(|s| matches!(s.node, ast::StmtNode::StructDef { .. } | ast::StmtNode::EnumDef { .. })).cloned().collect();
+    // The entry file's `measure` line applies to every file.
+    generator.measure = codegen::core::Measure::of(&ast);
     // The tick calls the cadenced serverlets only in a program that has one, anywhere.
     generator.has_cadenced = ast.iter().chain(module_event_stmts.iter()).any(|stmt| matches!(&stmt.node,
         ast::StmtNode::Serverlet { landline: Some(ast::LandlineConfig { every_micros: Some(_), .. }), .. }
@@ -980,6 +983,14 @@ fn library_rules(input_file: &str, ast: &[ast::Stmt], modules: &[&[ast::Stmt]], 
     let located = ast.iter().map(|stmt| (input_file, stmt))
         .chain(modules.iter().flat_map(|stmts| stmts.iter().map(|stmt| ("an imported module", stmt))));
     for (file, stmt) in located {
+        if let ast::StmtNode::Measure { .. } = &stmt.node {
+            if file != input_file {
+                return Err(format!(
+                    "{}:line {}, col {}: `measure` is declared in a module; it names what the whole program measures, so it goes in the entry file",
+                    file, stmt.span.line, stmt.span.col
+                ));
+            }
+        }
         if let ast::StmtNode::SharedQueue { name, .. } = &stmt.node {
             if file != input_file {
                 return Err(format!(

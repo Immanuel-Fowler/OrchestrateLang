@@ -727,6 +727,69 @@ orchestrator main(procs: process[paced]) {
 }
 
 #[test]
+fn runtime_measure_records_what_it_declares() {
+    // `measure serverlets, hooks, workers`, read back with `stats()`: calls and failures
+    // per unit, and nothing for what is `unmeasured`. Timings vary, so only the counts, and
+    // that the columns are filled, are checked.
+    let stdout = run_orch("measure", r#"
+measure serverlets, hooks, workers
+
+serverlet Book {
+    let filled = 0
+    on place(qty: int) -> int {
+        filled = filled + qty
+        return filled
+    }
+    on crash(n: int) -> int {
+        let xs = [1]
+        return xs[n]
+    }
+    on ping() -> int unmeasured { return 1 }
+}
+
+serverlet Quiet unmeasured {
+    on hello() -> int { return 1 }
+}
+
+shared let hits = 0
+
+on hit(n: int) {
+    hits = hits + n
+}
+
+let paced = automatic(restart: always, every: "10ms") {
+    hits = hits + 1
+}
+
+orchestrator main(procs: process[paced]) {
+    let book = start Book()
+    let quiet = start Quiet()
+    for i in range(20) { book.place(i) }
+    book.crash(5)
+    book.ping()
+    quiet.hello()
+    for i in range(5) { trigger hit(i) }
+    sleep(120)
+    print(stats())
+    stop_orch()
+}
+"#);
+    // A row is the unit's name — which may have a space, as `on hit` does — then its kind,
+    // calls, failures, and the timing columns.
+    let row = |unit: &str| stdout.lines()
+        .find_map(|line| line.strip_prefix(unit).filter(|rest| rest.starts_with(' ')).map(|rest| rest.split_whitespace().map(str::to_string).collect::<Vec<_>>()));
+    let counts = |unit: &str| row(unit).map(|cells| (cells[1].parse::<u64>().unwrap(), cells[2].parse::<u64>().unwrap()));
+    assert_eq!(counts("Book.place"), Some((20, 0)), "stdout: {stdout}");
+    assert_eq!(counts("Book.crash"), Some((1, 1)), "a panic is a failed call: {stdout}");
+    assert_eq!(counts("on hit"), Some((5, 0)), "stdout: {stdout}");
+    let (runs, crashes) = counts("paced").expect("paced row");
+    assert!((3..=13).contains(&runs) && crashes == 0, "paced ran {runs} times: {stdout}");
+    assert!(!stdout.contains("Book.ping") && !stdout.contains("Quiet"), "unmeasured units were recorded: {stdout}");
+    let place = row("Book.place").unwrap();
+    assert!(place[3] != "-" && place[7] != "-", "duration and start delay: {stdout}");
+}
+
+#[test]
 fn runtime_secret_serverlet_state_persists() {
     // The body runs in a separate process; state must survive across calls,
     // proving the child is long-lived and reused.

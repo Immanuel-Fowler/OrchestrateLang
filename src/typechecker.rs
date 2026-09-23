@@ -38,6 +38,8 @@ pub struct TypeChecker {
     cadenced: HashSet<String>,
     /// Each `shared queue` and the type of its items.
     queues: HashMap<String, Type>,
+    /// How many `measure` lines the file has: `stats()` needs one, and one is all it may have.
+    measures: usize,
     /// What each generic function's body needs of its type parameters — `Display` to show
     /// one, `PartialEq` to compare with `==`, `PartialOrd` to order — for codegen's bounds
     /// and for the calls that pass a type.
@@ -91,6 +93,7 @@ impl TypeChecker {
             var_serverlet: HashMap::new(),
             cadenced: HashSet::new(),
             queues: HashMap::new(),
+            measures: 0,
             generic_bounds: HashMap::new(),
             current_generic: None,
             generic_calls: Vec::new(),
@@ -162,6 +165,7 @@ impl TypeChecker {
                 StmtNode::SharedQueue { name, ty, .. } => {
                     self.queues.insert(name.clone(), ty.clone());
                 }
+                StmtNode::Measure { .. } => self.measures += 1,
                 StmtNode::Let { name, shared, value, .. } => {
                     if *shared {
                         self.shared_names.insert(name.clone());
@@ -1139,6 +1143,14 @@ impl TypeChecker {
 
     fn check_stmt(&mut self, stmt: &Stmt) -> Result<(), String> {
         match &stmt.node {
+            StmtNode::Measure { .. } => {
+                if self.env.len() > 1 {
+                    return Err(format!("line {}, col {}: `measure` is declared at the top of the file, once, for the whole program", stmt.span.line, stmt.span.col));
+                }
+                if self.measures > 1 {
+                    return Err(format!("line {}, col {}: a program has one `measure` line; name every kind to measure on it, as in `measure serverlets, hooks, workers`", stmt.span.line, stmt.span.col));
+                }
+            }
             StmtNode::SharedQueue { name, ty, .. } => {
                 if self.env.len() > 1 {
                     return Err(format!(
@@ -1758,6 +1770,15 @@ impl TypeChecker {
             }
             ExprNode::Call { callee, args } if callee == "latest" && !self.functions.contains_key(callee) => {
                 self.latest_type(args, expr.span.line, expr.span.col)
+            }
+            ExprNode::Call { callee, args } if callee == "stats" && args.is_empty() && !self.functions.contains_key(callee) => {
+                if self.measures == 0 {
+                    return Err(format!(
+                        "line {}, col {}: stats() reports what `measure` records, and this program measures nothing; add `measure serverlets, hooks, workers`, or the kinds you want, at the top of the file",
+                        expr.span.line, expr.span.col
+                    ));
+                }
+                Ok(Type::Str)
             }
             ExprNode::Call { callee, args } if matches!(callee.as_str(), "push" | "pop" | "drain" | "take" | "length")
                 && !self.functions.contains_key(callee)

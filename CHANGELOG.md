@@ -10,6 +10,18 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 ## [Unreleased]
 
 ### Added
+- **`measure serverlets, hooks, workers`: the runtime keeps counts and timings, read with
+  `stats()`.** Every measurement in three programs was `clock_micros` wrapped around a
+  call by hand, carried out through timing fields and host functions. Now one line at the
+  top of the entry file records, per serverlet handler, tick hook, event handler, and
+  worker: calls, failures (2.2's), and p50/p90/p99/max of duration, start delay — sent to
+  started, triggered to started, how long the tick ran first, how late a paced worker's
+  run was — and CPU time for code that runs without waiting. `unmeasured` on a serverlet,
+  a handler, a hook, an event handler, or a worker leaves it out. `stats()` returns a
+  table; a library host calls `Scripts::stats()`. It is compiled in only for what is
+  measured, so a program without the line is unchanged; the tick-cost benchmark has a
+  `measured` row for the cost of one hook. Tests: `runtime_measure_records_what_it_declares`,
+  `library_measure_records_hooks_events_and_handlers`, `library_measure_keeps_a_typed_hooks_output`.
 - **`shared queue`**: `shared queue jobs: Job (capacity: 256, full: "reject")`, with
   `push`, `pop`, `drain`, `take`, and `length`, each atomic under the queue's own lock. A
   runtime built work queues from functions that rebuilt whole arrays, with a comment
@@ -173,6 +185,10 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   write, which is why this release is a minor one.
 
 ### Fixed
+- **A Python or TypeScript landline whose host has gone exits quietly.** A late answer to
+  a call that missed its budget, written after the program exited, ended the Python
+  process with a `BrokenPipeError` traceback on stderr, and could leave the TypeScript one
+  with an unhandled EPIPE. Found while measuring a budget miss.
 - **A generic function can show, compare, or order its `T`.** `to_string(x)` or `a == b`
   on a type parameter passed `check` and reached rustc (E0277), since generated generic
   functions were bound only by `Clone`, `Debug`, `Send`, and `Sync`. The check now finds

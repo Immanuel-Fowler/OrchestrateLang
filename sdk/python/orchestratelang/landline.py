@@ -1,6 +1,7 @@
 """Protocol v1 serverlets. Requires Python 3.10+; no third-party dependencies."""
 import dataclasses
 import inspect
+import os
 import struct
 import sys
 import typing
@@ -212,9 +213,17 @@ def serve(serverlet_class):
                 host._active = False
             encoded = _encode(result_type, result)
         except Exception as error:
-            _write_frame(writer, 5, call_id, _encode(str, f"{type(error).__name__}: {error}"))
+            reply = (5, _encode(str, f"{type(error).__name__}: {error}"))
         else:
-            _write_frame(writer, 4, call_id, encoded)
+            reply = (4, encoded)
+        try:
+            _write_frame(writer, reply[0], call_id, reply[1])
+        except (BrokenPipeError, ConnectionResetError):
+            # The host has gone — a late reply to a call it stopped waiting for, after it
+            # exited. Nothing is listening, so this process ends quietly rather than with
+            # a traceback, and stdout is pointed away so the exit's own flush cannot fail.
+            os.dup2(os.open(os.devnull, os.O_WRONLY), writer.fileno())
+            return
 
 
 def _split_types(text):
