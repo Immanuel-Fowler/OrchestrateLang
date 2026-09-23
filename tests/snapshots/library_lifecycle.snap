@@ -743,10 +743,23 @@ async fn __orch_sleep(duration: std::time::Duration) {
     }
     assert!(ORCH_EVENT.try_with(|_| ()).is_ok(), "deterministic sleep is supported only in event handlers");
     let deadline = context.clock_nanos.load(std::sync::atomic::Ordering::Relaxed).saturating_add(duration.as_nanos().min(u64::MAX as u128) as u64);
-    std::future::poll_fn(|_| if context.clock_nanos.load(std::sync::atomic::Ordering::Relaxed) >= deadline {
+    __orch_until(move |context| context.clock_nanos.load(std::sync::atomic::Ordering::Relaxed) >= deadline).await
+}
+/// A `take` on an empty queue in a deterministic run: the handler gives up its turn, the
+/// drain puts it back in the queue, and it looks again at the next drain, in order.
+async fn __orch_queue_wait() {
+    assert!(ORCH_EVENT.try_with(|_| ()).is_ok(), "a deterministic take is supported only in event handlers: anywhere else, nothing would push while it waits");
+    let mut looked = false;
+    __orch_until(move |_| std::mem::replace(&mut looked, true)).await
+}
+/// Pending until `ready` says so, marking the handler as waiting on a later drain.
+async fn __orch_until(mut ready: impl FnMut(&OrchContext) -> bool) {
+    let context = __orch_context();
+    std::future::poll_fn(|_| if ready(&context) {
         std::task::Poll::Ready(())
     } else {
-        // Waiting on host time, which only a later tick moves: the drain requeues it.
+        // Waiting on a later drain — host time only a later tick moves, or an item another
+        // handler pushes: the drain requeues it.
         context.host_sleeping.store(true, std::sync::atomic::Ordering::Relaxed);
         std::task::Poll::Pending
     }).await

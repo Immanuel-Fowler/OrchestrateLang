@@ -25,6 +25,8 @@ fn type_params_str(type_params: &[String], needs: Option<&std::collections::BTre
 impl Codegen {
     pub fn compile_stmt(&mut self, stmt: &Stmt) -> String {
         match &stmt.node {
+            // Declared with the other queues, where they live; nothing to run here.
+            StmtNode::SharedQueue { .. } => String::new(),
             StmtNode::Let { name, ty, value, shared } => {
                 if *shared {
                     // The binding lives in the shared struct, initialised there; nothing
@@ -818,7 +820,7 @@ impl Codegen {
             waits |= match node {
                 crate::ast::Node::Stmt(stmt) => matches!(stmt.node, StmtNode::Parallel(_)),
                 crate::ast::Node::Expr(e) => match &e.node {
-                    ExprNode::Call { callee, .. } => callee == "sleep" || self.tasks.contains(callee),
+                    ExprNode::Call { callee, .. } => callee == "sleep" || self.tasks.contains(callee) || (callee == "take" && !self.user_functions.contains(callee)),
                     ExprNode::ModuleCall { module_local_name, function, .. } => {
                         if self.modules.contains(module_local_name) {
                             self.tasks.contains(&format!("{}::{}", module_local_name, function))

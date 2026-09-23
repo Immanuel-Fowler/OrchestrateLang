@@ -136,6 +136,11 @@ fn test_error_cases() {
     assert_check_fails("diagnostics/for_over_a_map.orch", "loop over keys(m) or values(m)");
     assert_check_fails("diagnostics/method_on_a_non_client.orch", "only a serverlet client has handlers");
     assert_check_fails("diagnostics/client_to_a_secret_handler.orch", "means nothing in another");
+    // A queue is reached through its five operations, by its own name, from where it may wait.
+    assert_check_fails("diagnostics/queue_as_a_value.orch", "is used through push, pop, drain, take, and length");
+    assert_check_fails("diagnostics/queue_take_in_a_fn.orch", "fn 'next' calls take");
+    assert_check_fails("diagnostics/queue_without_a_policy.orch", "needs both `capacity:` and `full:`");
+    assert_check_fails("diagnostics/queue_hidden_by_a_local.orch", "a local of the same name would hide it");
     // A generic function that shows its T passes that need on to its callers.
     assert_check_fails("diagnostics/generic_shows_a_struct.orch", "describe() shows its T, and P cannot be");
     assert_check_lib_fails("latest_without_cadence.orch", "has no cadence, so nothing calls its tick");

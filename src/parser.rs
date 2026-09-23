@@ -201,6 +201,13 @@ impl Parser {
         } else if self.match_token(TokenKind::Serverlet) {
             self.parse_serverlet_statement()?
         } else if matches!(&self.peek().kind, TokenKind::Identifier(word) if word == "shared")
+            && matches!(&self.peek_at(1).kind, TokenKind::Identifier(word) if word == "queue")
+            && matches!(&self.peek_at(2).kind, TokenKind::Identifier(_))
+        {
+            self.advance();
+            self.advance();
+            self.parse_shared_queue()?
+        } else if matches!(&self.peek().kind, TokenKind::Identifier(word) if word == "shared")
             && matches!(&self.peek_at(1).kind, TokenKind::Let)
         {
             // `shared` is contextual, so a variable may still be called shared.
@@ -438,6 +445,38 @@ impl Parser {
         }
         self.consume(TokenKind::RBrace, "Expected '}' to end serverlet body")?;
         Ok(StmtNode::Serverlet { name, state, handlers, secret, crash_handler, sandbox, landline, grants })
+    }
+
+    /// `shared queue jobs: Job (capacity: 256, full: "reject")`, after `shared queue`. Both
+    /// settings are required: what a full queue does is a choice to write down.
+    fn parse_shared_queue(&mut self) -> Result<StmtNode, String> {
+        let at = self.peek().clone();
+        let name = self.parse_ident("queue name")?;
+        self.consume(TokenKind::Colon, &format!("Expected ':' and the item type after 'shared queue {}'", name))?;
+        let ty = self.parse_type()?;
+        self.consume(TokenKind::LParen, "Expected '(capacity: N, full: \"reject\" or \"drop_oldest\")' after the queue's item type")?;
+        let (mut capacity, mut drop_oldest) = (None, None);
+        while self.peek().kind != TokenKind::RParen && self.peek().kind != TokenKind::EOF {
+            let key = self.parse_ident("queue setting")?;
+            self.consume(TokenKind::Colon, &format!("Expected ':' after '{}'", key))?;
+            let value = self.advance().clone();
+            match (key.as_str(), &value.kind) {
+                ("capacity", TokenKind::Int(n)) if capacity.is_none() && *n >= 1 => capacity = Some(*n as u64),
+                ("capacity", _) => return Err(format!("line {}, col {}: a queue's capacity is a whole number of items, at least one, given once", value.line, value.col)),
+                ("full", TokenKind::Str(policy)) if drop_oldest.is_none() && (policy == "reject" || policy == "drop_oldest") => drop_oldest = Some(policy == "drop_oldest"),
+                ("full", _) => return Err(format!("line {}, col {}: `full:` is \"reject\", which refuses the new item, or \"drop_oldest\", which drops the oldest to make room; given once", value.line, value.col)),
+                _ => return Err(format!("line {}, col {}: a queue takes `capacity:` and `full:`, not '{}'", value.line, value.col, key)),
+            }
+            if !self.match_token(TokenKind::Comma) { break; }
+        }
+        self.consume(TokenKind::RParen, "Expected ')' after the queue's settings")?;
+        let (Some(capacity), Some(drop_oldest)) = (capacity, drop_oldest) else {
+            return Err(format!(
+                "line {}, col {}: shared queue '{}' needs both `capacity:` and `full:` — how many items it holds, and whether a push to a full queue is refused (\"reject\") or drops the oldest (\"drop_oldest\")",
+                at.line, at.col, name
+            ));
+        };
+        Ok(StmtNode::SharedQueue { name, ty, capacity, drop_oldest })
     }
 
     /// `every "100ms"` or `every 5 ticks` after a tick hook's signature, if it has one.

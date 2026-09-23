@@ -161,9 +161,10 @@ synchronous `fn` incrementing one binding, with every increment landing — cove
 
 Each was decided as this document recommended:
 
-1. **Which types may be shared?** Data: `int`, `float`, `bool`, `string`, arrays, options,
-   and structs. A serverlet client, a `process`, or a closure is rejected by name — the
-   first two are already safe to use concurrently and the third is not data.
+1. **Which types may be shared?** Data: `int`, `float`, `bool`, `string`, arrays, maps,
+   options, and structs, and — since clients became values — serverlet clients, which a
+   statement copies out under the lock and calls outside it. A `process` or a closure is
+   rejected by name.
 2. **Is `shared` the right word?** Kept. It is accurate and greppable, and it is
    contextual, so a binding may still be called `shared`.
 3. **A lock-free path when a program provably has no workers?** No. One behaviour.
@@ -194,6 +195,17 @@ wherever they are used. `runtime_shared_state_is_not_copied_into_workers` covers
 7. **Docs** — `language-reference.md` §2.1 alongside `let`, the ladder in
    `design/polyglot-coordination-and-attachment.md`, the roadmap, and the website's
    boundary ladder.
+
+## 6a. `shared queue`, added after
+
+`shared queue jobs: Job (capacity: 256, full: "reject")` is the data structure a
+coordination language is for, and it removes the reasoning about whether two workers can
+lose an item between two statements. It is not a `shared let` of an array: each queue has
+its own lock, held for one `push`, `pop`, `drain`, or `length` and never across a wait, so
+`take` can wait for an item without blocking every other statement that touches shared
+state. The capacity and the policy for a full queue (`"reject"` or `"drop_oldest"`) are
+required, and `push` returns `false` whenever something was lost. See the language
+reference, §2.1.
 
 ## 7. Out of scope
 

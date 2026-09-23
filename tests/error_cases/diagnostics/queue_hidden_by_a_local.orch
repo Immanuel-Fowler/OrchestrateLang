@@ -1,0 +1,6 @@
+shared queue jobs: int (capacity: 8, full: "reject")
+orchestrator main() {
+    let jobs = [1, 2]
+    let n = length(jobs)
+    stop_orch()
+}

@@ -1,0 +1,2 @@
+shared queue jobs: int (capacity: 8)
+orchestrator main() { stop_orch() }

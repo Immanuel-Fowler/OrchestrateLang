@@ -10,6 +10,16 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 ## [Unreleased]
 
 ### Added
+- **`shared queue`**: `shared queue jobs: Job (capacity: 256, full: "reject")`, with
+  `push`, `pop`, `drain`, `take`, and `length`, each atomic under the queue's own lock. A
+  runtime built work queues from functions that rebuilt whole arrays, with a comment
+  reasoning about whether two workers could lose an item between two statements. `push`
+  returns `false` whenever something was lost — the new item under `"reject"`, the oldest
+  under `"drop_oldest"` — and both settings are required. `take` waits for an item without
+  holding a lock, so a consumer needs no poll loop; in a deterministic library run a
+  `take` on an empty queue gives up its turn and is served in order by a later handler's
+  `push`. Tests: `tests/programs/shared_queues.orch`, `library_shared_queue_between_handlers`,
+  and four corpus cases.
 - **A client is a value with a type, `S.client`,** and serverlet instances can be started
   and found by key. `start S()` was typed like a worker, and a handler was found by the
   variable's name, so a client could not be a parameter, a field, an array element, or a

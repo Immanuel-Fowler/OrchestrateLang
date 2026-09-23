@@ -379,6 +379,16 @@ pub enum ExprNode {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum StmtNode {
+    /// `shared queue jobs: Job (capacity: 256, full: "reject")`: a queue any task may
+    /// push to and take from, each operation atomic, with a declared capacity and what a
+    /// push to a full one does.
+    SharedQueue {
+        name: String,
+        ty: Type,
+        capacity: u64,
+        /// `full: "drop_oldest"`; otherwise `"reject"`.
+        drop_oldest: bool,
+    },
     Let {
         name: String,
         ty: Option<Type>,
@@ -550,6 +560,7 @@ fn walk_stmt_inner<'a>(stmt: &'a Stmt, visit: &mut dyn FnMut(Node<'a>), deferred
     let go = |e: &'a Expr, visit: &mut dyn FnMut(Node<'a>)| walk_expr_inner(e, visit, deferred);
     match &stmt.node {
         StmtNode::Let { value, .. } | StmtNode::Expr(value) | StmtNode::Return(Some(value)) => go(value, visit),
+        StmtNode::SharedQueue { .. } => {}
         StmtNode::FnDecl { body, .. } | StmtNode::TaskDecl { body, .. } | StmtNode::ProcessDecl { body, .. }
         | StmtNode::OrchestratorDecl { body, .. } | StmtNode::OnTick { body, .. } | StmtNode::OnFixedTick { body, .. }
         | StmtNode::OnStart(body) | StmtNode::OnStop(body) => go(body, visit),

@@ -202,6 +202,17 @@ named in `CHANGELOG.md`.
   type without one is a `check` error that says to declare `result<T>`.
 - **An in-process `on_crash` bound `Any { .. }`**, the panic payload's debug form, rather
   than the panic's message.
+- **Values that could not be shown or compared passed `check`.** `print`, `to_string`, and
+  `{...}` of an array, an option, or a struct, `==` on a struct or an enum, and a generic
+  function showing or comparing its `T` all reached rustc. Structs and enums now derive
+  equality where they can, generic functions are bounded by what their bodies need, and the
+  rest is refused by `check` with what to do instead. Found while adding client types, when
+  a client's `==` and `print` had to be refused.
+- **A sandbox guest took the file's structs but not its enums**, so any struct holding an
+  enum, anywhere in the file, broke the guest's build. Found while testing structs with enum
+  fields.
+- **Names inside a string's `{...}` were reported at their position in the snippet**, line
+  1 and a column counted from the brace.
 
 ## Found, not fixed
 

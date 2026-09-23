@@ -1175,6 +1175,60 @@ fn main() {
     assert_eq!(output.trim(), "[1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3]");
 }
 
+/// A shared queue per instance. In a deterministic run a handler waiting in `take` gives up
+/// its turn and is served, in order, by a later handler's push; a full `drop_oldest` queue
+/// makes room and its push says so. The trace is the same on both tick paths.
+#[test]
+fn library_shared_queue_between_handlers() {
+    let root = root("shared_queue");
+    build(&root, r#"
+host world { fn record(tag: int, value: int) }
+shared queue orders: int (capacity: 4, full: "drop_oldest")
+on consume(tag: int) {
+    let order = take(orders)
+    world.record(tag, order)
+}
+on produce(n: int) {
+    let kept = push(orders, n)
+    if !kept { world.record(9, n) }
+}
+on_tick(dt: float) {
+    world.record(0, length(orders))
+}
+orchestrator main() {}
+"#);
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<(i64, i64)>>>);
+impl scripts::Host for Host { fn world_record(&self, tag: i64, value: i64) -> Result<(), String> { self.0.lock().unwrap().push((tag, value)); Ok(()) } }
+fn run(runtime: &tokio::runtime::Runtime, sync: bool) -> Vec<(i64, i64)> {
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let options = scripts::StartOptions { deterministic: true, ..Default::default() };
+    let mut scripts = scripts::start_with_options(runtime.handle(), Host(recorded.clone()), options).unwrap();
+    scripts.ready_blocking(runtime).unwrap();
+    let tick = |s: &mut scripts::Scripts| if sync { s.tick_sync(runtime, 0.01).unwrap() } else { s.tick_blocking(runtime, 0.01).unwrap() };
+    scripts.trigger_consume(1).unwrap();
+    scripts.trigger_consume(2).unwrap();
+    scripts.trigger_produce(10).unwrap();
+    tick(&mut scripts);
+    scripts.trigger_produce(20).unwrap();
+    tick(&mut scripts);
+    for n in 1..=5 { scripts.trigger_produce(100 + n).unwrap(); }
+    tick(&mut scripts);
+    scripts.shutdown_blocking(runtime).unwrap();
+    let out = recorded.lock().unwrap().clone();
+    out
+}
+fn main() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let reference = run(&runtime, false);
+    assert_eq!(reference, run(&runtime, true), "tick_sync diverged from tick_blocking");
+    println!("{:?}", reference);
+}
+"#);
+    assert_eq!(output.trim(), "[(0, 1), (1, 10), (0, 1), (2, 20), (9, 105), (0, 4)]");
+}
+
 /// A cadence is a divisor of the host's clock. Over 10,000 ticks of varying `dt`, a
 /// sandboxed serverlet declared `every: "100ms"`, a hook `every "250ms"`, and a hook
 /// `every 7 ticks` each run exactly as often as a schedule computed here from the same

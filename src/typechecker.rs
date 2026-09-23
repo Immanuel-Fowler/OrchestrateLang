@@ -36,6 +36,8 @@ pub struct TypeChecker {
     var_serverlet: HashMap<String, String>,
     /// Serverlets declared with `every:`, whose `tick` the runtime calls on a cadence.
     cadenced: HashSet<String>,
+    /// Each `shared queue` and the type of its items.
+    queues: HashMap<String, Type>,
     /// What each generic function's body needs of its type parameters — `Display` to show
     /// one, `PartialEq` to compare with `==`, `PartialOrd` to order — for codegen's bounds
     /// and for the calls that pass a type.
@@ -88,6 +90,7 @@ impl TypeChecker {
             serverlet_names: HashSet::new(),
             var_serverlet: HashMap::new(),
             cadenced: HashSet::new(),
+            queues: HashMap::new(),
             generic_bounds: HashMap::new(),
             current_generic: None,
             generic_calls: Vec::new(),
@@ -155,6 +158,9 @@ impl TypeChecker {
             match &stmt.node {
                 StmtNode::TaskDecl { name, .. } | StmtNode::ProcessDecl { name, .. } | StmtNode::OrchestratorDecl { name, .. } => {
                     self.tasks.insert(name.clone());
+                }
+                StmtNode::SharedQueue { name, ty, .. } => {
+                    self.queues.insert(name.clone(), ty.clone());
                 }
                 StmtNode::Let { name, shared, value, .. } => {
                     if *shared {
@@ -812,6 +818,8 @@ impl TypeChecker {
     fn call_waits(&self, callee: &str) -> Option<String> {
         if callee == "sleep" {
             Some("calls sleep, which suspends until the timer fires".to_string())
+        } else if callee == "take" && !self.functions.contains_key(callee) {
+            Some("calls take, which waits for an item in the queue".to_string())
         } else if self.tasks.contains(callee) {
             Some(format!("calls the task '{}', which it would have to wait for", callee))
         } else {
@@ -1131,6 +1139,20 @@ impl TypeChecker {
 
     fn check_stmt(&mut self, stmt: &Stmt) -> Result<(), String> {
         match &stmt.node {
+            StmtNode::SharedQueue { name, ty, .. } => {
+                if self.env.len() > 1 {
+                    return Err(format!(
+                        "line {}, col {}: shared queue '{}' is declared inside a body; a queue is how tasks hand each other work, so it is declared at the top level, beside the tasks that use it",
+                        stmt.span.line, stmt.span.col, name
+                    ));
+                }
+                if !crate::codegen::stmt::shareable(ty) {
+                    return Err(format!(
+                        "line {}, col {}: shared queue '{}' holds {}, which cannot be shared. {}",
+                        stmt.span.line, stmt.span.col, name, ty.display_name(), crate::codegen::stmt::SHAREABLE
+                    ));
+                }
+            }
             StmtNode::Let { name, ty, value, shared } => {
                 if let ExprNode::StartServerlet { name: serverlet, .. } = &value.node {
                     self.var_serverlet.insert(name.clone(), serverlet.clone());
@@ -1580,8 +1602,21 @@ impl TypeChecker {
                 Literal::Bool(_) => Ok(Type::Bool),
             },
             ExprNode::Identifier(name) => {
+                // A queue's name means the queue everywhere: a local of the same name would
+                // hide it from the code after it.
+                if self.queues.contains_key(name) && self.lookup_var(name).is_some() {
+                    return Err(format!(
+                        "line {}, col {}: '{}' names a shared queue, and a local of the same name would hide it; rename the local",
+                        expr.span.line, expr.span.col, name
+                    ));
+                }
                 if let Some(ty) = self.lookup_var(name) {
                     Ok(ty)
+                } else if self.queues.contains_key(name) {
+                    Err(format!(
+                        "line {}, col {}: '{}' is a shared queue, which is used through push, pop, drain, take, and length rather than as a value",
+                        expr.span.line, expr.span.col, name
+                    ))
                 } else {
                     Err(format!("line {}, col {}: undefined variable '{}'", expr.span.line, expr.span.col, name))
                 }
@@ -1723,6 +1758,33 @@ impl TypeChecker {
             }
             ExprNode::Call { callee, args } if callee == "latest" && !self.functions.contains_key(callee) => {
                 self.latest_type(args, expr.span.line, expr.span.col)
+            }
+            ExprNode::Call { callee, args } if matches!(callee.as_str(), "push" | "pop" | "drain" | "take" | "length")
+                && !self.functions.contains_key(callee)
+                && matches!(args.first(), Some(Expr { node: ExprNode::Identifier(name), .. }) if self.queues.contains_key(name) && self.lookup_var(name).is_none()) =>
+            {
+                let ExprNode::Identifier(queue) = &args[0].node else { unreachable!() };
+                let item = self.queues[queue].clone();
+                let expected = if callee == "push" { 2 } else { 1 };
+                if args.len() != expected {
+                    return Err(format!("line {}, col {}: {}() on a queue takes {}", expr.span.line, expr.span.col, callee, if expected == 2 { "the queue and an item" } else { "the queue" }));
+                }
+                match callee.as_str() {
+                    "push" => {
+                        let given = self.infer_expr(&args[1])?;
+                        if !self.types_compatible(&item, &given) {
+                            return Err(format!(
+                                "line {}, col {}: queue '{}' holds {}, got {}",
+                                expr.span.line, expr.span.col, queue, item.display_name(), given.display_name()
+                            ));
+                        }
+                        Ok(Type::Bool)
+                    }
+                    "pop" => Ok(Type::Option(Box::new(item))),
+                    "drain" => Ok(Type::Array(Box::new(item), vec![])),
+                    "take" => Ok(item),
+                    _ => Ok(Type::Int),
+                }
             }
             ExprNode::Call { callee, args } => {
                 let mut arg_types = Vec::new();

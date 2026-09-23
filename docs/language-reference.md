@@ -137,13 +137,50 @@ A change made in place — `xs[i] = v`, `p.field = v`, `append`, `remove` — ch
 shared binding itself, under the same lock, and reading one element reads it where it
 lives rather than copying the whole array first.
 
-`int`, `float`, `bool`, `string`, arrays, options, structs, and a foreign `handle` can be
-shared. Every statement that uses a shared handle holds the lock, so its native object is
-used by one statement at a time — from whichever thread runs that statement, so a native
-library that must stay on one thread belongs with the hooks instead. A serverlet client, a
-process, or a closure cannot be shared — the first two are already safe to use
-concurrently, and the third is not data. A program that never writes `shared` gains no
-mutex and no cost.
+`int`, `float`, `bool`, `string`, arrays, maps, options, structs, a foreign `handle`, and
+serverlet clients can be shared. Every statement that uses a shared handle holds the lock,
+so its native object is used by one statement at a time — from whichever thread runs that
+statement, so a native library that must stay on one thread belongs with the hooks
+instead. A shared client is copied out under the lock and called in a statement of its
+own, since the call waits. A process or a closure cannot be shared. A program that never
+writes `shared` gains no mutex and no cost.
+
+#### `shared queue`
+
+A queue is how tasks hand each other work:
+
+```orchestrate
+shared queue jobs: Job (capacity: 256, full: "reject")
+
+let consumer = automatic(restart: always) {
+    let job = take(jobs)          // waits until there is one
+    run(job)
+}
+
+on request(job: Job) {
+    if !push(jobs, job) { print("busy: refused " + to_string(job.id)) }
+}
+```
+
+| Operation | Does |
+|---|---|
+| `push(q, item) -> bool` | Adds the item; `false` when something was lost — the new item, refused by a full `"reject"` queue, or the oldest, dropped by a full `"drop_oldest"` queue to make room |
+| `pop(q) -> option<T>` | The oldest item, or `none` |
+| `drain(q) -> T[]` | Every item, oldest first, leaving it empty |
+| `take(q) -> T` | The oldest item, waiting until there is one |
+| `length(q) -> int` | How many items it holds |
+
+Each operation is atomic, under a lock of the queue's own, separate from the `shared let`
+mutex, so two workers cannot lose an item between two statements. `capacity:` and `full:`
+are both required: what a full queue does is a choice to write down, and a dropped item is
+always a stated outcome, never a silent one. `take` holds no lock while it waits, and like
+`sleep` it is refused where waiting is (a `fn`); a statement with `take` in it cannot also
+touch `shared let` state. In a deterministic library run, a `take` on an empty queue gives
+up its turn — the handler goes back in the queue and looks again at the next drain, in
+order — so a handler waiting for an item is served by a later one's `push`, the same way on
+every replay; outside an event handler it is refused there. A queue is declared at the top
+of the entry file and reached by its name, which nothing else may reuse; it is per instance
+in a library. Its items are any type a `shared let` can hold.
 
 ### 2.2 Types
 

@@ -23,6 +23,8 @@ fn __orch_budgets_apply() -> bool { true }
 
 /// Whether this run replays deterministically. Only a library, started so, does.
 fn __orch_deterministic() -> bool { false }
+/// A deterministic run's turn for a `take` on an empty queue; there is none here.
+async fn __orch_queue_wait() {}
 
 /// Starts a worker's supervisor.
 fn __orch_spawn_worker<F: std::future::Future<Output = ()> + Send + 'static>(_worker: &str, future: F) -> tokio::task::JoinHandle<()> {
@@ -101,6 +103,63 @@ impl __OrchActor {
             }
             std::pin::Pin::new(&mut reply).poll(cx)
         }).await
+    }
+}
+
+"#;
+
+/// `shared queue`: items in the order they were pushed, behind a lock of the queue's own,
+/// with a capacity and what a push to a full queue does. `take` waits for an item without
+/// holding the lock, so a consumer needs no poll loop.
+pub const QUEUE_RUNTIME: &str = r#"struct OrchQueue<T> {
+    items: std::sync::Mutex<std::collections::VecDeque<T>>,
+    capacity: usize,
+    drop_oldest: bool,
+    ready: tokio::sync::Notify,
+}
+impl<T> OrchQueue<T> {
+    fn new(capacity: u64, drop_oldest: bool) -> Self {
+        OrchQueue { items: std::sync::Mutex::new(std::collections::VecDeque::new()), capacity: capacity as usize, drop_oldest, ready: tokio::sync::Notify::new() }
+    }
+    fn items(&self) -> std::sync::MutexGuard<'_, std::collections::VecDeque<T>> {
+        self.items.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+    /// Whether nothing was lost: `false` when a full queue refused the item, or dropped
+    /// its oldest to make room for it.
+    fn push(&self, item: T) -> bool {
+        let mut items = self.items();
+        let kept = if items.len() < self.capacity {
+            items.push_back(item);
+            true
+        } else if self.drop_oldest {
+            items.pop_front();
+            items.push_back(item);
+            false
+        } else {
+            return false;
+        };
+        drop(items);
+        self.ready.notify_one();
+        kept
+    }
+    fn pop(&self) -> Option<T> { self.items().pop_front() }
+    fn drain(&self) -> Vec<T> { self.items().drain(..).collect() }
+    fn len(&self) -> usize { self.items().len() }
+    /// The next item, once there is one. In a deterministic run a `take` on an empty queue
+    /// gives up its turn and looks again at the next one, in order, as a deterministic
+    /// `sleep` does, rather than waiting for a task that runs only after it.
+    async fn take(&self) -> T {
+        loop {
+            let ready = self.ready.notified();
+            if let Some(item) = self.pop() {
+                return item;
+            }
+            if __orch_deterministic() {
+                __orch_queue_wait().await;
+                continue;
+            }
+            ready.await;
+        }
     }
 }
 
@@ -620,6 +679,9 @@ pub struct Codegen {
     pub module_types: Vec<Stmt>,
     /// Whether any file in the program declares a serverlet with `every:`.
     pub has_cadenced: bool,
+    /// Each `shared queue`: its name, item type, capacity, and whether a full one drops
+    /// its oldest item.
+    pub queues: Vec<(String, Type, u64, bool)>,
     /// What each generic function's body needs of its type parameters, from the check.
     pub generic_bounds: crate::typechecker::GenericBounds,
     /// The name a `let` is binding, while its value is compiled, for messages that name
@@ -670,6 +732,7 @@ impl Codegen {
             top_level_handler: false,
             module_types: Vec::new(),
             has_cadenced: false,
+            queues: Vec::new(),
             generic_bounds: Default::default(),
             naming: None,
             user_functions: HashSet::new(),
@@ -823,8 +886,9 @@ impl Codegen {
 
     pub fn get_free_vars_expr(&self, expr: &Expr, local_env: &mut HashSet<String>, free_vars: &mut HashSet<String>) {
         match &expr.node {
+            // A queue is reached by name wherever it is used, never captured.
             ExprNode::Identifier(name) => {
-                if !local_env.contains(name) && !self.functions_and_tasks_contain(name) {
+                if !local_env.contains(name) && !self.functions_and_tasks_contain(name) && !self.is_queue(name) {
                     free_vars.insert(name.clone());
                 }
             }
@@ -1202,6 +1266,36 @@ impl Codegen {
         }
     }
 
+    pub(super) fn is_queue(&self, name: &str) -> bool {
+        self.queues.iter().any(|(queue, ..)| queue == name)
+    }
+
+    /// Every `shared queue`, each with its own lock: the queues' struct, and where it lives —
+    /// a static in a binary, the instance's context in a library.
+    fn queue_code(&mut self, stmts: &[Stmt]) -> String {
+        self.queues = stmts.iter().filter_map(|stmt| match &stmt.node {
+            StmtNode::SharedQueue { name, ty, capacity, drop_oldest } => Some((name.clone(), ty.clone(), *capacity, *drop_oldest)),
+            _ => None,
+        }).collect();
+        if self.queues.is_empty() {
+            return String::new();
+        }
+        let fields = self.queues.iter()
+            .map(|(name, ty, ..)| format!("    {}: OrchQueue<{}>,", rust_ident(name), self.compile_type(ty)))
+            .collect::<Vec<_>>().join("\n");
+        let init = self.queues.iter()
+            .map(|(name, _, capacity, drop_oldest)| format!("{}: OrchQueue::new({}, {})", rust_ident(name), capacity, drop_oldest))
+            .collect::<Vec<_>>().join(", ");
+        let home = if self.library {
+            "fn __orch_queues() -> std::sync::Arc<__OrchQueues> {\n    crate::__orch_context().queues()\n}\n"
+        } else {
+            "static __ORCH_QUEUES: std::sync::OnceLock<__OrchQueues> = std::sync::OnceLock::new();\nfn __orch_queues() -> &'static __OrchQueues {\n    __ORCH_QUEUES.get_or_init(__OrchQueues::new)\n}\n"
+        };
+        format!(
+            "{QUEUE_RUNTIME}/// Every `shared queue` in the program.\nstruct __OrchQueues {{\n{fields}\n}}\nimpl __OrchQueues {{\n    fn new() -> Self {{ __OrchQueues {{ {init} }} }}\n}}\n{home}"
+        )
+    }
+
     /// The `shared let` bindings, with a Rust type for each. A field needs a type the
     /// generator can name, so an annotation or the typechecker has to supply one.
     fn collect_shared_fields(&mut self, stmts: &[Stmt]) {
@@ -1513,6 +1607,7 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
         if is_main {
             let shared = self.shared_state_code(stmts);
             code.push_str(&shared);
+            code.push_str(&self.queue_code(stmts));
         }
 
         // A struct or enum is one type however many files name it: the entry file defines

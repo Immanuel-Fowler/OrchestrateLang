@@ -980,6 +980,14 @@ fn library_rules(input_file: &str, ast: &[ast::Stmt], modules: &[&[ast::Stmt]], 
     let located = ast.iter().map(|stmt| (input_file, stmt))
         .chain(modules.iter().flat_map(|stmts| stmts.iter().map(|stmt| ("an imported module", stmt))));
     for (file, stmt) in located {
+        if let ast::StmtNode::SharedQueue { name, .. } = &stmt.node {
+            if file != input_file {
+                return Err(format!(
+                    "{}:line {}, col {}: shared queue '{}' is declared in a module; a queue is the program's, like a `shared let` in the entry file, so declare it there",
+                    file, stmt.span.line, stmt.span.col, name
+                ));
+            }
+        }
         if !library && matches!(&stmt.node, ast::StmtNode::Host { .. } | ast::StmtNode::OnTick { .. } | ast::StmtNode::OnFixedTick { .. }) {
             return Err(format!("{}:line {}, col {}: host and on_tick require build --lib; check such a program with check --lib", file, stmt.span.line, stmt.span.col));
         }

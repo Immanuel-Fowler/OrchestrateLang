@@ -1,0 +1,5 @@
+shared queue jobs: int (capacity: 8, full: "reject")
+orchestrator main() {
+    let copy = jobs
+    stop_orch()
+}

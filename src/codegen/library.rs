@@ -230,7 +230,7 @@ impl Codegen {
         let input_field = input.as_ref().map(|ty| format!(", {}", ty)).unwrap_or_default();
         // Shared state is per instance, so it lives on the context rather than in a
         // static: two libraries started in one process do not share it.
-        let (shared_field, shared_method, shared_init) = if self.shared_fields.is_empty() {
+        let (mut shared_field, mut shared_method, mut shared_init) = if self.shared_fields.is_empty() {
             (String::new(), String::new(), String::new())
         } else {
             (
@@ -239,6 +239,12 @@ impl Codegen {
                 "        shared: std::sync::OnceLock::new(),".to_string(),
             )
         };
+        // Queues are per instance too, each with its own lock.
+        if !self.queues.is_empty() {
+            shared_field.push_str("\n    queues: std::sync::OnceLock<std::sync::Arc<__OrchQueues>>,");
+            shared_method.push_str("\n    /// This instance's `shared queue`s, created the first time one is reached.\n    fn queues(&self) -> std::sync::Arc<__OrchQueues> {\n        self.queues.get_or_init(|| std::sync::Arc::new(__OrchQueues::new())).clone()\n    }");
+            shared_init.push_str("\n        queues: std::sync::OnceLock::new(),");
+        }
         let mut runtime = include_str!("library_runtime.rs.txt")
             .replace("@SHARED_FIELD@", &shared_field)
             .replace("@SHARED_METHOD@", &shared_method)

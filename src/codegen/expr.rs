@@ -72,6 +72,22 @@ impl Codegen {
             ExprNode::Call { callee, args } => {
                 // `length`, `append`, and `remove` work on the array where it lives, so a
                 // change reaches the binding — a `shared let` or instance state included.
+                // A queue is reached where it lives, by name, each call one short lock.
+                if let Some(ExprNode::Identifier(queue)) = args.first().map(|a| &a.node) {
+                    if matches!(callee.as_str(), "push" | "pop" | "drain" | "take" | "length") && self.is_queue(queue) && !self.user_functions.contains(callee) {
+                        let queue = format!("__orch_queues().{}", rust_ident(queue));
+                        return match callee.as_str() {
+                            "push" => format!("{queue}.push({})", self.compile_value(&args[1])),
+                            "pop" => format!("{queue}.pop()"),
+                            "drain" => format!("{queue}.drain()"),
+                            "length" => format!("({queue}.len() as i64)"),
+                            _ => {
+                                self.require_async("calls take, which waits for an item in the queue");
+                                format!("{queue}.take().await")
+                            }
+                        };
+                    }
+                }
                 if callee == "length" && args.len() == 1 {
                     // Parenthesised: `n as i64 < m` reads `<` as the start of generic arguments.
                     return format!("({}.len() as i64)", self.compile_place(&args[0]));

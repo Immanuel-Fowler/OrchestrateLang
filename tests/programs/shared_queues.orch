@@ -1,0 +1,53 @@
+// A shared queue: each operation atomic, a declared capacity, and a push that says when
+// something was lost. `take` waits for an item, so a consumer needs no poll loop.
+
+struct Job { id: int, size: int }
+
+shared queue pending: Job (capacity: 3, full: "reject")
+shared queue recent: int (capacity: 2, full: "drop_oldest")
+shared queue work: Job (capacity: 100, full: "reject")
+shared let processed = 0
+
+let consumer = automatic(restart: never) {
+    let job = take(work)
+    if job.id == 0 { return }
+    processed = processed + job.size
+}
+
+fn describe(jobs: Job[]) -> string {
+    let text = ""
+    for job in jobs { text = text + to_string(job.id) + " " }
+    return text
+}
+
+orchestrator main(procs: process[consumer]) {
+    // reject: the fourth push is refused, and says so
+    for i in range(1, 5) {
+        let stored = push(pending, Job { id: i, size: i * 10 })
+        print("push {i}: " + to_string(stored))
+    }
+    print("length " + to_string(length(pending)))
+    match pop(pending) {
+        option::Some(job) => print("popped " + to_string(job.id))
+        option::None => print("empty")
+    }
+    print("drained " + describe(drain(pending)) + "left " + to_string(length(pending)))
+
+    // drop_oldest: the third push makes room by dropping the first, and says so
+    let a = push(recent, 1)
+    let b = push(recent, 2)
+    let c = push(recent, 3)
+    let kept = drain(recent)
+    print(to_string(a) + " " + to_string(b) + " " + to_string(c) + ", kept " + to_string(kept[0]) + " " + to_string(kept[1]))
+
+    // a consumer waiting in take gets each item as it is pushed
+    for i in range(1, 6) {
+        push(work, Job { id: i, size: i })
+        sleep(5)
+    }
+    push(work, Job { id: 0, size: 0 })
+    sleep(100)
+    let total = processed
+    print("processed " + to_string(total))
+    stop_orch()
+}

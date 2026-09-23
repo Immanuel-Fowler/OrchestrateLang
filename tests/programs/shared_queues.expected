@@ -1,0 +1,9 @@
+push 1: true
+push 2: true
+push 3: true
+push 4: false
+length 3
+popped 1
+drained 2 3 left 0
+true true false, kept 2 3
+processed 15
