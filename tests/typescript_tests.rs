@@ -472,3 +472,46 @@ orchestrator main() {
         "stdout: {stdout}"
     );
 }
+
+#[test]
+fn typescript_landline_carries_maps() {
+    // A map crosses to TypeScript as a `Map`, keyed by a bigint or a string, and back.
+    if !available() {
+        return;
+    }
+    let root = root("maps");
+    fs::write(
+        root.join("stock.ts"),
+        r#"
+export default class Stock {
+    restock(levels: Map<string, bigint>, extra: bigint): Map<string, bigint> {
+        const out = new Map<string, bigint>();
+        for (const [name, count] of levels) out.set(name, count + extra);
+        out.set("zucchini", extra);
+        return out;
+    }
+    squares(ids: bigint[]): Map<bigint, bigint> {
+        return new Map(ids.map(i => [i, i * i] as [bigint, bigint]));
+    }
+}
+"#,
+    )
+    .unwrap();
+    let src = r#"
+serverlet Stock via typescript(source: "stock.ts") {
+    on restock(levels: map<string, int>, extra: int) -> map<string, int>
+    on squares(ids: int[]) -> map<int, int>
+}
+orchestrator main() {
+    let stock = start Stock()
+    let after = stock.restock(map { "pear": 2, "apple": 5 }, 3)
+    for name in keys(after) { print(name + " " + to_string(after[name])) }
+    let squares = stock.squares([3, 1])
+    print(to_string(squares[3]) + " " + to_string(keys(squares)[0]))
+    stop_orch()
+}
+"#;
+    let stdout = success(&compile(&root, src, false, "bun"));
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.starts_with("[orchestrate]")).collect();
+    assert_eq!(lines, vec!["apple 8", "pear 5", "zucchini 3", "9 1"], "stdout: {stdout}");
+}

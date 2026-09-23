@@ -524,3 +524,38 @@ landline.serve(Strategy)
         stderr
     );
 }
+
+/// A map crosses to Python as a dict and back, in either direction, keyed by any of the
+/// key types; the host reads it in key order whatever order Python built it in.
+#[test]
+fn python_landline_carries_maps() {
+    let (stdout, stderr) = run(
+        &directory("maps"),
+        r#"
+serverlet Stock via python(source: "impl.py") {
+    on restock(levels: map<string, int>, extra: int) -> map<string, int>
+    on flags(ids: int[]) -> map<int, bool>
+}
+orchestrator main() {
+    let stock = start Stock()
+    let after = stock.restock(map { "pear": 2, "apple": 5 }, 3)
+    for name in keys(after) { print(name + " " + to_string(after[name])) }
+    let odd = stock.flags([3, 1, 2])
+    print(to_string(odd[1]) + " " + to_string(odd[2]) + " " + to_string(length(odd)))
+    stop_orch()
+}
+"#,
+        r#"
+from orchestratelang import landline
+class Stock(landline.Serverlet):
+    def restock(self, levels: dict[str, int], extra: int) -> dict[str, int]:
+        out = {name: count + extra for name, count in levels.items()}
+        out["zucchini"] = extra
+        return out
+    def flags(self, ids: list[int]) -> dict[int, bool]:
+        return {i: i % 2 == 1 for i in ids}
+landline.serve(Stock)
+"#,
+    );
+    assert_eq!(stdout, "apple 8\npear 5\nzucchini 3\ntrue false 3", "{}", stderr);
+}

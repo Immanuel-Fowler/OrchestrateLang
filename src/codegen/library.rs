@@ -17,6 +17,7 @@ impl Codegen {
         match ty {
             Type::Named(name) => format!("crate::{}", rust_ident(name)),
             Type::Array(inner, _) => format!("Vec<{}>", self.host_type(inner)),
+            Type::Map(key, value) => format!("crate::OrchMap<{}, {}>", self.host_type(key), self.host_type(value)),
             _ => self.compile_type(ty),
         }
     }
@@ -66,6 +67,10 @@ impl Codegen {
                 names.insert(module_local_name.clone());
                 for arg in args { Self::hook_names(arg, names); }
             }
+            ExprNode::MethodCall { receiver, args, .. } => {
+                Self::hook_names(receiver, names);
+                for arg in args { Self::hook_names(arg, names); }
+            }
             ExprNode::StartServerlet { args, .. } => for arg in args { Self::hook_names(arg, names); },
             ExprNode::AutomaticBlock { body, crash_handler, .. } => {
                 Self::hook_names(body, names);
@@ -77,7 +82,8 @@ impl Codegen {
             ExprNode::StructLiteral { fields, .. } => for (_, value) in fields { Self::hook_names(value, names); },
             ExprNode::FieldAccess { object, .. } | ExprNode::SomeLiteral(object) | ExprNode::OkLiteral(object)
             | ExprNode::ErrLiteral(object) | ExprNode::Propagate(object) => Self::hook_names(object, names),
-            ExprNode::Index { object, index } => { Self::hook_names(object, names); Self::hook_names(index, names); }
+            ExprNode::Index { object, index, .. } => { Self::hook_names(object, names); Self::hook_names(index, names); }
+            ExprNode::MapLiteral(entries) => for (key, value) in entries { Self::hook_names(key, names); Self::hook_names(value, names); },
             ExprNode::TryCatch { body, handler, .. } => { Self::hook_names(body, names); Self::hook_names(handler, names); }
             ExprNode::EnumVariantLiteral { payload, .. } => if let Some(payload) = payload { Self::hook_names(payload, names); },
             ExprNode::Match { value, arms } => {

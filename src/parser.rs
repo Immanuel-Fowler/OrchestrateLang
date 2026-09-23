@@ -825,6 +825,20 @@ impl Parser {
                 "bool" => Ok(Type::Bool),
                 "void" => Ok(Type::Void),
                 "handle" => Ok(Type::Handle),
+                "map" if self.peek().kind == TokenKind::Lt => {
+                    self.advance();
+                    let key = self.parse_type()?;
+                    self.consume(TokenKind::Comma, "Expected ',' between a map's key and value types, as in map<string, int>")?;
+                    let value = self.parse_type()?;
+                    self.consume_closing_angle("Expected '>' after map value type")?;
+                    if !matches!(key, Type::Int | Type::Str | Type::Bool) {
+                        return Err(format!(
+                            "line {}, col {}: a map's key is an int, a string, or a bool, and this one is {}",
+                            tok.line, tok.col, key.display_name()
+                        ));
+                    }
+                    Ok(Type::Map(Box::new(key), Box::new(value)))
+                }
                 "option" => {
                     self.consume(TokenKind::Lt, "Expected '<' after 'option'")?;
                     let inner = self.parse_type()?;
@@ -838,6 +852,20 @@ impl Parser {
                     let error = if self.match_token(TokenKind::Comma) { self.parse_type()? } else { Type::Str };
                     self.consume_closing_angle("Expected '>' after result inner type")?;
                     Ok(Type::Result(Box::new(inner), Box::new(error)))
+                }
+                // `Name.client`, or `alias.Name.client` for a module's serverlet.
+                s if self.peek().kind == TokenKind::Dot => {
+                    self.advance();
+                    let second = self.parse_ident("serverlet name or `client` after '.' in a type")?;
+                    if second == "client" {
+                        return Ok(Type::Client(s.to_string()));
+                    }
+                    self.consume(TokenKind::Dot, &format!("Expected `.client` after '{}.{}' in a type", s, second))?;
+                    let third = self.parse_ident("`client`")?;
+                    if third != "client" {
+                        return Err(format!("line {}, col {}: a type written with dots names a serverlet's client: `{}.{}.client`", tok.line, tok.col, s, second));
+                    }
+                    Ok(Type::Client(format!("{}::{}", s, second)))
                 }
                 s => {
                     // Check the active generic declaration context first, then fall back to
@@ -1144,6 +1172,20 @@ impl Parser {
                 if name == "none" && self.peek().kind != TokenKind::LParen {
                     return Ok(ExprNode::NoneLiteral);
                 }
+                // `map { key: value, ... }`, or `map {}`
+                if name == "map" && self.peek().kind == TokenKind::LBrace {
+                    self.advance();
+                    let mut entries = Vec::new();
+                    while self.peek().kind != TokenKind::RBrace && self.peek().kind != TokenKind::EOF {
+                        let key = self.parse_expression(Precedence::Lowest)?;
+                        self.consume(TokenKind::Colon, "Expected ':' between a map entry's key and value")?;
+                        let value = self.parse_expression(Precedence::Lowest)?;
+                        entries.push((key, value));
+                        if !self.match_token(TokenKind::Comma) { break; }
+                    }
+                    self.consume(TokenKind::RBrace, "Expected '}' to close the map")?;
+                    return Ok(ExprNode::MapLiteral(entries));
+                }
                 // some(x), ok(x), err(x)
                 if (name == "some" || name == "ok" || name == "err") && self.peek().kind == TokenKind::LParen {
                     self.advance();
@@ -1371,7 +1413,7 @@ impl Parser {
                 self.advance();
                 let index = self.parse_expression(Precedence::Lowest)?;
                 self.consume(TokenKind::RBracket, "Expected ']' after index")?;
-                Ok(ExprNode::Index { object: Box::new(lhs), index: Box::new(index) })
+                Ok(ExprNode::Index { object: Box::new(lhs), index: Box::new(index), on_map: std::cell::Cell::new(false) })
             }
             TokenKind::LParen => {
                 self.advance();
@@ -1404,7 +1446,8 @@ impl Parser {
                             args,
                         })
                     } else {
-                        Err(format!("Expected identifier before '.', found {:?} at line {}, col {}", lhs, tok.line, tok.col))
+                        // A call on a value: a client held in an array, a field, or a map.
+                        Ok(ExprNode::MethodCall { receiver: Box::new(lhs), method: field_or_fn, args })
                     }
                 } else {
                     Ok(ExprNode::FieldAccess { object: Box::new(lhs), field: field_or_fn })

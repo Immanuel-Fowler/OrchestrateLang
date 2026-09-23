@@ -1,0 +1,5 @@
+orchestrator main() {
+    let xs = [1, 2]
+    let n = xs[0].size()
+    stop_orch()
+}

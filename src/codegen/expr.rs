@@ -22,6 +22,15 @@ impl Codegen {
             // The element is read out of the array where it lives; the array itself is not
             // copied first, which for a `shared let` it used to be on every read.
             ExprNode::Index { .. } => format!("{}.clone()", self.compile_place(expr)),
+            // `m[k] = v` puts the key in the map, whether or not it was there.
+            ExprNode::Binary { op: BinaryOp::Assign, lhs, rhs } if matches!(&lhs.node, ExprNode::Index { on_map, .. } if on_map.get()) => {
+                let ExprNode::Index { object, index, .. } = &lhs.node else { unreachable!() };
+                // The value and the key first, as an assignment evaluates its right side
+                // first: either may read the map being written.
+                let value = self.compile_value(rhs);
+                let key = self.compile_value(index);
+                format!("{{ let __value = {}; let __key = {}; {}.set(__key, __value); }}", value, key, self.compile_place(object))
+            }
             ExprNode::Binary { op: BinaryOp::Assign, lhs, rhs } => {
                 // Assigning needs the place itself: a write to a copy is a write lost. The
                 // value assigned is a copy, so `b = a` leaves `a` usable.
@@ -72,9 +81,17 @@ impl Codegen {
                 } else if callee == "remove" && args.len() == 2 {
                     // A block, so the call is void as the language types it: Rust's
                     // `remove` returns the element, which as the last statement of an
-                    // `if` would have become the `if`'s value.
-                    let index = self.compile_expr(&args[1]);
-                    return format!("{{ {}.remove(({}) as usize); }}", self.compile_place(&args[0]), index);
+                    // `if` would have become the `if`'s value. An array's position or a
+                    // map's key, whichever the value is.
+                    let index = self.compile_value(&args[1]);
+                    return format!("{{ __OrchRemove::orch_remove(&mut {}, {}); }}", self.compile_place(&args[0]), index);
+                } else if matches!(callee.as_str(), "get" | "has") && args.len() == 2 && !self.user_functions.contains(callee) {
+                    let key = self.compile_value(&args[1]);
+                    let method = if callee == "get" { "get_cloned" } else { "has" };
+                    return format!("{}.{}(&({}))", self.compile_place(&args[0]), method, key);
+                } else if matches!(callee.as_str(), "keys" | "values") && args.len() == 1 && !self.user_functions.contains(callee) {
+                    let method = if callee == "keys" { "key_list" } else { "value_list" };
+                    return format!("{}.{}()", self.compile_place(&args[0]), method);
                 }
 
                 if let Some(math) = self.compile_math(callee, args) {
@@ -215,6 +232,15 @@ impl Codegen {
                     self.require_async(&format!("calls '{}.{}', which waits for the serverlet to reply", module_local_name, function));
                     format!("{}.{}({}).await", self.place_name(module_local_name), rust_ident(function), args_str)
                 }
+            }
+            ExprNode::MethodCall { receiver, method, args } => {
+                // The receiver is a client held somewhere — an element, a field — and the
+                // call waits, so it runs on a copy of the address rather than a borrow of
+                // wherever the client is kept.
+                let receiver = self.compile_place(receiver);
+                let args_str = self.compile_values(args);
+                self.require_async(&format!("calls '.{}' on a serverlet client, which waits for the serverlet to reply", method));
+                format!("({}).clone().{}({}).await", receiver, rust_ident(method), args_str)
             }
             ExprNode::StartServerlet { name, args } => {
                 let start_fn = if name.contains("::") {
@@ -405,7 +431,9 @@ impl Codegen {
                     self.state_rewrite.replace(super::core::StateRewrite {
                         fields: self.program_fields.clone(),
                         scopes: Vec::new(),
-                        receiver: "(*__context.program_ptr())",
+                        // An explicit reference: indexing a field through the raw
+                        // pointer would take one implicitly, which rustc refuses.
+                        receiver: "(&mut *__context.program_ptr())",
                     })
                 } else {
                     None
@@ -467,6 +495,17 @@ impl Codegen {
             ExprNode::ArrayLiteral(elements) => {
                 let elems_str = self.compile_values(elements);
                 format!("vec![{}]", elems_str)
+            }
+            ExprNode::MapLiteral(entries) => {
+                let map = if self.is_main { "OrchMap" } else { "crate::OrchMap" };
+                if entries.is_empty() {
+                    return format!("{map}::new()");
+                }
+                let pairs = entries.iter()
+                    .map(|(key, value)| { let key = self.compile_value(key); format!("({}, {})", key, self.compile_value(value)) })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{map}::from_pairs(vec![{pairs}])")
             }
             ExprNode::StructLiteral { name, fields } => {
                 let fields_str = fields.iter()

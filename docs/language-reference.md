@@ -159,6 +159,8 @@ mutex and no cost.
 | `T[]` | Array of `T` | `let xs: int[] = [1, 2, 3]` |
 | `option<T>` | A value or `none` | `some(3)`, `none` |
 | `result<T>` | A value or a string error | `ok(3)`, `err("bad input")` |
+| `map<K, V>` | Values by key, in key order; a key is an `int`, a `string`, or a `bool` | `map { "ann": 31, "bo": 7 }` |
+| `S.client` | The address of a running instance of serverlet `S` | `let book: Book.client = start Book()` |
 | `fn(A) -> B` | A function value | `let f: fn(int) -> int = fn(x: int) -> int { x }` |
 | `handle` | An opaque native object from a C-ABI foreign module | `let c = native.make_counter(0)` |
 
@@ -179,8 +181,79 @@ orchestrator main() {
 }
 ```
 
-Struct fields may be any type (`int`, `float`, `string`, `bool`, or another
-struct). Structs compile to a Rust `struct` deriving `Clone` and `Debug`.
+Struct fields may be any type (`int`, `float`, `string`, `bool`, another struct, an
+enum, a map, a client). Two structs compare with `==` when every field can be compared,
+and so do two enums whose payloads can: `side == Side::Buy`. A client, a process, a
+function, or a handle cannot be compared, nor can a struct holding one.
+
+`print`, `to_string`, and `{...}` in a string show an `int`, a `float`, a `string`, or a
+`bool`. Anything else — an array, a struct, an option — is refused by `check`, which says
+what to show instead: a field, a length, or what a `match` finds inside.
+
+#### Maps
+
+`map<K, V>` holds values by key. A key is an `int`, a `string`, or a `bool`, and a map is
+kept in key order, so going through one gives the same order on every run — a hash map's
+would not, and a program that iterated one could not be replayed.
+
+```orchestrate
+let ages: map<string, int> = map { "ann": 31, "bo": 7 }
+ages["cy"] = 12                  // adds a key, or replaces its value
+ages["bo"] = ages["bo"] + 1
+print(to_string(ages["ann"]))    // 31
+match get(ages, "zed") {         // option<int>: none for a missing key
+    option::Some(age) => print(to_string(age))
+    option::None => print("no zed")
+}
+if has(ages, "cy") { remove(ages, "cy") }
+for name in keys(ages) { print(name) }       // ann, bo: key order
+print(to_string(length(ages)))
+```
+
+`m[k]` on a key that is not there stops the program with a message naming the key, as an
+index past an array's end does; `get` asks first. `map {}` is empty and takes its types
+from where it goes. A map is a value like an array: `let b = a` copies it, and a
+`shared let` map is changed in place under the lock. Loop over `keys(m)` or `values(m)`;
+`for x in m` is refused, since it would not say which. A map crosses to a secret serverlet,
+to Python as a `dict`, and to TypeScript as a `Map`; not into a sandbox, which carries what
+the C ABI carries.
+
+#### Clients as values
+
+`start S()` returns an `S.client` (for a module's serverlet, `alias.S.client`). A client is
+a value like any other: a parameter, a return, a struct field, an array element, a map
+value, an option, a `shared let`. A handler is called on any expression holding one:
+
+```orchestrate
+struct Desk { name: string, book: OrderBook.client }
+
+task route(book: OrderBook.client, qty: int) -> int {
+    return book.place(qty)
+}
+
+let books: OrderBook.client[] = [start OrderBook(), start OrderBook()]
+route(books[0], 5)
+books[1].place(1)
+let desk = Desk { name: "east", book: books[1] }
+desk.book.place(4)
+```
+
+**A client is an address.** Copying one copies the address, and every copy reaches the
+same instance: it is the one value in the language that refers rather than contains. An
+instance runs while any client to it exists. So instances can be started and found by key
+at run time:
+
+```orchestrate
+let tenants: map<string, Tenant.client> = map {}
+for key in tenant_keys() { tenants[key] = start Tenant() }
+tenants[key].transform(amounts)    // one call, whichever tenant
+```
+
+A client cannot cross into another process or a sandbox — an address here means nothing
+there — and cannot be printed or compared with `==`; keep a key beside it instead. A
+handler cannot return one except as `result<S.client>`, since a client has no default to
+answer a failed call with. A `shared let` may hold clients: a statement copies one out
+under the lock, and the call, which waits, goes in a statement of its own.
 
 ### 2.3 Operators
 
@@ -418,15 +491,24 @@ an `int` there usually means a missing conversion.
 
 | Function | Signature | Description |
 | :--- | :--- | :--- |
-| `length` | `length(arr) -> int` | Returns the number of elements in an array |
+| `length` | `length(arr) -> int` | Returns the number of elements in an array, or of keys in a map |
 | `append` | `append(arr, val)` | Appends `val` to the end of `arr` in place |
-| `remove` | `remove(arr, index: int)` | Removes the element at `index` from `arr` in place |
+| `remove` | `remove(arr, index: int)` | Removes the element at `index` from `arr` in place; `remove(m, key)` removes a map's key |
 | `map` | `map(arr, f: fn(T) -> U) -> U[]` | A new array of `f` applied to each element |
 | `filter` | `filter(arr, f: fn(T) -> bool) -> T[]` | The elements for which `f` is true |
 | `reduce` | `reduce(arr, init: U, f: fn(U, T) -> U) -> U` | Folds the array left to right from `init` |
 | `any` | `any(arr, f: fn(T) -> bool) -> bool` | Whether `f` is true for some element |
 | `all` | `all(arr, f: fn(T) -> bool) -> bool` | Whether `f` is true for every element |
 | `find` | `find(arr, f: fn(T) -> bool) -> option<T>` | The first element for which `f` is true |
+
+#### Map Functions
+
+| Function | Signature | Description |
+| :--- | :--- | :--- |
+| `get` | `get(m, key) -> option<V>` | The value for `key`, or `none` |
+| `has` | `has(m, key) -> bool` | Whether `m` has `key` |
+| `keys` | `keys(m) -> K[]` | The keys, in order |
+| `values` | `values(m) -> V[]` | The values, in their keys' order |
 
 ```orchestrate
 let items = [1, 2, 3]

@@ -1,0 +1,7 @@
+serverlet Book { on size() -> int { return 1 } }
+orchestrator main() {
+    let a = start Book()
+    let b = start Book()
+    let same = a == b
+    stop_orch()
+}

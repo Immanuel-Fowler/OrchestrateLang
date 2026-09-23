@@ -10,6 +10,25 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 ## [Unreleased]
 
 ### Added
+- **A client is a value with a type, `S.client`,** and serverlet instances can be started
+  and found by key. `start S()` was typed like a worker, and a handler was found by the
+  variable's name, so a client could not be a parameter, a field, an array element, or a
+  return: tick bodies were a hundred straight lines, and the benchmark program's loops
+  were unrolled because no helper could take the thing it called. Now a `task` takes an
+  `OrderBook.client`, a struct holds one, `books[0].place(1)` and `desk.book.place(4)`
+  call through any expression, and a `shared let` holds clients (copied out under the
+  lock, called outside it). A client is an address: copies reach one instance. With maps,
+  `tenants[key] = start Tenant()` in a loop over keys read at run time replaces a
+  hardcoded dispatch of N branches with one call. A client crosses no process or sandbox
+  boundary and cannot be printed or compared, each refused by `check` with the reason.
+  Tests: `tests/programs/clients_are_values.orch`, `tests/programs/keyed_instances.orch`.
+- **`map<K, V>`**, keyed by `int`, `string`, or `bool`, and kept in key order so going
+  through one replays exactly. `map { "ann": 31 }` and `map {}`; `m[k]` reads and
+  `m[k] = v` writes; `get`, `has`, `remove`, `length`, `keys`, `values`. Value semantics
+  as arrays have, in place under a `shared let`'s lock. It crosses to secret serverlets,
+  to Python as a `dict`, and to TypeScript as a `Map`; not into a sandbox, whose C-ABI set
+  has no map. Tests: `tests/programs/maps.orch` (with a secret serverlet),
+  `python_landline_carries_maps`, `typescript_landline_carries_maps`.
 - **Cadences: how often a hook, a serverlet, or a worker runs, declared where it is.** A
   10 Hz planner inside a 50 Hz host was `if tick % 5 == 1` around the call, a counter, and
   the last plan held in a variable; three workers differed only by `sleep(15)`,
@@ -144,6 +163,15 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   write, which is why this release is a minor one.
 
 ### Fixed
+- **`==` compares structs and enums**, which reached rustc (E0369): they derived only
+  `Clone` and `Debug`. They derive `PartialEq` now when everything in them compares, so
+  `side == Side::Buy` works; a comparison of something that cannot be compared — a client,
+  a process, a function, a handle, or a struct holding one — and `<` on a struct or an enum
+  are refused by `check`, saying what to compare instead.
+- **`print`, `to_string`, and `{...}` of an array, an option, a result, a struct, or an
+  enum are refused by `check`**, naming the type and what to show instead. Each passed
+  `check` and reached rustc (E0277), since only numbers, strings, and bools have a printed
+  form. Corpus cases: `print_a_struct`, `interpolate_an_array`.
 - **A struct holding an enum or a `result` compiles.** Every struct derived `Default`,
   which an enum has not, so `struct Order { side: Side }` reached rustc (E0277) in any
   program. A struct derives it now only when every field has one. Test:

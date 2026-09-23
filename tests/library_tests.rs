@@ -1074,6 +1074,63 @@ fn main() {
     println!("{}", output.trim());
 }
 
+/// Clients held in instance state as values — an array of them, and a module's client
+/// type — called from a hook and from an event handler, which reach the array by index.
+#[test]
+fn library_clients_as_values_in_instance_state() {
+    let root = root("clients_as_values");
+    fs::create_dir_all(root.join("desk")).unwrap();
+    fs::write(root.join("desk/module.orch"), r#"
+serverlet Ledger {
+    let entries = 0
+    on note(n: int) -> int {
+        entries = entries + n
+        return entries
+    }
+}
+"#).unwrap();
+    build(&root, r#"
+use module desk: "./desk"
+host world { fn record(n: int) }
+serverlet Tenant {
+    let total = 0
+    on add(n: int) -> int {
+        total = total + n
+        return total
+    }
+}
+let tenants: Tenant.client[] = [start Tenant(), start Tenant(), start Tenant()]
+let ledger: desk.Ledger.client = start desk.Ledger()
+task settle(book: desk.Ledger.client, n: int) -> int { return book.note(n) }
+on hit(i: int, n: int) {
+    world.record(tenants[i].add(n))
+    world.record(settle(ledger, n))
+}
+on_tick(dt: float) {
+    world.record(tenants[0].add(1))
+}
+orchestrator main() {}
+"#);
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<i64>>>);
+impl scripts::Host for Host { fn world_record(&self, n: i64) -> Result<(), String> { self.0.lock().unwrap().push(n); Ok(()) } }
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let mut scripts = scripts::start(runtime.handle(), Host(recorded.clone())).unwrap();
+    scripts.ready_blocking(&runtime).unwrap();
+    scripts.tick_sync(&runtime, 0.01).unwrap();
+    scripts.trigger_hit(2, 5).unwrap();
+    scripts.trigger_hit(0, 3).unwrap();
+    scripts.tick_sync(&runtime, 0.01).unwrap();
+    scripts.shutdown_blocking(&runtime).unwrap();
+    println!("{:?}", recorded.lock().unwrap());
+}
+"#);
+    assert_eq!(output.trim(), "[1, 5, 5, 4, 8, 5]");
+}
+
 /// A cadence is a divisor of the host's clock. Over 10,000 ticks of varying `dt`, a
 /// sandboxed serverlet declared `every: "100ms"`, a hook `every "250ms"`, and a hook
 /// `every 7 ticks` each run exactly as often as a schedule computed here from the same

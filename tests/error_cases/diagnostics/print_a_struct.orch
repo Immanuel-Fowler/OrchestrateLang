@@ -1,0 +1,6 @@
+struct Point { x: int, y: int }
+orchestrator main() {
+    let p = Point { x: 1, y: 2 }
+    print(to_string(p))
+    stop_orch()
+}

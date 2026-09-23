@@ -84,12 +84,12 @@
 
     "builtin-type": {
       "name": "support.type.orch",
-      "match": "\\b(int|float|string|bool|void|option|result|array)\\b"
+      "match": "\\b(int|float|string|bool|void|option|result|array|map|client)\\b"
     },
 
     "builtin-function": {
       "name": "support.function.builtin.orch",
-      "match": "\\b(print|clock_micros|clock_nanos|to_string|to_int|to_float|parse_int|parse_float|sleep|stop_orch|length|append|remove|map|filter|reduce|find|any|all|range|some|ok|err|sqrt|abs|floor|ceil|round|pow|sin|cos|tan|atan2|exp|ln|min|max|latest)\\b(?=\\s*[({]|\\s*$)"
+      "match": "\\b(print|clock_micros|clock_nanos|to_string|to_int|to_float|parse_int|parse_float|sleep|stop_orch|length|append|remove|map|filter|reduce|find|any|all|range|some|ok|err|sqrt|abs|floor|ceil|round|pow|sin|cos|tan|atan2|exp|ln|min|max|latest|get|has|keys|values)\\b(?=\\s*[({]|\\s*$)"
     },
 
     "enum-variant": {

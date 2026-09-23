@@ -1,0 +1,76 @@
+// map<K, V>: ordered by key, so going through one is the same on every run.
+
+serverlet Registry {
+    let devices: map<string, int> = map {}
+    on seen(id: string) -> int {
+        if has(devices, id) {
+            devices[id] = devices[id] + 1
+        } else {
+            devices[id] = 1
+        }
+        return devices[id]
+    }
+    on count() -> int { return length(devices) }
+}
+
+fn describe(m: map<string, int>) -> string {
+    let text = ""
+    for name in keys(m) {
+        text = text + name + "=" + to_string(m[name]) + " "
+    }
+    return text
+}
+
+// Across a process boundary a map is carried whole, both ways.
+serverlet Counter secret {
+    on tally(words: string[]) -> map<string, int> {
+        let counts: map<string, int> = map {}
+        for word in words {
+            if has(counts, word) { counts[word] = counts[word] + 1 } else { counts[word] = 1 }
+        }
+        return counts
+    }
+    on total(counts: map<string, int>) -> int {
+        let sum = 0
+        for count in values(counts) { sum = sum + count }
+        return sum
+    }
+}
+
+shared let totals: map<int, float> = map {}
+
+orchestrator main() {
+    let ages: map<string, int> = map { "ann": 31, "bo": 7 }
+    ages["cy"] = 12
+    ages["bo"] = ages["bo"] + 1
+    print(describe(ages))
+    print(to_string(length(ages)))
+    match get(ages, "zed") {
+        option::Some(age) => print("zed " + to_string(age))
+        option::None => print("no zed")
+    }
+    remove(ages, "ann")
+    print(describe(ages))
+
+    // Value semantics, as arrays have: a copy is its own map.
+    let copy = ages
+    copy["new"] = 1
+    print(to_string(length(ages)) + " " + to_string(length(copy)))
+    print(to_string(ages == copy))
+
+    let registry = start Registry()
+    registry.seen("a")
+    registry.seen("b")
+    print(to_string(registry.seen("a")) + " " + to_string(registry.count()))
+
+    let counter = start Counter()
+    let counted = counter.tally(["b", "a", "b", "c", "b"])
+    print(describe(counted) + to_string(counter.total(counted)))
+
+    totals[3] = 1.5
+    totals[1] = 2.0
+    totals[3] = totals[3] + 1.0
+    let order = keys(totals)
+    print(to_string(order[0]) + " " + to_string(order[1]) + " " + to_string(values(totals)[1]))
+    stop_orch()
+}

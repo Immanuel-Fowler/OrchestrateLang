@@ -1,0 +1,51 @@
+// A client is a value with a type, `S.client`: a parameter, a field, an element, an
+// option. Copying one copies the address, so every copy reaches the same instance.
+
+serverlet OrderBook {
+    let filled = 0
+    on place(qty: int) -> int {
+        filled = filled + qty
+        return filled
+    }
+}
+
+struct Desk { name: string, book: OrderBook.client }
+
+task route(book: OrderBook.client, qty: int) -> int {
+    return book.place(qty)
+}
+
+fn busiest(books: OrderBook.client[], pick: int) -> OrderBook.client {
+    return books[pick]
+}
+
+task fill_all(books: OrderBook.client[], qty: int) -> int {
+    let total = 0
+    for book in books {
+        total = total + book.place(qty)
+    }
+    return total
+}
+
+orchestrator main() {
+    let books: OrderBook.client[] = [start OrderBook(), start OrderBook()]
+    print(to_string(route(books[0], 5)))
+    print(to_string(route(books[0], 2)))
+    print(to_string(books[1].place(1)))
+
+    let desk = Desk { name: "east", book: books[1] }
+    print(desk.name + " " + to_string(desk.book.place(4)))
+
+    let copies = books
+    print(to_string(copies[0].place(1)))
+    print(to_string(busiest(books, 0).place(0)))
+
+    let spare: option<OrderBook.client> = some(start OrderBook())
+    match spare {
+        option::Some(book) => print(to_string(book.place(9)))
+        option::None => print("none")
+    }
+
+    print(to_string(fill_all(books, 10)))
+    stop_orch()
+}

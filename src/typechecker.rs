@@ -398,6 +398,75 @@ impl TypeChecker {
         Ok(())
     }
 
+    /// The struct and enum definitions, in the shape the shared type rules take.
+    fn type_defs(&self) -> (Vec<(String, Vec<(String, Type)>)>, Vec<(String, Vec<(String, Type)>)>) {
+        let structs = self.struct_defs.iter().map(|(n, f)| (n.clone(), f.clone())).collect();
+        let enums = self.enum_defs.iter()
+            .map(|(n, variants)| (n.clone(), variants.iter().filter_map(|v| v.payload.clone().map(|ty| (v.name.clone(), ty))).collect()))
+            .collect();
+        (structs, enums)
+    }
+
+    /// `print`, `to_string`, and `{...}` show ints, floats, strings, and bools.
+    fn check_display(what: &str, ty: &Type, line: usize, col: usize) -> Result<(), String> {
+        if crate::codegen::stmt::has_display(ty) {
+            return Ok(());
+        }
+        let hint = match ty {
+            Type::Client(_) => "a client is the address of a running serverlet, which has nothing to show",
+            Type::Array(_, _) => "show its length or its elements",
+            Type::Map(_, _) => "show its length, or what it holds for a key",
+            Type::Option(_) | Type::Result(_, _) => "match on it and show what it holds",
+            Type::Named(_) => "show its fields, or match on it",
+            _ => "show something it holds",
+        };
+        Err(format!(
+            "line {}, col {}: {} shows an int, a float, a string, or a bool, and this is {}: {}",
+            line, col, what, ty.display_name(), hint
+        ))
+    }
+
+    /// A handler call on a client of `serverlet`: the handler has to exist, and take these
+    /// arguments; the call's type is what it returns.
+    fn client_call(&mut self, serverlet: &str, receiver: &str, function: &str, arg_types: &[Type], line: usize, col: usize) -> Result<Type, String> {
+        let mut candidates = vec![format!("{}::{}", serverlet, function)];
+        if let Some((alias, bare)) = serverlet.rsplit_once("::") {
+            candidates.push(format!("{}::{}", alias, function));
+            candidates.push(format!("{}::{}", bare, function));
+        }
+        let Some(key) = candidates.iter().find(|key| self.functions.contains_key(*key)).cloned() else {
+            let prefix = format!("{}::", serverlet.rsplit_once("::").map_or(serverlet, |(_, bare)| bare));
+            let mut handlers: Vec<String> = self
+                .functions
+                .keys()
+                .filter_map(|key| key.strip_prefix(&prefix).map(str::to_string))
+                .collect();
+            handlers.sort();
+            return Err(format!(
+                "line {}, col {}: serverlet '{}' has no handler '{}'{}",
+                line, col, serverlet, function,
+                if handlers.is_empty() { String::new() } else { format!(". It has: {}.", handlers.join(", ")) }
+            ));
+        };
+        let (expected_args, ret_ty) = self.functions.get(&key).cloned().unwrap();
+        if expected_args.len() != arg_types.len() {
+            return Err(format!(
+                "line {}, col {}: {}.{}() expects {} arguments, got {}",
+                line, col, receiver, function, expected_args.len(), arg_types.len()
+            ));
+        }
+        for (i, (expected, actual)) in expected_args.iter().zip(arg_types).enumerate() {
+            if !self.types_compatible(expected, actual) {
+                return Err(format!(
+                    "line {}, col {}: {}.{}() argument {} expects {}, got {}",
+                    line, col, receiver, function, i + 1,
+                    expected.display_name(), actual.display_name()
+                ));
+            }
+        }
+        Ok(ret_ty)
+    }
+
     /// `latest(p.tick)`: the last answer the runtime got from calling a cadenced
     /// serverlet's `tick`, as `ok`, or `err` saying why there is none.
     fn latest_type(&mut self, args: &[Expr], line: usize, col: usize) -> Result<Type, String> {
@@ -476,22 +545,11 @@ impl TypeChecker {
         match ty {
             Type::Void => true,
             Type::Array(inner, _) | Type::Option(inner) => Self::mentions_void(inner),
-            Type::Result(ok, err) => Self::mentions_void(ok) || Self::mentions_void(err),
+            Type::Result(ok, err) | Type::Map(ok, err) => Self::mentions_void(ok) || Self::mentions_void(err),
             _ => false,
         }
     }
 
-    /// Data can be shared; a serverlet client, a process, or a closure cannot. The rule
-    /// codegen applies to a `shared let`.
-    fn shareable(ty: &Type) -> bool {
-        match ty {
-            // A handle is shared too: every statement that uses it holds the lock, so its
-            // native object is used by one statement at a time.
-            Type::Int | Type::Float | Type::Bool | Type::Str | Type::Named(_) | Type::Handle => true,
-            Type::Array(inner, _) | Type::Option(inner) => Self::shareable(inner),
-            _ => false,
-        }
-    }
 
     /// Visits `expr` and everything inside it, statements included, and returns the first
     /// thing `found` reports. `into_deferred` says whether to enter closure, `automatic`,
@@ -505,6 +563,10 @@ impl TypeChecker {
             ExprNode::Unary { operand, .. } => inner.push(operand),
             ExprNode::Binary { lhs, rhs, .. } => inner.extend([&**lhs, &**rhs]),
             ExprNode::Call { args, .. } | ExprNode::ModuleCall { args, .. } | ExprNode::StartServerlet { args, .. } | ExprNode::ArrayLiteral(args) => {
+                inner.extend(args.iter());
+            }
+            ExprNode::MethodCall { receiver, args, .. } => {
+                inner.push(receiver);
                 inner.extend(args.iter());
             }
             ExprNode::Pipeline { value, function } => inner.extend([&**value, &**function]),
@@ -522,7 +584,8 @@ impl TypeChecker {
             ExprNode::StartProcess { target } => inner.push(target),
             ExprNode::StructLiteral { fields, .. } => inner.extend(fields.iter().map(|(_, value)| &**value)),
             ExprNode::FieldAccess { object, .. } => inner.push(object),
-            ExprNode::Index { object, index } => inner.extend([&**object, &**index]),
+            ExprNode::Index { object, index, .. } => inner.extend([&**object, &**index]),
+            ExprNode::MapLiteral(entries) => for (key, value) in entries { inner.extend([key, value]); },
             ExprNode::SomeLiteral(value) | ExprNode::OkLiteral(value) | ExprNode::ErrLiteral(value) | ExprNode::Propagate(value) => {
                 inner.push(value);
             }
@@ -602,8 +665,8 @@ impl TypeChecker {
 
     /// The first thing in `expr` that waits, in codegen's words, or `None`. The rule is
     /// `Codegen::require_async`'s — a task, `sleep`, a serverlet or landline call, a
-    /// `parallel` block — except that a call counts as a serverlet call only when its
-    /// receiver is known to hold one, so an unregistered module never looks like one.
+    /// `parallel` block. A call on a name counts as a serverlet call unless the name is a
+    /// module or a host group, which the file declares, as codegen decides it.
     fn first_wait(&self, expr: &Expr, into_deferred: bool) -> Option<String> {
         Self::search_expr(expr, into_deferred, &mut |node| self.wait_at(node))
     }
@@ -622,8 +685,9 @@ impl TypeChecker {
                     let full = format!("{}::{}", module_local_name, function);
                     if self.tasks.contains(&full) {
                         Some(format!("calls the task '{}', which it would have to wait for", full))
-                    } else if self.var_serverlet.contains_key(module_local_name)
-                        && !self.use_aliases.contains(module_local_name)
+                    // Codegen's rule: `x.f()` on anything but a module or a host group is a
+                    // call on a client, whose type may be known only where it was bound.
+                    } else if !self.use_aliases.contains(module_local_name)
                         && !self.module_aliases.contains(module_local_name)
                         && !self.host_groups.contains(module_local_name)
                     {
@@ -632,6 +696,8 @@ impl TypeChecker {
                         None
                     }
                 }
+                // Only a client has handlers to call on a value.
+                ExprNode::MethodCall { method, .. } => Some(format!("calls '.{}' on a serverlet client, which waits for the serverlet to reply", method)),
                 _ => None,
             },
         }
@@ -701,6 +767,8 @@ impl TypeChecker {
         let touches = Self::search_node(unit, false, &mut |node| match node {
             Node::Expr(expr) => match &expr.node {
                 ExprNode::Identifier(name) if self.shared_names.contains(name) && !locals.contains(name) => Some(()),
+                // `c.add(1)` on a shared client reads `c` under the lock, as codegen does.
+                ExprNode::ModuleCall { module_local_name: name, .. } if self.shared_names.contains(name) && !locals.contains(name) => Some(()),
                 _ => None,
             },
             Node::Stmt(_) => None,
@@ -969,10 +1037,10 @@ impl TypeChecker {
                 let val_ty = self.infer_expr(value)?;
                 if *shared {
                     let bound = ty.clone().unwrap_or_else(|| val_ty.clone());
-                    if !Self::mentions_void(&bound) && !Self::shareable(&bound) {
+                    if !Self::mentions_void(&bound) && !crate::codegen::stmt::shareable(&bound) {
                         return Err(format!(
-                            "line {}, col {}: shared let '{}' has type {}, which cannot be shared. A shared binding holds data: int, float, bool, string, an array, or a struct.",
-                            stmt.span.line, stmt.span.col, name, bound.display_name()
+                            "line {}, col {}: shared let '{}' has type {}, which cannot be shared. {}",
+                            stmt.span.line, stmt.span.col, name, bound.display_name(), crate::codegen::stmt::SHAREABLE
                         ));
                     }
                 }
@@ -1090,6 +1158,12 @@ impl TypeChecker {
                     Type::Int | Type::Float | Type::Bool | Type::Str => {
                         return Err(format!(
                             "line {}, col {}: for loops over an array, got {}; use range(n) to count",
+                            stmt.span.line, stmt.span.col, iter_ty.display_name()
+                        ));
+                    }
+                    Type::Map(_, _) => {
+                        return Err(format!(
+                            "line {}, col {}: for loops over an array; to go through a {}, loop over keys(m) or values(m), which are in key order",
                             stmt.span.line, stmt.span.col, iter_ty.display_name()
                         ));
                     }
@@ -1357,6 +1431,11 @@ impl TypeChecker {
         if let (Type::Option(exp_inner), Type::Option(act_inner)) = (expected, actual) {
             return self.types_compatible(exp_inner, act_inner);
         }
+        // `map {}` knows neither its keys nor its values yet, so it fits any map.
+        if let (Type::Map(exp_key, exp_value), Type::Map(act_key, act_value)) = (expected, actual) {
+            return (**act_key == Type::Void || self.types_compatible(exp_key, act_key))
+                && (**act_value == Type::Void || self.types_compatible(exp_value, act_value));
+        }
         // Array covariance. An element type that is not known yet — an empty literal's —
         // fits any array, as `none` fits any option.
         if let (Type::Array(exp_inner, _), Type::Array(act_inner, _)) = (expected, actual) {
@@ -1407,9 +1486,20 @@ impl TypeChecker {
                     )),
                 }
             }
-            ExprNode::Index { object, index } => {
+            ExprNode::Index { object, index, on_map } => {
                 let obj_ty = self.infer_expr(object)?;
                 let idx_ty = self.infer_expr(index)?;
+                // A map is indexed by its key; codegen is told which index is a map's.
+                if let Type::Map(key, value) = &obj_ty {
+                    if !self.types_compatible(key, &idx_ty) {
+                        return Err(format!(
+                            "line {}, col {}: a {} is indexed by a {} key, got {}",
+                            expr.span.line, expr.span.col, obj_ty.display_name(), key.display_name(), idx_ty.display_name()
+                        ));
+                    }
+                    on_map.set(true);
+                    return Ok(*value.clone());
+                }
                 if !self.types_compatible(&Type::Int, &idx_ty) {
                     return Err(format!(
                         "line {}, col {}: array index must be int, got {}",
@@ -1439,11 +1529,12 @@ impl TypeChecker {
                                 ));
                             }
                         }
-                    } else if let ExprNode::Index { .. } = &lhs.node {
+                    } else if let ExprNode::Index { on_map, .. } = &lhs.node {
                         if !self.types_compatible(&lhs_ty, &rhs_ty) {
                             return Err(format!(
-                                "line {}, col {}: cannot assign {} to an array element of type {}",
-                                expr.span.line, expr.span.col, rhs_ty.display_name(), lhs_ty.display_name()
+                                "line {}, col {}: cannot assign {} to {} of type {}",
+                                expr.span.line, expr.span.col, rhs_ty.display_name(),
+                                if on_map.get() { "a map value" } else { "an array element" }, lhs_ty.display_name()
                             ));
                         }
                     }
@@ -1458,6 +1549,26 @@ impl TypeChecker {
                             "line {}, col {}: cannot compare {} with {}",
                             expr.span.line, expr.span.col,
                             lhs_ty.display_name(), rhs_ty.display_name()
+                        ));
+                    }
+                    // And a kind of thing that compares at all.
+                    let ty = if matches!(lhs_ty, Type::TypeParam(_)) { &rhs_ty } else { &lhs_ty };
+                    if [BinaryOp::Eq, BinaryOp::Ne].contains(op) {
+                        let (structs, enums) = self.type_defs();
+                        if !crate::codegen::stmt::has_equality(ty, &structs, &enums) {
+                            return Err(format!(
+                                "line {}, col {}: {} values cannot be compared with `==`{}",
+                                expr.span.line, expr.span.col, ty.display_name(),
+                                match ty {
+                                    Type::Client(_) => ": a client is the address of a running serverlet, and two addresses are not asked whether they are the same instance. Compare what the instances answer, or keep a key beside each client",
+                                    _ => ": it holds something that has none (a client, a process, a function, or a handle). Compare the fields that can be compared",
+                                }
+                            ));
+                        }
+                    } else if !crate::codegen::stmt::has_order(ty) {
+                        return Err(format!(
+                            "line {}, col {}: {} values have no order for `<`, `>`, `<=`, or `>=`; order ints, floats, strings, and bools, or compare a field",
+                            expr.span.line, expr.span.col, ty.display_name()
                         ));
                     }
                     return Ok(Type::Bool);
@@ -1500,6 +1611,11 @@ impl TypeChecker {
                 let mut arg_types = Vec::new();
                 for a in args {
                     arg_types.push(self.infer_expr(a)?);
+                }
+                if matches!(callee.as_str(), "print" | "to_string") {
+                    for ty in &arg_types {
+                        Self::check_display(callee, ty, expr.span.line, expr.span.col)?;
+                    }
                 }
 
                 // Check if callee is a closure variable
@@ -1574,10 +1690,25 @@ impl TypeChecker {
                         return Ok(Type::Bool);
                     }
                     "length" if args.len() == 1 => {
-                        if let Type::Array(_, _) = &arg_types[0] {
+                        if let Type::Array(_, _) | Type::Map(_, _) = &arg_types[0] {
                             return Ok(Type::Int);
                         }
-                        return Err(format!("line {}, col {}: length() expects an array, got {}", expr.span.line, expr.span.col, arg_types[0].display_name()));
+                        return Err(format!("line {}, col {}: length() expects an array or a map, got {}", expr.span.line, expr.span.col, arg_types[0].display_name()));
+                    }
+                    "get" | "has" if args.len() == 2 && !self.functions.contains_key(callee) => {
+                        let Type::Map(key, value) = &arg_types[0] else {
+                            return Err(format!("line {}, col {}: {}(m, key) takes a map first, got {}", expr.span.line, expr.span.col, callee, arg_types[0].display_name()));
+                        };
+                        if !self.types_compatible(key, &arg_types[1]) {
+                            return Err(format!("line {}, col {}: {}() on a {} takes a {} key, got {}", expr.span.line, expr.span.col, callee, arg_types[0].display_name(), key.display_name(), arg_types[1].display_name()));
+                        }
+                        return Ok(if callee == "get" { Type::Option(value.clone()) } else { Type::Bool });
+                    }
+                    "keys" | "values" if args.len() == 1 && !self.functions.contains_key(callee) => {
+                        let Type::Map(key, value) = &arg_types[0] else {
+                            return Err(format!("line {}, col {}: {}(m) takes a map, got {}", expr.span.line, expr.span.col, callee, arg_types[0].display_name()));
+                        };
+                        return Ok(Type::Array(if callee == "keys" { key.clone() } else { value.clone() }, vec![]));
                     }
                     "append" if args.len() == 2 => {
                         if let Type::Array(inner_ty, _) = &arg_types[0] {
@@ -1593,6 +1724,12 @@ impl TypeChecker {
                         return Err(format!("line {}, col {}: append() expects an array as first argument", expr.span.line, expr.span.col));
                     }
                     "remove" if args.len() == 2 => {
+                        if let Type::Map(key, _) = &arg_types[0] {
+                            if !self.types_compatible(key, &arg_types[1]) {
+                                return Err(format!("line {}, col {}: remove() on a {} takes a {} key, got {}", expr.span.line, expr.span.col, arg_types[0].display_name(), key.display_name(), arg_types[1].display_name()));
+                            }
+                            return Ok(Type::Void);
+                        }
                         if let Type::Array(_, _) = &arg_types[0] {
                             if arg_types[1] != Type::Int {
                                 return Err(format!("line {}, col {}: remove() expects integer index, got {}", expr.span.line, expr.span.col, arg_types[1].display_name()));
@@ -1662,7 +1799,9 @@ impl TypeChecker {
             ExprNode::StringInterp { parts } => {
                 for part in parts {
                     if let StringPart::Expr(e) = part {
-                        self.infer_expr(e)?;
+                        let ty = self.infer_expr(e)?;
+                        // A name inside the string carries the string's position, not the file's.
+                        Self::check_display("a string's {...}", &ty, expr.span.line, expr.span.col)?;
                     }
                 }
                 Ok(Type::Str)
@@ -1715,50 +1854,34 @@ impl TypeChecker {
                 let _ = then_ty;
                 Ok(Type::Void)
             }
+            ExprNode::MethodCall { receiver, method, args } => {
+                let receiver_ty = self.infer_expr(receiver)?;
+                let mut arg_types = Vec::new();
+                for arg in args {
+                    arg_types.push(self.infer_expr(arg)?);
+                }
+                let Type::Client(serverlet) = receiver_ty else {
+                    return Err(format!(
+                        "line {}, col {}: `.{}(...)` calls a handler, and only a serverlet client has handlers; this is {}",
+                        expr.span.line, expr.span.col, method, receiver_ty.display_name()
+                    ));
+                };
+                self.client_call(&serverlet, "the client", method, &arg_types, expr.span.line, expr.span.col)
+            }
             ExprNode::ModuleCall { module_local_name, function, args } => {
                 let mut arg_types = Vec::new();
                 for arg in args {
                     arg_types.push(self.infer_expr(arg)?);
                 }
 
-                // `c.add(1)` where `c` came from `start Counter()`: the handler has to exist.
-                if let Some(serverlet) = self.var_serverlet.get(module_local_name).cloned() {
-                    let mut candidates = vec![format!("{}::{}", serverlet, function)];
-                    if let Some((alias, bare)) = serverlet.rsplit_once("::") {
-                        candidates.push(format!("{}::{}", alias, function));
-                        candidates.push(format!("{}::{}", bare, function));
-                    }
-                    let Some(key) = candidates.iter().find(|key| self.functions.contains_key(*key)).cloned() else {
-                        let prefix = format!("{}::", serverlet.rsplit_once("::").map_or(serverlet.as_str(), |(_, bare)| bare));
-                        let mut handlers: Vec<String> = self
-                            .functions
-                            .keys()
-                            .filter_map(|key| key.strip_prefix(&prefix).map(str::to_string))
-                            .collect();
-                        handlers.sort();
-                        return Err(format!(
-                            "line {}, col {}: serverlet '{}' has no handler '{}'{}",
-                            expr.span.line, expr.span.col, serverlet, function,
-                            if handlers.is_empty() { String::new() } else { format!(". It has: {}.", handlers.join(", ")) }
-                        ));
-                    };
-                    let (expected_args, ret_ty) = self.functions.get(&key).cloned().unwrap();
-                    if expected_args.len() != args.len() {
-                        return Err(format!(
-                            "line {}, col {}: {}.{}() expects {} arguments, got {}",
-                            expr.span.line, expr.span.col, module_local_name, function, expected_args.len(), args.len()
-                        ));
-                    }
-                    for (i, (expected, actual)) in expected_args.iter().zip(&arg_types).enumerate() {
-                        if !self.types_compatible(expected, actual) {
-                            return Err(format!(
-                                "line {}, col {}: {}.{}() argument {} expects {}, got {}",
-                                expr.span.line, expr.span.col, module_local_name, function, i + 1,
-                                expected.display_name(), actual.display_name()
-                            ));
-                        }
-                    }
-                    return Ok(ret_ty);
+                // `c.add(1)` where `c` came from `start Counter()`, or is typed `Counter.client`:
+                // the handler has to exist.
+                let serverlet = self.var_serverlet.get(module_local_name).cloned().or_else(|| match self.lookup_var(module_local_name) {
+                    Some(Type::Client(serverlet)) => Some(serverlet),
+                    _ => None,
+                });
+                if let Some(serverlet) = serverlet {
+                    return self.client_call(&serverlet, module_local_name, function, &arg_types, expr.span.line, expr.span.col);
                 }
 
                 let alias_key = format!("{}::{}", module_local_name, function);
@@ -1853,7 +1976,7 @@ impl TypeChecker {
                         if known.is_empty() { String::new() } else { format!(". This file declares: {}.", known.iter().map(|n| n.as_str()).collect::<Vec<_>>().join(", ")) }
                     ));
                 }
-                Ok(Type::Process)
+                Ok(Type::Client(name.clone()))
             }
             ExprNode::AutomaticBlock { body, crash_handler, .. } => {
                 self.infer_expr(body)?;
@@ -1907,6 +2030,34 @@ impl TypeChecker {
                 // and it fits any array: `let xs: float[] = []` takes its type from the
                 // annotation, a field or a parameter from its declaration.
                 Ok(Type::Array(Box::new(inner_ty.unwrap_or(Type::Void)), vec![]))
+            }
+            ExprNode::MapLiteral(entries) => {
+                let (mut key_ty, mut value_ty): (Option<Type>, Option<Type>) = (None, None);
+                for (key, value) in entries {
+                    let (k, v) = (self.infer_expr(key)?, self.infer_expr(value)?);
+                    for (seen, ty, what) in [(&mut key_ty, k, "key"), (&mut value_ty, v, "value")] {
+                        match seen {
+                            Some(prev) if !self.types_compatible(prev, &ty) && !self.types_compatible(&ty, prev) => {
+                                return Err(format!(
+                                    "line {}, col {}: a map's {}s are one type: {} and {}",
+                                    expr.span.line, expr.span.col, what, prev.display_name(), ty.display_name()
+                                ));
+                            }
+                            Some(prev) if Self::mentions_void(prev) && !Self::mentions_void(&ty) => *seen = Some(ty),
+                            Some(_) => {}
+                            None => *seen = Some(ty),
+                        }
+                    }
+                }
+                if let Some(key) = &key_ty {
+                    if !matches!(key, Type::Int | Type::Str | Type::Bool) {
+                        return Err(format!(
+                            "line {}, col {}: a map's key is an int, a string, or a bool, and this one is {}",
+                            expr.span.line, expr.span.col, key.display_name()
+                        ));
+                    }
+                }
+                Ok(Type::Map(Box::new(key_ty.unwrap_or(Type::Void)), Box::new(value_ty.unwrap_or(Type::Void))))
             }
             ExprNode::StructLiteral { name, fields } => {
                 if let Some(def) = self.struct_defs.get(name).cloned() {
@@ -2371,8 +2522,13 @@ mod tests {
         assert!(error.contains("fn 'nap' calls sleep"), "{error}");
         let error = check("shared let total = 0\ntask fetch() -> int { return 5 }\norchestrator main() { total = total + fetch() }").unwrap_err();
         assert!(error.contains("cannot both wait and touch shared state"), "{error}");
-        let error = check("serverlet C { on add(n: int) -> int { return n } }\nshared let c = start C()\norchestrator main() {}").unwrap_err();
-        assert!(error.contains("shared let 'c' has type process, which cannot be shared"), "{error}");
+        // A shared client is copied out under the lock and called outside it; a call
+        // through the shared name itself would hold the lock across the wait.
+        assert!(check("serverlet C { on add(n: int) -> int { return n } }\nshared let c = start C()\norchestrator main() { let mine = c\n print(to_string(mine.add(1))) }").is_ok());
+        let error = check("serverlet C { on add(n: int) -> int { return n } }\nshared let c = start C()\norchestrator main() { print(to_string(c.add(1))) }").unwrap_err();
+        assert!(error.contains("cannot both wait and touch shared state"), "{error}");
+        let error = check("let w = automatic { sleep(1) }\nshared let procs = [w]\norchestrator main() {}").unwrap_err();
+        assert!(error.contains("shared let 'procs' has type process[], which cannot be shared"), "{error}");
     }
 
     #[test]

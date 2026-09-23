@@ -20,6 +20,11 @@ def _type_name(ty, seen=()):
         if inner is type(None):
             raise TypeError("void array elements are unsupported")
         return _type_name(inner, seen) + "[]"
+    if typing.get_origin(ty) is dict:
+        key, value = typing.get_args(ty)
+        if key not in (int, str, bool):
+            raise TypeError("a map's key is int, str, or bool")
+        return f"map<{_type_name(key, seen)}, {_type_name(value, seen)}>"
     if isinstance(ty, type) and dataclasses.is_dataclass(ty):
         if ty in seen:
             raise TypeError("recursive dataclasses are unsupported")
@@ -50,6 +55,11 @@ def _encode(ty, value):
             raise TypeError("expected list")
         (inner,) = typing.get_args(ty)
         return struct.pack("<I", len(value)) + b"".join(_encode(inner, x) for x in value)
+    if typing.get_origin(ty) is dict:
+        if not isinstance(value, dict):
+            raise TypeError("expected dict")
+        key, item = typing.get_args(ty)
+        return struct.pack("<I", len(value)) + b"".join(_encode(key, k) + _encode(item, v) for k, v in value.items())
     if isinstance(ty, type) and dataclasses.is_dataclass(ty):
         if not isinstance(value, ty):
             raise TypeError(f"expected {ty.__name__}")
@@ -87,6 +97,14 @@ class _Reader:
             size = struct.unpack("<I", self.take(4))[0]
             (inner,) = typing.get_args(ty)
             return [self.value(inner) for _ in range(size)]
+        if typing.get_origin(ty) is dict:
+            size = struct.unpack("<I", self.take(4))[0]
+            key, item = typing.get_args(ty)
+            result = {}
+            for _ in range(size):
+                k = self.value(key)
+                result[k] = self.value(item)
+            return result
         if isinstance(ty, type) and dataclasses.is_dataclass(ty):
             hints = typing.get_type_hints(ty)
             return ty(**{f.name: self.value(hints[f.name]) for f in dataclasses.fields(ty)})
@@ -199,9 +217,28 @@ def serve(serverlet_class):
             _write_frame(writer, 4, call_id, encoded)
 
 
+def _split_types(text):
+    """Types in a signature, separated by commas outside any <...>."""
+    types, depth, start = [], 0, 0
+    for i, ch in enumerate(text):
+        if ch == "<":
+            depth += 1
+        elif ch == ">":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            types.append(text[start:i])
+            start = i + 1
+    if text:
+        types.append(text[start:])
+    return types
+
+
 def _host_type(name, namespace):
     if name.endswith("[]"):
         return list[_host_type(name[:-2], namespace)]
+    if name.startswith("map<") and name.endswith(">"):
+        key, value = name[4:-1].split(", ", 1)
+        return dict[_host_type(key, namespace), _host_type(value, namespace)]
     primitives = {"int": int, "float": float, "bool": bool, "string": str, "void": type(None)}
     if name in primitives:
         return primitives[name]
@@ -221,7 +258,7 @@ class _Host:
             group, method = name.split(".", 1)
             if group.startswith("_") or method.startswith("_"):
                 raise ValueError("host names must not start with underscore")
-            types = [_host_type(t, namespace) for t in args.split(",")] if args else []
+            types = [_host_type(t, namespace) for t in _split_types(args)]
             result_type = _host_type(result, namespace)
             if not hasattr(self, group):
                 setattr(self, group, SimpleNamespace())

@@ -106,6 +106,41 @@ impl __OrchActor {
 
 "#;
 
+/// `map<K, V>`: a map ordered by key, so going through one is the same on every run —
+/// a hash map's order changes from run to run. Defined once, at a crate's root; a module
+/// imports it, so a map is one type wherever it goes.
+pub const ORCH_MAP: &str = r#"/// A map from `K` to `V`, ordered by key.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OrchMap<K: Ord, V>(pub std::collections::BTreeMap<K, V>);
+impl<K: Ord, V> Default for OrchMap<K, V> {
+    fn default() -> Self { OrchMap(std::collections::BTreeMap::new()) }
+}
+impl<K: Ord, V> OrchMap<K, V> {
+    fn new() -> Self { Self::default() }
+    fn from_pairs(pairs: Vec<(K, V)>) -> Self { OrchMap(pairs.into_iter().collect()) }
+    fn len(&self) -> usize { self.0.len() }
+    fn set(&mut self, key: K, value: V) { self.0.insert(key, value); }
+    fn has(&self, key: &K) -> bool { self.0.contains_key(key) }
+    fn get_cloned(&self, key: &K) -> Option<V> where V: Clone { self.0.get(key).cloned() }
+    fn key_list(&self) -> Vec<K> where K: Clone { self.0.keys().cloned().collect() }
+    fn value_list(&self) -> Vec<V> where V: Clone { self.0.values().cloned().collect() }
+}
+/// `m[k]`: a key that is not there is a panic that names it, as an index past an array's
+/// end is.
+impl<K: Ord + std::fmt::Debug, V> std::ops::Index<&K> for OrchMap<K, V> {
+    type Output = V;
+    fn index(&self, key: &K) -> &V { self.0.get(key).unwrap_or_else(|| panic!("the map has no key {:?}", key)) }
+}
+impl<K: Ord + std::fmt::Debug, V> std::ops::IndexMut<&K> for OrchMap<K, V> {
+    fn index_mut(&mut self, key: &K) -> &mut V { self.0.get_mut(key).unwrap_or_else(|| panic!("the map has no key {:?}", key)) }
+}
+/// `remove(xs, i)` and `remove(m, k)`: an array's position, or a map's key.
+trait __OrchRemove<I> { fn orch_remove(&mut self, at: I); }
+impl<T> __OrchRemove<i64> for Vec<T> { fn orch_remove(&mut self, at: i64) { self.remove(at as usize); } }
+impl<K: Ord, V> __OrchRemove<K> for OrchMap<K, V> { fn orch_remove(&mut self, at: K) { self.0.remove(&at); } }
+
+"#;
+
 pub fn runtime_preamble(print_to_stderr: bool, include_process_ref: bool, library: bool) -> String {
     let print_macro = if print_to_stderr { "eprintln!" } else { "println!" };
     let process_ref = if include_process_ref {
@@ -199,7 +234,7 @@ trait __OrchPow {{ fn orch_pow(self, exponent: Self) -> Self; }}
 impl __OrchPow for i64 {{ fn orch_pow(self, exponent: i64) -> i64 {{ self.pow(exponent as u32) }} }}
 impl __OrchPow for f64 {{ fn orch_pow(self, exponent: f64) -> f64 {{ self.powf(exponent) }} }}
 
-{process_ref}"#, print_macro = print_macro, process_ref = process_ref)
+{process_ref}{orch_map}"#, print_macro = print_macro, process_ref = process_ref, orch_map = ORCH_MAP)
 }
 
 /// An opaque native object from a C-ABI foreign module, released through the sidecar's
@@ -393,6 +428,23 @@ impl<T: OrchWire> OrchWire for Vec<T> {
     }
 }
 
+// A map: its count, then each key and value, in key order.
+impl<K: OrchWire + Ord, V: OrchWire> OrchWire for OrchMap<K, V> {
+    fn wire_encode(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&(self.0.len() as u32).to_le_bytes());
+        for (key, value) in &self.0 { key.wire_encode(out); value.wire_encode(out); }
+    }
+    fn wire_decode(buf: &[u8], pos: &mut usize) -> Option<Self> {
+        let count = __wire_len(buf, pos)?;
+        let mut map = std::collections::BTreeMap::new();
+        for _ in 0..count {
+            let key = K::wire_decode(buf, pos)?;
+            map.insert(key, V::wire_decode(buf, pos)?);
+        }
+        Some(OrchMap(map))
+    }
+}
+
 // A `result<T>` handler's answer: a flag byte, then the value or the handler's error.
 impl<T: OrchWire> OrchWire for Result<T, String> {
     fn wire_encode(&self, out: &mut Vec<u8>) {
@@ -530,6 +582,8 @@ pub struct Codegen {
     pub foreign_handle_params: std::collections::HashMap<String, Vec<bool>>,
     /// Struct definitions in the file being generated, used by the serverlet wire codec.
     pub struct_defs: Vec<(String, Vec<(String, Type)>)>,
+    /// Each enum's payload types, by variant, for the derives that depend on them.
+    pub enum_defs: Vec<(String, Vec<(String, Type)>)>,
     /// The file's sandbox struct codecs have been emitted; they are shared by every
     /// sandboxed serverlet in the file, so the first one emits them.
     pub(super) sandbox_codecs_emitted: bool,
@@ -599,6 +653,7 @@ impl Codegen {
             foreign_handle_params: std::collections::HashMap::new(),
             sandbox_programs: Vec::new(),
             struct_defs: Vec::new(),
+            enum_defs: Vec::new(),
             sandbox_codecs_emitted: false,
             handler_state: HashSet::new(),
             sandbox_guest_grants: None,
@@ -680,9 +735,12 @@ impl Codegen {
             ExprNode::Unary { operand, .. } => {
                 self.scan_events_in_expr(operand);
             }
-            ExprNode::Index { object, index } => {
+            ExprNode::Index { object, index, .. } => {
                 self.scan_events_in_expr(object);
                 self.scan_events_in_expr(index);
+            }
+            ExprNode::MapLiteral(entries) => {
+                for (key, value) in entries { self.scan_events_in_expr(key); self.scan_events_in_expr(value); }
             }
             ExprNode::Binary { lhs, rhs, .. } => {
                 self.scan_events_in_expr(lhs);
@@ -701,6 +759,10 @@ impl Codegen {
                 if let Some(eb) = else_branch { self.scan_events_in_expr(eb); }
             }
             ExprNode::ModuleCall { args, .. } => {
+                for a in args { self.scan_events_in_expr(a); }
+            }
+            ExprNode::MethodCall { receiver, args, .. } => {
+                self.scan_events_in_expr(receiver);
                 for a in args { self.scan_events_in_expr(a); }
             }
             ExprNode::StartServerlet { args, .. } => {
@@ -762,9 +824,15 @@ impl Codegen {
             ExprNode::Unary { operand, .. } => {
                 self.get_free_vars_expr(operand, local_env, free_vars);
             }
-            ExprNode::Index { object, index } => {
+            ExprNode::Index { object, index, .. } => {
                 self.get_free_vars_expr(object, local_env, free_vars);
                 self.get_free_vars_expr(index, local_env, free_vars);
+            }
+            ExprNode::MapLiteral(entries) => {
+                for (key, value) in entries {
+                    self.get_free_vars_expr(key, local_env, free_vars);
+                    self.get_free_vars_expr(value, local_env, free_vars);
+                }
             }
             ExprNode::Binary { lhs, rhs, .. } => {
                 self.get_free_vars_expr(lhs, local_env, free_vars);
@@ -792,6 +860,10 @@ impl Codegen {
                 if self.is_binding_receiver(module_local_name) && !local_env.contains(module_local_name) {
                     free_vars.insert(module_local_name.clone());
                 }
+                for a in args { self.get_free_vars_expr(a, local_env, free_vars); }
+            }
+            ExprNode::MethodCall { receiver, args, .. } => {
+                self.get_free_vars_expr(receiver, local_env, free_vars);
                 for a in args { self.get_free_vars_expr(a, local_env, free_vars); }
             }
             ExprNode::StartServerlet { args, .. } => {
@@ -906,7 +978,8 @@ impl Codegen {
         self.tasks.contains(name)
             || matches!(name, "print" | "to_string" | "to_int" | "to_float" | "parse_int" | "parse_float"
                             | "length" | "append" | "remove" | "sleep" | "stop_orch" | "clock_micros" | "clock_nanos"
-                            | "range" | "map" | "filter" | "reduce" | "find" | "any" | "all" | "latest")
+                            | "range" | "map" | "filter" | "reduce" | "find" | "any" | "all" | "latest"
+                            | "get" | "has" | "keys" | "values")
     }
 
     /// A closure body runs later and on its own, so it is its own statement context: it
@@ -1022,7 +1095,13 @@ impl Codegen {
     pub(super) fn compile_place(&mut self, expr: &Expr) -> String {
         match &expr.node {
             ExprNode::Identifier(name) => self.place_name(name),
-            ExprNode::Index { object, index } => {
+            // A map is indexed by its key, and says which key it lacks; an array by position.
+            ExprNode::Index { object, index, on_map } if on_map.get() => {
+                let object = self.compile_place(object);
+                let key = self.compile_value(index);
+                format!("{object}[&({key})]")
+            }
+            ExprNode::Index { object, index, .. } => {
                 let object = self.compile_place(object);
                 let index = self.compile_expr(index);
                 format!("{object}[({index}) as usize]")
@@ -1126,15 +1205,15 @@ impl Codegen {
                 .or_else(|| self.state_types.get(name).cloned())
                 .or_else(|| super::stmt::literal_type(value));
             match resolved {
-                Some(resolved) if Self::shareable(&resolved) => {
+                Some(resolved) if super::stmt::shareable(&resolved) => {
                     let rust = self.compile_type(&resolved);
                     if !self.shared_fields.iter().any(|(field, _)| field == name) {
                         self.shared_fields.push((name.clone(), rust));
                     }
                 }
                 Some(other) => self.errors.push(format!(
-                    "shared let '{}' has type {}, which cannot be shared. A shared binding holds data: int, float, bool, string, an array, or a struct.",
-                    name, other.display_name()
+                    "shared let '{}' has type {}, which cannot be shared. {}",
+                    name, other.display_name(), super::stmt::SHAREABLE
                 )),
                 None => self.errors.push(format!(
                     "shared let '{}' has no type the compiler can name; add a type annotation",
@@ -1144,17 +1223,6 @@ impl Codegen {
         }
     }
 
-    /// Data can be shared. A serverlet client, a process, or a closure cannot: the first
-    /// two are already safe to call concurrently and the third is not data.
-    fn shareable(ty: &Type) -> bool {
-        match ty {
-            Type::Int | Type::Float | Type::Bool | Type::Str | Type::Handle => true,
-            Type::Array(inner, _) => Self::shareable(inner),
-            Type::Option(inner) => Self::shareable(inner),
-            Type::Named(_) => true,
-            _ => false,
-        }
-    }
 
     /// The shared-state struct, its constructor, and where it lives. Emitted only when the
     /// program declares `shared let`, so nothing else carries a mutex it never locks.
@@ -1199,6 +1267,10 @@ impl Codegen {
         match &expr.node {
             ExprNode::ModuleCall { module_local_name, args, .. } => {
                 receivers.insert(module_local_name.clone());
+                for a in args { Self::call_receivers(a, receivers, declared); }
+            }
+            ExprNode::MethodCall { receiver, args, .. } => {
+                Self::call_receivers(receiver, receivers, declared);
                 for a in args { Self::call_receivers(a, receivers, declared); }
             }
             ExprNode::Block(stmts) => {
@@ -1271,9 +1343,12 @@ impl Codegen {
             }
             ExprNode::ArrayLiteral(items) => { for i in items { Self::call_receivers(i, receivers, declared); } }
             ExprNode::StructLiteral { fields, .. } => { for (_, v) in fields { Self::call_receivers(v, receivers, declared); } }
-            ExprNode::Index { object, index } => {
+            ExprNode::Index { object, index, .. } => {
                 Self::call_receivers(object, receivers, declared);
                 Self::call_receivers(index, receivers, declared);
+            }
+            ExprNode::MapLiteral(entries) => {
+                for (key, value) in entries { Self::call_receivers(key, receivers, declared); Self::call_receivers(value, receivers, declared); }
             }
             ExprNode::FieldAccess { object, .. } | ExprNode::SomeLiteral(object) | ExprNode::OkLiteral(object)
             | ExprNode::ErrLiteral(object) | ExprNode::Propagate(object) => Self::call_receivers(object, receivers, declared),
@@ -1416,6 +1491,8 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
 "#);
         }
         let preamble = runtime_preamble(false, true, self.library);
+        // A module uses the root's map type rather than one of its own.
+        let preamble = if is_main { preamble } else { preamble.replace(ORCH_MAP, "use crate::{OrchMap, __OrchRemove};\n") };
         code.push_str(&if self.library {
             preamble.replace("fn stop_orch() {\n    std::process::exit(0);\n}", if is_main { "" } else { "use crate::stop_orch;" })
         } else { preamble });
@@ -1441,6 +1518,10 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
             if !defs.iter().any(|(existing, _): &(String, _)| *existing == name) { defs.push((name, fields)); }
             defs
         });
+        self.enum_defs = stmts.iter().chain(if is_main { self.module_types.iter() } else { [].iter() }).filter_map(|s| match &s.node {
+            StmtNode::EnumDef { name, variants } => Some((name.clone(), variants.iter().filter_map(|v| v.payload.clone().map(|ty| (v.name.clone(), ty))).collect())),
+            _ => None,
+        }).collect();
         if self.has_secret {
             if self.library && !is_main {
                 // The wire impls are the root's, for every struct, since the trait is too.
@@ -1611,6 +1692,12 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
             Type::Handle => if self.is_main { "OrchHandle".to_string() } else { "crate::OrchHandle".to_string() },
             Type::Array(inner, _init_vals) => format!("Vec<{}>", self.compile_type(inner)),
             Type::Named(name) => rust_ident(name),
+            Type::Map(key, value) => format!("{}OrchMap<{}, {}>", if self.is_main { "" } else { "crate::" }, self.compile_type(key), self.compile_type(value)),
+            // A module's serverlet is `alias::S`; its client struct lives in that module.
+            Type::Client(serverlet) => match serverlet.split_once("::") {
+                Some((alias, name)) => format!("{}::{}Client", rust_ident(alias), name),
+                None => format!("{}Client", serverlet),
+            },
             Type::Option(inner) => format!("Option<{}>", self.compile_type(inner)),
             Type::Result(ok, err) => format!("Result<{}, {}>", self.compile_type(ok), self.compile_type(err)),
             Type::Fn(params, ret) => {

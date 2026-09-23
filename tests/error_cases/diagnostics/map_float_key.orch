@@ -1,0 +1,4 @@
+orchestrator main() {
+    let prices: map<float, int> = map {}
+    stop_orch()
+}

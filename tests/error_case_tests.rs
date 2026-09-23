@@ -128,6 +128,14 @@ fn test_error_cases() {
     assert_check_fails("diagnostics/serverlet_every_needs_a_library.orch", "`every:` counts host time");
     assert_check_fails("diagnostics/serverlet_every_needs_a_library.orch", "automatic(every:");
     assert_check_lib_fails("cadenced_serverlet_without_tick.orch", "declare `on tick(dt: float)`");
+    // What cannot be shown, compared, or carried is refused by name, saying what can.
+    assert_check_fails("diagnostics/print_a_struct.orch", "to_string shows an int, a float, a string, or a bool, and this is Point");
+    assert_check_fails("diagnostics/interpolate_an_array.orch", "a string's {...} shows an int, a float, a string, or a bool, and this is int[]");
+    assert_check_fails("diagnostics/compare_clients.orch", "Book.client values cannot be compared with `==`");
+    assert_check_fails("diagnostics/map_float_key.orch", "a map's key is an int, a string, or a bool, and this one is float");
+    assert_check_fails("diagnostics/for_over_a_map.orch", "loop over keys(m) or values(m)");
+    assert_check_fails("diagnostics/method_on_a_non_client.orch", "only a serverlet client has handlers");
+    assert_check_fails("diagnostics/client_to_a_secret_handler.orch", "means nothing in another");
     assert_check_lib_fails("latest_without_cadence.orch", "has no cadence, so nothing calls its tick");
     assert_check_lib_fails("cadenced_typed_tick.orch", "a hook with `every` cannot take an input or return a value");
     assert_check_lib_fails("library_body_writes_state.orch", "the orchestrator body assigns to 'count'");

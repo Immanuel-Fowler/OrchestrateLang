@@ -1,0 +1,45 @@
+// Serverlet instances started and addressed by key at run time: a tenant is added by
+// adding its key, and a dispatch over N tenants is one call.
+
+serverlet Tenant {
+    let name = ""
+    let total = 0
+    on init(key: string) { name = key }
+    on transform(amounts: int[]) -> int {
+        for amount in amounts { total = total + amount }
+        return total
+    }
+    on label() -> string { return name + ":" + to_string(total) }
+}
+
+// Stands in for keys that arrive at run time: from a file, a host, a request.
+fn tenant_keys() -> string[] { return ["acme", "globex", "initech"] }
+
+shared let registry: map<string, Tenant.client> = map {}
+
+let onboarding = automatic(restart: never) {
+    let late = start Tenant()
+    late.init("umbrella")
+    registry["umbrella"] = late
+    return
+}
+
+orchestrator main(procs: process[onboarding]) {
+    let tenants: map<string, Tenant.client> = map {}
+    for key in tenant_keys() {
+        let tenant = start Tenant()
+        tenant.init(key)
+        tenants[key] = tenant
+    }
+    print(to_string(tenants["globex"].transform([1, 2, 3])))
+    print(to_string(tenants["globex"].transform([4])))
+    print(to_string(tenants["acme"].transform([10])))
+    for key in keys(tenants) { print(tenants[key].label()) }
+
+    // A tenant added by a worker, through shared state: copied out, then called.
+    sleep(100)
+    let added = registry["umbrella"]
+    let count = length(registry)
+    print(to_string(added.transform([7])) + " " + to_string(count))
+    stop_orch()
+}

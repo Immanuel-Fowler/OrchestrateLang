@@ -21,12 +21,16 @@ version of the claim.
 | `result<T>` as a handler's return, of a `T` above | yes | yes | yes: the implementation returns `T`, and raising or throwing is its `err` | yes |
 | `option<T>`, closures, `result` anywhere else | yes | no | no | no |
 | `handle` | yes | no | no | no |
+| `map<K, V>` of the values above | yes | yes | yes: a Python `dict`, a TypeScript `Map` | **no** |
+| `S.client` | yes, as a parameter; a return only as `result<S.client>` | no | no | no |
 | an enum, or a struct holding one, as a handler's return | only as `result<T>` | no | no | no |
 
 - The sandbox carries exactly what the C ABI carries, by design: one ownership rule
   (borrowed parameters, callee-allocated returns copied and freed) rather than a second
-  encoding. A nested array or a string inside a struct would need its own ownership story.
-  The three process-based boundaries use the wire codec instead, which nests freely.
+  encoding. A nested array, a string inside a struct, or a map would need its own ownership
+  story. The three process-based boundaries use the wire codec instead, which nests freely.
+- A client is an address in this process, so it crosses no process or sandbox boundary;
+  `check` says so rather than naming it an unsupported type.
 - A `check` names the offending handler and type for the sandbox; for a secret or landline
   serverlet the same class of error is also the compiler's own.
 

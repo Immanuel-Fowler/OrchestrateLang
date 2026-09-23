@@ -1,0 +1,5 @@
+orchestrator main() {
+    let ages: map<string, int> = map { "ann": 31 }
+    for age in ages { print(to_string(age)) }
+    stop_orch()
+}

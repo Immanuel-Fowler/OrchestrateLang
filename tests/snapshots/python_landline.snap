@@ -142,6 +142,36 @@ fn __orch_panic_text(payload: &(dyn std::any::Any + Send)) -> String {
         .unwrap_or_else(|| "it panicked without a message".to_string())
 }
 
+/// A map from `K` to `V`, ordered by key.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OrchMap<K: Ord, V>(pub std::collections::BTreeMap<K, V>);
+impl<K: Ord, V> Default for OrchMap<K, V> {
+    fn default() -> Self { OrchMap(std::collections::BTreeMap::new()) }
+}
+impl<K: Ord, V> OrchMap<K, V> {
+    fn new() -> Self { Self::default() }
+    fn from_pairs(pairs: Vec<(K, V)>) -> Self { OrchMap(pairs.into_iter().collect()) }
+    fn len(&self) -> usize { self.0.len() }
+    fn set(&mut self, key: K, value: V) { self.0.insert(key, value); }
+    fn has(&self, key: &K) -> bool { self.0.contains_key(key) }
+    fn get_cloned(&self, key: &K) -> Option<V> where V: Clone { self.0.get(key).cloned() }
+    fn key_list(&self) -> Vec<K> where K: Clone { self.0.keys().cloned().collect() }
+    fn value_list(&self) -> Vec<V> where V: Clone { self.0.values().cloned().collect() }
+}
+/// `m[k]`: a key that is not there is a panic that names it, as an index past an array's
+/// end is.
+impl<K: Ord + std::fmt::Debug, V> std::ops::Index<&K> for OrchMap<K, V> {
+    type Output = V;
+    fn index(&self, key: &K) -> &V { self.0.get(key).unwrap_or_else(|| panic!("the map has no key {:?}", key)) }
+}
+impl<K: Ord + std::fmt::Debug, V> std::ops::IndexMut<&K> for OrchMap<K, V> {
+    fn index_mut(&mut self, key: &K) -> &mut V { self.0.get_mut(key).unwrap_or_else(|| panic!("the map has no key {:?}", key)) }
+}
+/// `remove(xs, i)` and `remove(m, k)`: an array's position, or a map's key.
+trait __OrchRemove<I> { fn orch_remove(&mut self, at: I); }
+impl<T> __OrchRemove<i64> for Vec<T> { fn orch_remove(&mut self, at: i64) { self.remove(at as usize); } }
+impl<K: Ord, V> __OrchRemove<K> for OrchMap<K, V> { fn orch_remove(&mut self, at: K) { self.0.remove(&at); } }
+
 async fn __secret_write_frame<W: tokio::io::AsyncWriteExt + Unpin>(w: &mut W, kind: u8, call_id: u32, payload: &[u8]) -> std::io::Result<()> {
     w.write_all(&((payload.len() + 5) as u32).to_le_bytes()).await?;
     w.write_all(&[kind]).await?;
@@ -239,6 +269,23 @@ impl<T: OrchWire> OrchWire for Vec<T> {
         let mut items = Vec::with_capacity(count.min(4096));
         for _ in 0..count { items.push(T::wire_decode(buf, pos)?); }
         Some(items)
+    }
+}
+
+// A map: its count, then each key and value, in key order.
+impl<K: OrchWire + Ord, V: OrchWire> OrchWire for OrchMap<K, V> {
+    fn wire_encode(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&(self.0.len() as u32).to_le_bytes());
+        for (key, value) in &self.0 { key.wire_encode(out); value.wire_encode(out); }
+    }
+    fn wire_decode(buf: &[u8], pos: &mut usize) -> Option<Self> {
+        let count = __wire_len(buf, pos)?;
+        let mut map = std::collections::BTreeMap::new();
+        for _ in 0..count {
+            let key = K::wire_decode(buf, pos)?;
+            map.insert(key, V::wire_decode(buf, pos)?);
+        }
+        Some(OrchMap(map))
     }
 }
 

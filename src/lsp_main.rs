@@ -197,6 +197,14 @@ fn hover_info(
         "string" => Some("UTF-8 string type."),
         "bool" => Some("Boolean type: `true` or `false`."),
         "void" => Some("The unit type, returned by procedures with no value."),
+        "map" => Some("`map<K, V>`: values by key, in key order; a key is an int, a string, or a bool.\n\n```\nlet ages: map<string, int> = map { \"ann\": 31 }\nages[\"bo\"] = 7\n```"),
+        "get" => Some("`get(m, key) -> option<V>`: a map's value for `key`, or `none`."),
+        "has" => Some("`has(m, key) -> bool`: whether a map has `key`."),
+        "keys" => Some("`keys(m) -> K[]`: a map's keys, in order."),
+        "values" => Some("`values(m) -> V[]`: a map's values, in their keys' order."),
+        "client" => Some("`S.client`: the address of a running instance of serverlet `S`, as `start S()` returns. Copies reach the same instance."),
+        "latest" => Some("`latest(p.tick) -> result<T>`: a cadenced serverlet's last answer to the runtime's call to its `tick`, or `err` saying why there is none."),
+        "every" => Some("A cadence: `on_tick(dt: float) every \"100ms\"` or `every 5 ticks` on a hook, `every: \"100ms\"` on a landline or sandbox, `automatic(every: \"20ms\")` on a worker."),
         _ => None,
     };
 

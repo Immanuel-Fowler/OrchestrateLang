@@ -30,6 +30,7 @@ fn ts_type(ty: &Type) -> Result<String, String> {
         Type::Void => "void".into(),
         Type::Array(t, _) => format!("{}[]", ts_type(t)?),
         Type::Named(n) => rust_ident(n),
+        Type::Map(key, value) => format!("Map<{}, {}>", ts_type(key)?, ts_type(value)?),
         _ => {
             return Err(format!(
                 "Unsupported TypeScript wire type {}",

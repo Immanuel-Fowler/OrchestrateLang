@@ -574,7 +574,7 @@ impl Codegen {
                     .map(|(fname, fty)| format!("    pub {}: {},", rust_ident(fname), self.compile_type(fty)))
                     .collect::<Vec<_>>()
                     .join("\n");
-                format!("#[derive({})]\n#[repr(C)]\npub struct {} {{\n{}\n}}", struct_derives(name, &self.struct_defs), rust_ident(name), fields_str)
+                format!("#[derive({})]\n#[repr(C)]\npub struct {} {{\n{}\n}}", struct_derives(name, &self.struct_defs, &self.enum_defs), rust_ident(name), fields_str)
             }
             StmtNode::EnumDef { name, variants } => {
                 let variants_str = variants.iter().map(|v| {
@@ -583,7 +583,9 @@ impl Codegen {
                         None => format!("    {},", rust_ident(&v.name)),
                     }
                 }).collect::<Vec<_>>().join("\n");
-                format!("#[derive(Clone, Debug)]\npub enum {} {{\n{}\n}}", rust_ident(name), variants_str)
+                // An enum compares when every payload does, so `side == Side::Buy` works.
+                let derives = if has_equality(&Type::Named(name.clone()), &self.struct_defs, &self.enum_defs) { "Clone, Debug, PartialEq" } else { "Clone, Debug" };
+                format!("#[derive({})]\npub enum {} {{\n{}\n}}", derives, rust_ident(name), variants_str)
             }
         }
     }
@@ -825,6 +827,7 @@ impl Codegen {
                             self.is_binding_receiver(module_local_name)
                         }
                     }
+                    ExprNode::MethodCall { .. } => true,
                     _ => false,
                 },
             };
@@ -1027,7 +1030,7 @@ impl Codegen {
                     .map(|(fname, fty)| format!("    pub {}: {},", rust_ident(fname), self.compile_type(fty)))
                     .collect::<Vec<_>>()
                     .join("\n");
-                format!("#[derive({})]\n#[repr(C)]\npub struct {} {{\n{}\n}}\n", struct_derives(sname, &self.struct_defs), rust_ident(sname), fields_str)
+                format!("#[derive({})]\n#[repr(C)]\npub struct {} {{\n{}\n}}\n", struct_derives(sname, &self.struct_defs, &self.enum_defs), rust_ident(sname), fields_str)
             })
             .collect::<String>() + &wire_struct_impls(&self.struct_defs);
 
@@ -1572,7 +1575,7 @@ impl Codegen {
                     .map(|(fname, fty)| format!("    pub {}: {},", rust_ident(fname), self.compile_type(fty)))
                     .collect::<Vec<_>>()
                     .join("\n");
-                format!("#[derive({})]\n#[repr(C)]\npub struct {} {{\n{}\n}}\n", struct_derives(sname, &self.struct_defs), rust_ident(sname), fields_str)
+                format!("#[derive({})]\n#[repr(C)]\npub struct {} {{\n{}\n}}\n", struct_derives(sname, &self.struct_defs, &self.enum_defs), rust_ident(sname), fields_str)
             })
             .collect::<String>() + &sandbox_struct_codecs(&self.struct_defs);
 
@@ -1720,16 +1723,22 @@ pub(crate) fn wire_unsupported_reason(handlers: &[Handler], structs: &StructDefs
 pub(crate) fn handler_wire_unsupported_reason(handlers: &[Handler], structs: &StructDefs) -> Option<String> {
     for h in handlers {
         for p in &h.params {
+            if let Type::Client(_) = p.ty {
+                return Some(format!(
+                    "handler '{}' parameter '{}' is a serverlet client, which is the address of an instance in this process and means nothing in another; pass what the handler needs from it instead",
+                    h.name, p.name
+                ));
+            }
             if !wire_supported(&p.ty, structs, 0) {
                 return Some(format!(
-                    "handler '{}' parameter '{}' uses an unsupported type; secret serverlets support int, float, bool, string, arrays, and structs declared in the same file",
+                    "handler '{}' parameter '{}' uses an unsupported type; secret serverlets support int, float, bool, string, arrays, maps, and structs declared in the same file",
                     h.name, p.name
                 ));
             }
         }
         if h.return_type != Type::Void && !wire_supported(answered_type(&h.return_type), structs, 0) {
             return Some(format!(
-                "handler '{}' uses an unsupported return type; secret serverlets support int, float, bool, string, arrays, structs declared in the same file, result<T> of any of those, and void",
+                "handler '{}' uses an unsupported return type; secret serverlets support int, float, bool, string, arrays, maps, structs declared in the same file, result<T> of any of those, and void",
                 h.name
             ));
         }
@@ -1752,7 +1761,7 @@ pub(crate) fn answered_type(ty: &Type) -> &Type {
 pub(crate) fn has_default(ty: &Type, structs: &StructDefs) -> bool {
     fn go(ty: &Type, structs: &StructDefs, depth: usize) -> bool {
         match ty {
-            Type::Int | Type::Float | Type::Str | Type::Bool | Type::Void | Type::Array(_, _) | Type::Option(_) => true,
+            Type::Int | Type::Float | Type::Str | Type::Bool | Type::Void | Type::Array(_, _) | Type::Option(_) | Type::Map(_, _) => true,
             Type::Named(name) if depth <= 32 => structs.iter()
                 .find(|(n, _)| n == name)
                 .is_some_and(|(_, fields)| fields.iter().all(|(_, field)| go(field, structs, depth + 1))),
@@ -1762,9 +1771,66 @@ pub(crate) fn has_default(ty: &Type, structs: &StructDefs) -> bool {
     go(ty, structs, 0)
 }
 
-/// A struct's derives: `Default` too when every field has a default.
-fn struct_derives(name: &str, structs: &StructDefs) -> &'static str {
-    if has_default(&Type::Named(name.to_string()), structs) { "Clone, Debug, Default" } else { "Clone, Debug" }
+/// Whether `==` can compare two values of a type: numbers, strings, and booleans, and
+/// anything built only of them — arrays, options, results, structs, and enums, which then
+/// derive it. A client, a process, a function, or a handle has no equality: two of them
+/// are the same only if they are the same thing, which the language has no way to ask.
+/// `enums` lists each enum's payload types, as `structs` lists each struct's fields.
+pub(crate) fn has_equality(ty: &Type, structs: &StructDefs, enums: &StructDefs) -> bool {
+    fn go(ty: &Type, structs: &StructDefs, enums: &StructDefs, depth: usize) -> bool {
+        match ty {
+            Type::Int | Type::Float | Type::Str | Type::Bool | Type::Void | Type::TypeParam(_) => true,
+            Type::Array(inner, _) | Type::Option(inner) => go(inner, structs, enums, depth + 1),
+            Type::Result(ok, error) | Type::Map(ok, error) => go(ok, structs, enums, depth + 1) && go(error, structs, enums, depth + 1),
+            Type::Named(name) if depth <= 32 => structs.iter().chain(enums.iter())
+                .find(|(n, _)| n == name)
+                .is_some_and(|(_, fields)| fields.iter().all(|(_, field)| go(field, structs, enums, depth + 1))),
+            _ => false,
+        }
+    }
+    go(ty, structs, enums, 0)
+}
+
+/// Whether `<` and its kin can order two values of a type: numbers, strings, booleans, and
+/// arrays, options, and results of them. A struct or an enum has no order of its own.
+pub(crate) fn has_order(ty: &Type) -> bool {
+    match ty {
+        Type::Int | Type::Float | Type::Str | Type::Bool | Type::TypeParam(_) => true,
+        Type::Array(inner, _) | Type::Option(inner) => has_order(inner),
+        Type::Result(ok, error) => has_order(ok) && has_order(error),
+        _ => false,
+    }
+}
+
+/// What a `shared let` may hold, in the words its diagnostic uses.
+pub(crate) const SHAREABLE: &str = "A shared binding holds data — int, float, bool, string, an array, a map, an option, or a struct — or serverlet clients";
+
+/// Whether a `shared let` can hold a type: data, and clients — a statement copies a client
+/// out under the lock, and its call waits outside it. A process or a closure cannot. A
+/// handle can: every statement that uses it holds the lock, so its native object is used by
+/// one statement at a time. The one rule `check` and the build both apply.
+pub(crate) fn shareable(ty: &Type) -> bool {
+    match ty {
+        Type::Int | Type::Float | Type::Bool | Type::Str | Type::Named(_) | Type::Handle | Type::Client(_) => true,
+        Type::Array(inner, _) | Type::Option(inner) => shareable(inner),
+        Type::Map(_, value) => shareable(value),
+        _ => false,
+    }
+}
+
+/// Whether `print`, `to_string`, and `{...}` in a string can show a value of a type.
+pub(crate) fn has_display(ty: &Type) -> bool {
+    matches!(ty, Type::Int | Type::Float | Type::Str | Type::Bool | Type::TypeParam(_))
+}
+
+/// A struct's derives: `Default` when every field has a default, and `PartialEq` when
+/// every field can be compared.
+fn struct_derives(name: &str, structs: &StructDefs, enums: &StructDefs) -> String {
+    let ty = Type::Named(name.to_string());
+    let mut derives = vec!["Clone", "Debug"];
+    if has_default(&ty, structs) { derives.push("Default"); }
+    if has_equality(&ty, structs, enums) { derives.push("PartialEq"); }
+    derives.join(", ")
 }
 
 /// Whether a failed call to this handler answers `err` rather than the type's default.
@@ -1785,6 +1851,7 @@ fn wire_supported(ty: &Type, structs: &StructDefs, depth: usize) -> bool {
     match ty {
         Type::Int | Type::Float | Type::Str | Type::Bool => true,
         Type::Array(inner, _) => wire_supported(inner, structs, depth + 1),
+        Type::Map(key, value) => matches!(**key, Type::Int | Type::Str | Type::Bool) && wire_supported(value, structs, depth + 1),
         Type::Named(name) => structs.iter()
             .find(|(n, _)| n == name)
             .map_or(false, |(_, fields)| fields.iter().all(|(_, fty)| wire_supported(fty, structs, depth + 1))),

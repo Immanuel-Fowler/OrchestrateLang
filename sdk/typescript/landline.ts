@@ -61,6 +61,26 @@ function frame(): { kind: number; id: number; payload: Uint8Array } | null {
     const b = exact(n)!;
     return { kind: b[0], id: new DataView(b.buffer).getUint32(1, true), payload: b.slice(5) };
 }
+// `map<K, V>` names its key and value types; a key is int, string, or bool, so the first
+// ", " is the split.
+function mapTypes(type: string): [string, string] | null {
+    if (!type.startsWith('map<') || !type.endsWith('>')) return null;
+    const inner = type.slice(4, -1);
+    const comma = inner.indexOf(', ');
+    return comma < 0 ? null : [inner.slice(0, comma), inner.slice(comma + 2)];
+}
+// Types in a signature, separated by commas outside any `<...>`.
+function splitTypes(list: string): string[] {
+    const types: string[] = [];
+    let depth = 0, start = 0;
+    for (let i = 0; i < list.length; i++) {
+        if (list[i] === '<') depth++;
+        else if (list[i] === '>') depth--;
+        else if (list[i] === ',' && depth === 0) { types.push(list.slice(start, i)); start = i + 1; }
+    }
+    if (list.length) types.push(list.slice(start));
+    return types;
+}
 class Reader {
     pos = 0;
     constructor(public bytes: Uint8Array, public schema: Schema) {}
@@ -73,6 +93,14 @@ class Reader {
         if (type === 'bool') { const n = this.take(1)[0]; if (n > 1) throw new Error('invalid bool'); return n === 1; }
         if (type === 'string') return decoder.decode(this.take(this.count()));
         if (type === 'void') return undefined;
+        const map = mapTypes(type);
+        if (map) {
+            const n = this.count();
+            if (n > MAX_FRAME) throw new Error('map too large');
+            const out = new Map();
+            for (let i = 0; i < n; i++) { const key = this.value(map[0]); out.set(key, this.value(map[1])); }
+            return out;
+        }
         const fields = this.schema[type];
         if (!fields) throw new Error('unknown wire type ' + type);
         const value: Record<string, any> = {};
@@ -88,6 +116,13 @@ function encode(type: string, value: any, schema: Schema): Uint8Array {
     if (type === 'float') { if (typeof value !== 'number') throw new Error('expected number'); const b = new Uint8Array(8); new DataView(b.buffer).setFloat64(0, value, true); return b; }
     if (type === 'bool') { if (typeof value !== 'boolean') throw new Error('expected boolean'); return new Uint8Array([value ? 1 : 0]); }
     if (type === 'string') { if (typeof value !== 'string') throw new Error('expected string'); const b = utf8.encode(value); return join([uint(b.length), b]); }
+    const map = mapTypes(type);
+    if (map) {
+        if (!(value instanceof Map)) throw new Error('expected Map for ' + type);
+        const parts: Uint8Array[] = [uint(value.size)];
+        for (const [key, item] of value) { parts.push(encode(map[0], key, schema), encode(map[1], item, schema)); }
+        return join(parts);
+    }
     if (!schema[type] || value == null) throw new Error('invalid struct ' + type);
     return join(schema[type].map(f => encode(f.type, value[f.name], schema)));
 }
@@ -106,7 +141,7 @@ export async function serve(factory: (context: Context) => any, methods: Method[
         const match = /^([\w]+)\.([\w]+)\((.*)\)->(.+)$/.exec(signature);
         if (!match) throw new Error('invalid grant signature');
         const [, group, name, args, result] = match;
-        const types = args ? args.split(',') : [];
+        const types = splitTypes(args);
         context.host[group] ??= Object.create(null);
         context.host[group][name] = (...values: any[]) => {
             if (!active) throw new Error('host calls require an active handler');

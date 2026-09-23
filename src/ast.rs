@@ -62,6 +62,11 @@ pub enum Type {
     Result(Box<Type>, Box<Type>),
     Fn(Vec<Type>, Box<Type>),       // fn(T1, T2) -> T3
     TypeParam(String),               // generic T, U, K, V
+    /// `S.client`: the address of a running instance of serverlet `S` — what `start S()`
+    /// returns. A module's serverlet is `alias::S`, written `alias.S.client`.
+    Client(String),
+    /// `map<K, V>`, ordered by key; a key is an `int`, a `string`, or a `bool`.
+    Map(Box<Type>, Box<Type>),
 }
 
 impl Type {
@@ -85,6 +90,8 @@ impl Type {
                 ret.display_name()
             ),
             Type::TypeParam(name) => name.clone(),
+            Type::Client(serverlet) => format!("{}.client", serverlet.replace("::", ".")),
+            Type::Map(key, value) => format!("map<{}, {}>", key.display_name(), value.display_name()),
         }
     }
 
@@ -93,7 +100,7 @@ impl Type {
             Type::TypeParam(_) => true,
             Type::Array(inner, _) => inner.contains_type_param(),
             Type::Option(inner) => inner.contains_type_param(),
-            Type::Result(ok, err) => ok.contains_type_param() || err.contains_type_param(),
+            Type::Result(ok, err) | Type::Map(ok, err) => ok.contains_type_param() || err.contains_type_param(),
             Type::Fn(params, ret) => params.iter().any(|t| t.contains_type_param()) || ret.contains_type_param(),
             _ => false,
         }
@@ -289,6 +296,12 @@ pub enum ExprNode {
         function: String,
         args: Vec<Expr>,
     },
+    /// `books[0].place(1)`: a handler called on a client that is not a bare name.
+    MethodCall {
+        receiver: Box<Expr>,
+        method: String,
+        args: Vec<Expr>,
+    },
     StartServerlet {
         name: String,
         args: Vec<Expr>,
@@ -324,7 +337,11 @@ pub enum ExprNode {
     Index {
         object: Box<Expr>,
         index: Box<Expr>,
+        /// Set by the typechecker when `object` is a map, which codegen indexes by key.
+        on_map: std::cell::Cell<bool>,
     },
+    /// `map { key: value, ... }`
+    MapLiteral(Vec<(Expr, Expr)>),
     // Error handling
     NoneLiteral,
     SomeLiteral(Box<Expr>),
@@ -489,6 +506,10 @@ fn walk_expr_inner<'a>(expr: &'a Expr, visit: &mut dyn FnMut(Node<'a>), deferred
         ExprNode::Binary { lhs, rhs, .. } => { go(lhs, visit); go(rhs, visit); }
         ExprNode::Call { args, .. } | ExprNode::ModuleCall { args, .. } | ExprNode::StartServerlet { args, .. }
         | ExprNode::ArrayLiteral(args) => for arg in args { go(arg, visit); },
+        ExprNode::MethodCall { receiver, args, .. } => {
+            go(receiver, visit);
+            for arg in args { go(arg, visit); }
+        }
         ExprNode::Pipeline { value, function } => { go(value, visit); go(function, visit); }
         ExprNode::Block(stmts) => for stmt in stmts { walk_stmt_inner(stmt, visit, deferred); },
         ExprNode::If { cond, then_branch, else_branch } => {
@@ -504,7 +525,8 @@ fn walk_expr_inner<'a>(expr: &'a Expr, visit: &mut dyn FnMut(Node<'a>), deferred
         ExprNode::StartProcess { target } => go(target, visit),
         ExprNode::StructLiteral { fields, .. } => for (_, value) in fields { go(value, visit); },
         ExprNode::FieldAccess { object, .. } => go(object, visit),
-        ExprNode::Index { object, index } => { go(object, visit); go(index, visit); }
+        ExprNode::Index { object, index, .. } => { go(object, visit); go(index, visit); }
+        ExprNode::MapLiteral(entries) => for (key, value) in entries { go(key, visit); go(value, visit); },
         ExprNode::SomeLiteral(inner) | ExprNode::OkLiteral(inner) | ExprNode::ErrLiteral(inner) | ExprNode::Propagate(inner) => {
             go(inner, visit)
         }
