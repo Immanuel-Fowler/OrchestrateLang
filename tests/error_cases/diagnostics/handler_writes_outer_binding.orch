@@ -1,0 +1,3 @@
+let count = 0
+on hit(n: int) { count = count + n }
+orchestrator main() { trigger hit(1)  stop_orch() }

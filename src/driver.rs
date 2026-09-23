@@ -398,7 +398,7 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
         _ => Vec::new(),
     }).collect::<Vec<_>>();
     let module_stmts: Vec<&[ast::Stmt]> = modules_data.iter().map(|(_, stmts, _)| stmts.as_slice()).collect();
-    library_rules(&ast, &module_stmts, library.is_some())?;
+    library_rules(input_file, &ast, &module_stmts, library.is_some())?;
     let mut all_foreign_sources = Vec::new();
     // Crates the generated crate must depend on, by name, with where each was declared.
     let mut extra_dependencies: std::collections::BTreeMap<String, (crate::dependencies::Dependency, String)> = std::collections::BTreeMap::new();
@@ -926,7 +926,7 @@ pub fn run_run(input_file: &str) -> Result<(), String> {
 /// declarations and on whether it builds a library. `build` and `check` both call this,
 /// so `check` refuses what `build` would for them, and `check --lib` means what
 /// `build --lib` does.
-fn library_rules(ast: &[ast::Stmt], modules: &[&[ast::Stmt]], library: bool) -> Result<(), String> {
+fn library_rules(input_file: &str, ast: &[ast::Stmt], modules: &[&[ast::Stmt]], library: bool) -> Result<(), String> {
     let host_functions = ast.iter().flat_map(|s| match &s.node {
         ast::StmtNode::Host { name, functions } => functions.iter().map(|h| (name.clone(), h.clone())).collect(),
         _ => Vec::new(),
@@ -936,6 +936,11 @@ fn library_rules(ast: &[ast::Stmt], modules: &[&[ast::Stmt]], library: bool) -> 
         if group.starts_with('_') || handler.name.starts_with('_') || !host_names.insert(format!("{}_{}", group, handler.name)) {
             return Err("Host names must not start with underscore or generate duplicate Rust method names".into());
         }
+    }
+    typechecker::TypeChecker::check_captured_writes(ast, library).map_err(|e| type_error_in(input_file, &e))?;
+    for stmts in modules {
+        // A module has no instance state of its own for a handler to reach.
+        typechecker::TypeChecker::check_captured_writes(stmts, false)?;
     }
     for stmt in ast.iter().chain(modules.iter().flat_map(|stmts| stmts.iter())) {
         if !library && matches!(&stmt.node, ast::StmtNode::Host { .. } | ast::StmtNode::OnTick { .. } | ast::StmtNode::OnFixedTick { .. }) {
@@ -1021,7 +1026,7 @@ pub fn run_check(input_file: &str, library: bool) -> Result<(), String> {
     }
 
     let module_stmts: Vec<&[ast::Stmt]> = modules.iter().map(|(_, stmts)| stmts.as_slice()).collect();
-    library_rules(&ast, &module_stmts, library)?;
+    library_rules(input_file, &ast, &module_stmts, library)?;
 
     println!("[orchestrate] {} — no type errors found", input_file);
     Ok(())

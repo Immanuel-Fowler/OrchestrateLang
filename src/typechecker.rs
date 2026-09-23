@@ -701,6 +701,126 @@ impl TypeChecker {
         }
     }
 
+    /// A worker, an event handler, or a closure works on copies of what it names from
+    /// outside: a worker and a handler run on tasks of their own, and a closure captures
+    /// when it is made. So an assignment in one to a binding declared outside it — or an
+    /// `append` or `remove` on one — changes the copy, and the write is lost with no sign
+    /// of it. That is refused here, by name, with what to do instead.
+    ///
+    /// Two writers are not copies. A `shared let` is reached through the lock from
+    /// anywhere. In a library, a top-level event handler runs inside a tick, one at a
+    /// time, and writes instance state itself, as a hook does. And in a library the
+    /// orchestrator body runs beside the ticks, so it too works on copies.
+    pub fn check_captured_writes(stmts: &[Stmt], library: bool) -> Result<(), String> {
+        let shared: HashSet<String> = stmts.iter().filter_map(|s| match &s.node {
+            StmtNode::Let { name, shared: true, .. } => Some(name.clone()),
+            _ => None,
+        }).collect();
+        let top_level: HashSet<String> = stmts.iter().filter_map(|s| match &s.node {
+            StmtNode::Let { name, shared: false, .. } => Some(name.clone()),
+            _ => None,
+        }).collect();
+        let mut failure: Option<String> = None;
+        for stmt in stmts {
+            let top_level_handler = match &stmt.node {
+                StmtNode::Expr(value) | StmtNode::Let { value, .. } => matches!(value.node, ExprNode::TriggeredBlock { .. }),
+                _ => false,
+            };
+            if library {
+                if let StmtNode::OrchestratorDecl { name, params, body, .. } = &stmt.node {
+                    if name == "main" {
+                        // Its `on_start` and `on_stop` are the library's hooks, not the body.
+                        let declared = Self::declared_names(body, params);
+                        let hooks_removed = match &body.node {
+                            ExprNode::Block(stmts) => stmts.iter().filter(|s| !matches!(s.node, StmtNode::OnStart(_) | StmtNode::OnStop(_))).cloned().collect(),
+                            _ => Vec::new(),
+                        };
+                        let body = Expr { span: body.span, node: ExprNode::Block(hooks_removed) };
+                        if let Some(error) = Self::first_outer_write(&body, &declared, &shared, "the orchestrator body", &|name| format!(
+                            "'{name}' is top-level state, and in a library the orchestrator body runs beside the ticks with its own copy, so the write would be lost; write it from a hook — on_start, on_tick, or an event handler — or declare it `shared let`"
+                        )) {
+                            return Err(error);
+                        }
+                    }
+                }
+            }
+            crate::ast::walk_stmt(stmt, &mut |node| {
+                if failure.is_some() { return; }
+                let crate::ast::Node::Expr(expr) = node else { return };
+                let error = match &expr.node {
+                    ExprNode::AutomaticBlock { body, crash_handler, .. } => {
+                        let mut declared = Self::declared_names(body, &[]);
+                        if let Some((error_name, handler)) = crash_handler {
+                            declared.insert(error_name.clone());
+                            declared.extend(Self::declared_names(handler, &[]));
+                        }
+                        let explain = |name: &str| format!(
+                            "'{name}' is declared outside it, and a worker runs on its own task with its own copy of what it names from outside, so the write would be lost; declare '{name}' as `shared let` to share it between workers, or declare it inside the block"
+                        );
+                        Self::first_outer_write(body, &declared, &shared, "this `automatic` block", &explain)
+                            .or_else(|| crash_handler.as_ref().and_then(|(_, handler)| Self::first_outer_write(handler, &declared, &shared, "this `automatic` block's on_crash", &explain)))
+                    }
+                    ExprNode::TriggeredBlock { params, body, .. } => {
+                        let declared = Self::declared_names(body, params);
+                        let reaches_state = library && top_level_handler && std::ptr::eq(expr, match &stmt.node {
+                            StmtNode::Expr(value) | StmtNode::Let { value, .. } => value,
+                            _ => expr,
+                        });
+                        let mut allowed = shared.clone();
+                        if reaches_state { allowed.extend(top_level.iter().cloned()); }
+                        Self::first_outer_write(body, &declared, &allowed, "this event handler", &|name| if library {
+                            format!("'{name}' is declared outside it, and only a top-level handler reaches instance state; a handler declared inside something else runs with its own copy, so the write would be lost. Declare the handler at the top level, or declare '{name}' as `shared let`")
+                        } else {
+                            format!("'{name}' is declared outside it, and in a standalone program each handler runs on its own task with its own copy, concurrently with the rest, so the write would be lost; declare '{name}' as `shared let`")
+                        })
+                    }
+                    ExprNode::Closure { params, body, .. } => {
+                        let declared = Self::declared_names(body, params);
+                        Self::first_outer_write(body, &declared, &shared, "this closure", &|name| format!(
+                            "'{name}' is declared outside it, and a closure captures a copy when it is made, so the write would not be seen outside it; return the new value instead, or declare '{name}' as `shared let`"
+                        ))
+                    }
+                    _ => None,
+                };
+                if error.is_some() { failure = error; }
+            });
+            if let Some(error) = failure { return Err(error); }
+        }
+        Ok(())
+    }
+
+    /// The first write in `body` to a binding that is neither declared in it nor allowed,
+    /// as a diagnostic.
+    fn first_outer_write(body: &Expr, declared: &HashSet<String>, allowed: &HashSet<String>, what: &str, explain: &dyn Fn(&str) -> String) -> Option<String> {
+        fn root(expr: &Expr) -> Option<&String> {
+            match &expr.node {
+                ExprNode::Identifier(name) => Some(name),
+                ExprNode::Index { object, .. } | ExprNode::FieldAccess { object, .. } => root(object),
+                _ => None,
+            }
+        }
+        let mut found = None;
+        crate::ast::walk_expr(body, &mut |node| {
+            if found.is_some() { return; }
+            let crate::ast::Node::Expr(expr) = node else { return };
+            let (target, verb) = match &expr.node {
+                ExprNode::Binary { op: BinaryOp::Assign, lhs, .. } => (root(lhs), "assigns to"),
+                ExprNode::Call { callee, args } if (callee == "append" || callee == "remove") && !args.is_empty() => (root(&args[0]), if callee == "append" { "appends to" } else { "removes from" }),
+                ExprNode::Pipeline { value, function } => match &function.node {
+                    ExprNode::Call { callee, .. } if callee == "append" || callee == "remove" => (root(value), if callee == "append" { "appends to" } else { "removes from" }),
+                    _ => (None, ""),
+                },
+                _ => (None, ""),
+            };
+            if let Some(name) = target {
+                if !declared.contains(name) && !allowed.contains(name) {
+                    found = Some(format!("line {}, col {}: {what} {verb} '{name}': {}.", expr.span.line, expr.span.col, explain(name)));
+                }
+            }
+        });
+        found
+    }
+
     /// A body that declares a return type must end in a value or return on every path.
     /// `fn f(n: int) -> int { if n > 0 { return 1 } }` reached rustc as E0317 before this;
     /// a block whose tail is a statement types as void, so the check is on the tail's

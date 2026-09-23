@@ -66,6 +66,22 @@ fn assert_check_fails(file: &str, expected_msg: &str) {
     );
 }
 
+/// `orchestrate check --lib` must reject the file with the message: a library rule.
+fn assert_check_lib_fails(file: &str, expected_msg: &str) {
+    let output = Command::new(get_orchestrate_bin())
+        .args(["check", "--lib"])
+        .arg(format!("tests/error_cases/{}", file))
+        .output()
+        .expect("Failed to run orchestrate process");
+    assert!(!output.status.success(), "Expected check --lib of {} to fail, but it passed", file);
+    let combined_output = format!("{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(
+        combined_output.contains(expected_msg),
+        "Expected check --lib of {} to contain '{}', but output was:\n{}",
+        file, expected_msg, combined_output
+    );
+}
+
 #[test]
 fn test_error_cases() {
     assert_compilation_fails("unsupported_foreign_language.orch", "is not supported currently");
@@ -93,6 +109,15 @@ fn test_error_cases() {
     // catches it in a library program that `run` would refuse for other reasons first.
     assert_check_fails("sandbox_ungranted_host_call.orch", "calls world.reset, which it was not granted");
     assert_check_fails("sandbox_ungranted_host_call.orch", "add `grant call world.reset`");
+    // A worker, a handler, or a closure works on copies; a write to a binding from
+    // outside would be lost, so it is refused by name, with what to do instead.
+    assert_check_fails("diagnostics/handler_writes_outer_binding.orch", "this event handler assigns to 'count'");
+    assert_check_fails("diagnostics/handler_writes_outer_binding.orch", "declare 'count' as `shared let`");
+    assert_check_fails("diagnostics/worker_appends_to_outer_binding.orch", "this `automatic` block appends to 'seen'");
+    assert_check_fails("diagnostics/closure_writes_outer_binding.orch", "this closure assigns to 'total'");
+    assert_check_fails("diagnostics/closure_writes_outer_binding.orch", "return the new value instead");
+    assert_check_lib_fails("library_body_writes_state.orch", "the orchestrator body assigns to 'count'");
+    assert_check_lib_fails("library_body_writes_state.orch", "write it from a hook");
     // on_crash runs on the host; the guest's state is gone by then.
     assert_compilation_fails("sandbox_crash_uses_state.orch", "on_crash uses 'calls', which is the guest's state");
     remove_build_leftovers(&[PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/error_cases/.orch_cache")]);

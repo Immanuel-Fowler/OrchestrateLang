@@ -1,0 +1,6 @@
+orchestrator main() {
+    let total = 0
+    let add = fn(n: int) -> int { total = total + n  return total }
+    print(add(1))
+    stop_orch()
+}

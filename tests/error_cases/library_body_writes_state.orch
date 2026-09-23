@@ -1,0 +1,4 @@
+host world { fn record(n: int) }
+let count = 0
+on_tick(dt: float) { world.record(count) }
+orchestrator main() { count = 3 }
