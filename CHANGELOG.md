@@ -43,6 +43,14 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   (E0382). All of them work now, and a worker can name itself, to keep itself in a set it
   swaps in. A stopped worker named in a new set is started again. The reference's example
   now lists the workers it says start, and triggers the trim it describes.
+- **A sandbox timeout is a duration, measured from the call's own start.** It was
+  counted in whole 10 ms epoch ticks from wherever the current tick was, and started
+  before the call's arguments were copied in, so a runaway call under a 20 ms timeout
+  was stopped anywhere from about 14 ms, and calls of a few milliseconds under a 10 ms
+  timeout were killed whenever a tick landed inside them — 32 of 300 in one run, each
+  resetting the guest's state. Each call now records its start after its arguments are
+  written, and an epoch-deadline callback interrupts it only once that long has passed:
+  at least the whole timeout, and at most one tick more. The same 300 calls: none killed.
 - **A crash while holding the shared-state lock no longer takes every worker down.** A
   statement that panicked with the lock held — a worker dividing by zero inside an `if`
   that reads shared state — poisoned the mutex, and every later statement that touched

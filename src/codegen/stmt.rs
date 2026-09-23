@@ -1054,7 +1054,7 @@ impl Codegen {
 
             arms.push(format!(
                 "                {name}Msg::{variant} {{ {bindings} }} => {{\n                    \
-                     __guest.begin();\n{setup}                    \
+                     {setup}                    __guest.begin();\n                    \
                      let __outcome = match __guest.instance.get_typed_func::<{tuple_type}, {results}>(&mut __guest.store, {handler:?}) {{\n                        \
                          Ok(__function) => {{\n                            \
                              let __called = __function.call(&mut __guest.store, ({tuple_args}));\n                            \

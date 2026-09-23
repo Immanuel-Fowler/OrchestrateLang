@@ -231,7 +231,10 @@ two sides: the grant declares intent; the wasmtime linker enforces it.
 5. ✅ **Timeout enforcement (epoch interruption). (DONE)**
    Wire `timeout` to epoch deadlines + a background epoch-bumping timer. *Test: a
    guest that loops forever is interrupted at ~timeout and the caller gets a
-   timeout error.*
+   timeout error.* Since 0.16 the epoch is only when the call's time is looked at, not
+   the unit it is counted in: each call records its start once its arguments are written,
+   and an epoch-deadline callback interrupts it only after the declared duration has
+   passed, so the timeout is a duration, at most one 10 ms tick late and never early.
 
 6. ✅ **`string` marshaling across the boundary. (DONE)**
    ptr+len protocol into guest linear memory. *Test: `string -> string` handler

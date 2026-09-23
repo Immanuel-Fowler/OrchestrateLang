@@ -1680,6 +1680,12 @@ program, and runs each call through [wasmtime](https://wasmtime.dev).
 - **Memory** — `memory_limit` caps the guest's linear memory. A guest that allocates past
   it fails that call.
 - **Time** — `timeout` bounds a single call. A guest that will not return is interrupted.
+  The time is measured from the call's own start, once its arguments are in the guest,
+  and looked at every 10 ms: a call gets at least its whole timeout, and one that runs past
+  it is stopped within 10 ms after. (Before 0.16 the timeout was counted in whole 10 ms
+  ticks from wherever the current tick was, so a call could be stopped several
+  milliseconds early, and a call of a few milliseconds under a 10 ms timeout was killed
+  whenever a tick landed inside it.)
 - **Reach** — the guest gets no imports beyond two diagnostic ones (below). No files, no
   network, no clock, no environment, no host functions. Anything else it imports traps
   when called.

@@ -18,8 +18,8 @@ fn __orch_wasm_engine() -> &'static wasmtime::Engine {
         engine
     })
 }
-/// How often the epoch advances. A timeout is rounded up to whole ticks, so this is also
-/// the granularity with which a runaway guest is stopped.
+/// How often the epoch advances, which is how often a running call's time is looked at:
+/// a call that runs past its timeout is stopped within one tick after it, never before.
 const __ORCH_WASM_TICK_MS: u64 = 10;
 /// The deadline a guest with no timeout gets. Epoch interruption is on for every store and
 /// a store begins already past its deadline, so every guest needs one; wasmtime adds the
@@ -29,6 +29,11 @@ const __ORCH_WASM_NO_DEADLINE: u64 = 1 << 40;
 
 struct __OrchGuestLimits {
     limits: wasmtime::StoreLimits,
+    /// How long one call may run, if the guest has a timeout.
+    timeout: Option<std::time::Duration>,
+    /// When the current call started running in the guest: after its arguments were
+    /// written, so copying them in does not count against it.
+    started: std::time::Instant,
     /// Bytes the guest has written but not finished a line with. A guest writes its
     /// diagnostics in whatever pieces it likes, so they are joined before being logged.
     partial_line: Vec<u8>,
@@ -192,7 +197,7 @@ fn __orch_wasm_instantiate(
     name: &str,
     module: &wasmtime::Module,
     memory_bytes: Option<usize>,
-    deadline: u64,
+    timeout: Option<std::time::Duration>,
     grants: Option<__OrchGrants>,
 ) -> Result<(wasmtime::Store<__OrchGuestLimits>, wasmtime::Instance), String> {
     let engine = __orch_wasm_engine();
@@ -200,8 +205,19 @@ fn __orch_wasm_instantiate(
     if let Some(bytes) = memory_bytes {
         builder = builder.memory_size(bytes);
     }
-    let mut store = wasmtime::Store::new(engine, __OrchGuestLimits { limits: builder.build(), partial_line: Vec::new() });
+    let mut store = wasmtime::Store::new(engine, __OrchGuestLimits { limits: builder.build(), timeout, started: std::time::Instant::now(), partial_line: Vec::new() });
     store.limiter(|state| &mut state.limits);
+    // Each tick, a call with a timeout is asked how long it has run: past its timeout it
+    // is interrupted, and otherwise it gets another tick. So the timeout is a duration
+    // measured from the call's own start, whatever point in a tick the call began at.
+    store.epoch_deadline_callback(|context| {
+        let limits = context.data();
+        Ok(match limits.timeout {
+            Some(timeout) if limits.started.elapsed() >= timeout => wasmtime::UpdateDeadline::Interrupt,
+            Some(_) => wasmtime::UpdateDeadline::Continue(1),
+            None => wasmtime::UpdateDeadline::Continue(__ORCH_WASM_NO_DEADLINE),
+        })
+    });
     let mut linker: wasmtime::Linker<__OrchGuestLimits> = wasmtime::Linker::new(engine);
     __orch_wasm_diagnostics(&mut linker).map_err(|e| format!("wasm module '{}': {}", name, e))?;
     if let Some(grants) = grants {
@@ -213,7 +229,7 @@ fn __orch_wasm_instantiate(
     linker
         .define_unknown_imports_as_traps(module)
         .map_err(|e| format!("wasm module '{}': {}", name, e))?;
-    store.set_epoch_deadline(deadline);
+    store.set_epoch_deadline(if timeout.is_some() { 1 } else { __ORCH_WASM_NO_DEADLINE });
     let instance = linker
         .instantiate(&mut store, module)
         .map_err(|e| format!("wasm module '{}' failed to start: {}", name, __orch_wasm_reason(&e)))?;
@@ -231,9 +247,8 @@ struct __OrchGuest {
     memory_bytes: Option<usize>,
     store: wasmtime::Store<__OrchGuestLimits>,
     instance: wasmtime::Instance,
-    /// Epoch ticks one call may take, or `__ORCH_WASM_NO_DEADLINE` for a guest that was
-    /// given no timeout.
-    deadline: u64,
+    /// How long one call may run, or `None` for a guest that was given no timeout.
+    timeout: Option<std::time::Duration>,
     /// The host functions this guest was granted, applied again when it is replaced.
     grants: Option<__OrchGrants>,
 }
@@ -248,15 +263,16 @@ impl __OrchGuest {
     ) -> Result<__OrchGuest, String> {
         let module = wasmtime::Module::new(__orch_wasm_engine(), wasm)
             .map_err(|e| format!("wasm module '{}' failed to load: {}", name, e))?;
-        let deadline = timeout_ms.map_or(__ORCH_WASM_NO_DEADLINE, |ms| ms.div_ceil(__ORCH_WASM_TICK_MS).max(1));
-        let (store, instance) = __orch_wasm_instantiate(name, &module, memory_bytes, deadline, grants)?;
-        Ok(__OrchGuest { name, module, memory_bytes, store, instance, deadline, grants })
+        let timeout = timeout_ms.map(std::time::Duration::from_millis);
+        let (store, instance) = __orch_wasm_instantiate(name, &module, memory_bytes, timeout, grants)?;
+        Ok(__OrchGuest { name, module, memory_bytes, store, instance, timeout, grants })
     }
 
-    /// Called before every guest call, so each call gets the whole timeout rather than
-    /// what the one before it left.
+    /// Called just before the guest function runs — after its arguments are written into
+    /// the guest — so each call gets the whole timeout, measured from its own start.
     fn begin(&mut self) {
-        self.store.set_epoch_deadline(self.deadline);
+        self.store.data_mut().started = std::time::Instant::now();
+        self.store.set_epoch_deadline(if self.timeout.is_some() { 1 } else { __ORCH_WASM_NO_DEADLINE });
     }
 
     /// Replace the instance after a call trapped.
@@ -268,7 +284,7 @@ impl __OrchGuest {
     /// guest is thrown away and a fresh one takes its place, which means a call that traps
     /// also resets the guest's state. Containment costs what it costs.
     fn reset(&mut self) {
-        match __orch_wasm_instantiate(self.name, &self.module, self.memory_bytes, self.deadline, self.grants) {
+        match __orch_wasm_instantiate(self.name, &self.module, self.memory_bytes, self.timeout, self.grants) {
             Ok((store, instance)) => {
                 self.store = store;
                 self.instance = instance;

@@ -574,6 +574,15 @@ serverlet Hostile sandbox(memory_limit: "16mb", timeout: "300ms") {
     }
     on behave(n: int) -> int { return n + 1 }
 }
+// The timeout is a duration from the call's own start: a runaway call is never stopped
+// before it, wherever in the epoch's 10 ms tick the call began. That bound holds however
+// loaded the machine is, so it is safe to check with a clock.
+serverlet Timed sandbox(memory_limit: "8mb", timeout: "40ms") {
+    on spin() -> int {
+        while true { }
+        return 1
+    }
+}
 orchestrator main() {
     let h = start Hostile()
     print(to_string(h.behave(1)))
@@ -582,6 +591,14 @@ orchestrator main() {
     print(to_string(h.devour()))
     print(to_string(h.behave(3)))
     print("alive")
+    let t = start Timed()
+    for i in range(4) {
+        sleep(i * 3)
+        let started = clock_micros()
+        let r = t.spin()
+        let took = clock_micros() - started
+        if took >= 40000 { print("not early") } else { print("stopped early, after {took} us") }
+    }
     stop_orch()
 }
 "#).unwrap();
@@ -597,7 +614,7 @@ orchestrator main() {
     let lines: Vec<&str> = stdout.lines().filter(|l| !l.starts_with("[orchestrate]")).collect();
     // The two contained calls answer with a default; the calls around them still work,
     // which is what "the host survives" has to mean.
-    assert_eq!(lines, vec!["2", "0", "3", "0", "4", "alive"], "stdout: {}\nstderr: {}", stdout, stderr);
+    assert_eq!(lines, vec!["2", "0", "3", "0", "4", "alive", "not early", "not early", "not early", "not early"], "stdout: {}\nstderr: {}", stdout, stderr);
     assert!(stderr.contains("ran past its timeout"), "expected a timeout report: {}", stderr);
     assert!(stderr.contains("memory allocation") || stderr.contains("stopped itself"),
         "expected the guest's own failure reported: {}", stderr);
