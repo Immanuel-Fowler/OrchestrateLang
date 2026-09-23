@@ -24,6 +24,9 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 - **`Scripts::handle_events()`** (and `handle_events_blocking`) handles a library's
   queued events without running a tick hook. Events were handled only around ticks, so a
   host could not tell a library anything between them.
+- **`Scripts::child_processes()`** lists the child processes a library instance has running
+  — each secret and landline serverlet's — by serverlet name and process id; a
+  supervising host had to walk the process table.
 - **`orchestrate --version`** (also `-V` and `version`) prints the version and the commit
   the compiler was built from; it was "Unknown command". `orchestrate --help | head -1`
   panicked with a broken pipe once `head` closed it, and now stops quietly, as a
@@ -115,6 +118,12 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   resetting the guest's state. Each call now records its start after its arguments are
   written, and an epoch-deadline callback interrupts it only once that long has passed:
   at least the whole timeout, and at most one tick more. The same 300 calls: none killed.
+- **A panic in a hook under `tick_sync` no longer unwinds into the host.** The hook runs on
+  the calling thread there, so a panic — an index into an empty array a budgeted landline
+  had returned — could end the host process. It is now caught: the tick returns an error
+  with the panic's message and the instance stops, as it already did under
+  `tick_blocking`. The library guide now says where a panic is reported and that Rust's
+  panic hook, which is the host's, still prints it.
 - **A crash while holding the shared-state lock no longer takes every worker down.** A
   statement that panicked with the lock held — a worker dividing by zero inside an `if`
   that reads shared state — poisoned the mutex, and every later statement that touched

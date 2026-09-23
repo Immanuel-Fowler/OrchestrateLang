@@ -478,6 +478,72 @@ fn main() {
     assert_eq!(output.trim(), "[3, 7]\n[3, 7, -1]");
 }
 
+/// A hook that panics under `tick_sync` does not unwind into the host's thread: the tick
+/// returns an error with the panic's message, and the instance stops, so later ticks say
+/// why. An index into an empty array a budgeted landline had returned ended a host this way.
+#[test]
+fn library_tick_sync_contains_a_panicking_hook() {
+    let root = root("tick_sync_panic");
+    build(&root, r#"
+host world { fn record(n: int) }
+let xs: int[] = []
+let ticks = 0
+on_tick(dt: float) {
+    ticks = ticks + 1
+    if ticks == 2 { let boom = xs[5] }
+    world.record(ticks)
+}
+orchestrator main() {}
+"#);
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<i64>>>);
+impl scripts::Host for Host { fn world_record(&self, n: i64) -> Result<(), String> { self.0.lock().unwrap().push(n); Ok(()) } }
+fn main() {
+    std::panic::set_hook(Box::new(|_| {}));
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let mut scripts = scripts::start(runtime.handle(), Host(recorded.clone())).unwrap();
+    scripts.ready_blocking(&runtime).unwrap();
+    println!("{:?}", scripts.tick_sync(&runtime, 0.016));
+    let second = scripts.tick_sync(&runtime, 0.016).unwrap_err();
+    println!("{}", second.contains("tick panicked") && second.contains("index out of bounds"));
+    let third = scripts.tick_sync(&runtime, 0.016).unwrap_err();
+    println!("{}", third.contains("stopped after a tick panicked"));
+    println!("{:?}", recorded.lock().unwrap());
+}
+"#);
+    assert_eq!(output.trim(), "Ok(())\ntrue\ntrue\n[1]");
+}
+
+/// A host can ask which child processes an instance has running — a secret serverlet's
+/// here — rather than walking the process table.
+#[test]
+fn library_reports_its_child_processes() {
+    let root = root("child_processes");
+    build(&root, r#"
+serverlet Vault secret { on add(n: int) -> int { return n + 1 } }
+let v = start Vault()
+on_tick(dt: float) { print(to_string(v.add(1))) }
+orchestrator main() {}
+"#);
+    let output = host(&root, r#"
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let mut scripts = scripts::start(runtime.handle(), ()).unwrap();
+    scripts.ready_blocking(&runtime).unwrap();
+    println!("before {:?}", scripts.child_processes());
+    scripts.tick_blocking(&runtime, 0.016).unwrap();
+    let children = scripts.child_processes();
+    let alive = children.iter().all(|(_, pid)| std::process::Command::new("kill").args(["-0", &pid.to_string()]).status().map(|s| s.success()).unwrap_or(false));
+    println!("after {:?} {}", children.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), alive);
+    scripts.shutdown_blocking(&runtime).unwrap();
+}
+"#);
+    assert!(output.contains("before []"), "{output}");
+    assert!(output.contains("after [\"Vault\"] true"), "{output}");
+}
+
 #[test]
 fn library_secret_and_drop_shutdown() {
     let root = root("secret");

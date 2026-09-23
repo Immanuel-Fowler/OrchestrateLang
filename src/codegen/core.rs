@@ -13,6 +13,9 @@ pub fn runtime_preamble(print_to_stderr: bool, include_process_ref: bool) -> Str
              let own = dir.join(format!(\"{}.children\", exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));\n    \
              if own.is_dir() { own } else { dir }\n\
          }\n\n\
+         /// Records that a serverlet's child process started (`Some(pid)`) or ended (`None`),\n\
+         /// for a host to ask about. A standalone program has no host, so it records nothing.\n\
+         fn __orch_child(serverlet: &str, pid: Option<u32>) { let _ = (serverlet, pid); }\n\n\
          type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send + Sync + 'static>;\n\n\
          /// Aborts a task when dropped: a worker's supervisor holds its current run in one, so\n\
          /// stopping the worker stops the run too.\n\

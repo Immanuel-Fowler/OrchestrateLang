@@ -39,7 +39,7 @@ pub fn start_@NAME@() -> @NAME@Client {
                 }
             }.await;
             let (mut __child, mut __cin, mut __cout) = match __startup {
-                Ok(started) => { __failed_starts = 0; started }
+                Ok(started) => { __failed_starts = 0; __orch_child("@NAME@", started.0.id()); started }
                 Err(__error) => {
                     // Not closed for good: calls are answered with their default until the
                     // next try, which comes sooner than a caller would give up waiting.
@@ -69,6 +69,7 @@ pub fn start_@NAME@() -> @NAME@Client {
             if tokio::time::timeout(std::time::Duration::from_secs(2), __child.wait()).await.is_err() {
                 let _ = __child.kill().await;
             }
+            __orch_child("@NAME@", None);
             break;
         }
     });

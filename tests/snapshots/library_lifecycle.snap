@@ -94,6 +94,10 @@ fn __orch_children_dir() -> std::path::PathBuf {
     if own.is_dir() { own } else { dir }
 }
 
+/// Records that a serverlet's child process started (`Some(pid)`) or ended (`None`),
+/// for a host to ask about. A standalone program has no host, so it records nothing.
+fn __orch_child(serverlet: &str, pid: Option<u32>) { crate::__orch_context().record_child(serverlet, pid) }
+
 type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send + Sync + 'static>;
 
 /// Aborts a task when dropped: a worker's supervisor holds its current run in one, so
@@ -368,6 +372,10 @@ struct OrchContext {
     program: OrchSlot<__OrchProgram>,
     /// Set whenever an event is queued, so an idle tick skips the queues without locking.
     has_events: std::sync::atomic::AtomicBool,
+    /// Set when a hook panicked under `tick_sync`: the instance has stopped, and why.
+    panicked: std::sync::OnceLock<String>,
+    /// The child processes running now, by the serverlet they serve.
+    children: std::sync::Mutex<std::collections::BTreeMap<String, u32>>,
     /// The program's state while a tick drains events, and null otherwise. A top-level
     /// event handler runs inside that drain, one at a time, with the tick waiting on it,
     /// so it reaches instance state through this as the tick itself would.
@@ -592,6 +600,14 @@ impl OrchContext {
     /// since building and polling that future costs more than the idle tick around it.
     #[inline]
     fn events_pending(&self) -> bool { self.has_events.load(std::sync::atomic::Ordering::Acquire) }
+    /// A serverlet's child process started, or ended.
+    fn record_child(&self, serverlet: &str, pid: Option<u32>) {
+        let mut children = self.children.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        match pid {
+            Some(pid) => { children.insert(serverlet.to_string(), pid); }
+            None => { children.remove(serverlet); }
+        }
+    }
     /// Instance state for a top-level event handler. Every access reads the pointer
     /// afresh, so a handler resumed in a later drain uses that drain's tick's state.
     fn program_ptr(&self) -> *mut __OrchProgram {
@@ -753,35 +769,67 @@ impl Scripts {
     /// away. One that has to wait finishes under `runtime.block_on`, so the result matches
     /// `tick_blocking`. The `shutdown` flag needs no check here: both ways of setting it
     /// consume the `Scripts` this call borrows.
+    ///
+    /// A hook that panics does not unwind into the caller: the panic is caught, the tick
+    /// returns an error carrying its message, and the instance stops, as it does when a
+    /// tick panics on the coordinator. Rust's panic hook still prints it; see Logging.
     pub fn tick_sync(&mut self, runtime: &tokio::runtime::Runtime, dt: f64) -> Result<(), String> {
         if self.ready.is_some() { self.ready_blocking(runtime)?; }
+        if let Some(message) = self.context.panicked.get() { return Err(format!("the library stopped after a tick panicked: {message}")); }
         if self.stop_requested() { return Err("orchestration requested stop".into()); }
         let context = &self.context;
-        let mut state = context.program.try_enter_sync().ok_or("a tick is already running")?;
-        let program = state.as_mut().ok_or("library is stopped")?;
-        // Only a tick writes these, and it holds the program slot, so plain loads and stores do.
-        context.frame.store(context.frame.load(std::sync::atomic::Ordering::Relaxed).wrapping_add(1), std::sync::atomic::Ordering::Relaxed);
-        context.dt_bits.store(dt.to_bits(), std::sync::atomic::Ordering::Relaxed);
-        let mut body = std::pin::pin!(__orch_run_tick(context, program, dt));
-        let mut tick = OrchSyncTick { context, future: body.as_mut() };
-        match std::future::Future::poll(std::pin::Pin::new(&mut tick), &mut std::task::Context::from_waker(std::task::Waker::noop())) {
-            std::task::Poll::Ready(output) => Ok(output),
-            std::task::Poll::Pending => Ok(runtime.block_on(tick)),
-        }
+        let ticked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+            let mut state = context.program.try_enter_sync().ok_or("a tick is already running")?;
+            let program = state.as_mut().ok_or("library is stopped")?;
+            // Only a tick writes these, and it holds the program slot, so plain loads and stores do.
+            context.frame.store(context.frame.load(std::sync::atomic::Ordering::Relaxed).wrapping_add(1), std::sync::atomic::Ordering::Relaxed);
+            context.dt_bits.store(dt.to_bits(), std::sync::atomic::Ordering::Relaxed);
+            let mut body = std::pin::pin!(__orch_run_tick(context, program, dt));
+            let mut tick = OrchSyncTick { context, future: body.as_mut() };
+            match std::future::Future::poll(std::pin::Pin::new(&mut tick), &mut std::task::Context::from_waker(std::task::Waker::noop())) {
+                std::task::Poll::Ready(output) => Ok(output),
+                std::task::Poll::Pending => Ok(runtime.block_on(tick)),
+            }
+        }));
+        ticked.unwrap_or_else(|payload| Err(self.stop_after_panic(payload)))
     }
     /// `fixed_tick` on the calling thread, the way `tick_sync` runs `tick`.
     pub fn fixed_tick_sync(&mut self, runtime: &tokio::runtime::Runtime, step: f64) -> Result<(), String> {
         if self.ready.is_some() { self.ready_blocking(runtime)?; }
+        if let Some(message) = self.context.panicked.get() { return Err(format!("the library stopped after a tick panicked: {message}")); }
         if self.stop_requested() { return Err("orchestration requested stop".into()); }
         let context = &self.context;
-        let mut state = context.program.try_enter_sync().ok_or("a tick is already running")?;
-        let program = state.as_mut().ok_or("library is stopped")?;
-        let mut body = std::pin::pin!(__orch_run_fixed_tick(context, program, step));
-        let mut tick = OrchSyncTick { context, future: body.as_mut() };
-        match std::future::Future::poll(std::pin::Pin::new(&mut tick), &mut std::task::Context::from_waker(std::task::Waker::noop())) {
-            std::task::Poll::Ready(()) => Ok(()),
-            std::task::Poll::Pending => Ok(runtime.block_on(tick)),
-        }
+        let ticked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+            let mut state = context.program.try_enter_sync().ok_or("a tick is already running")?;
+            let program = state.as_mut().ok_or("library is stopped")?;
+            let mut body = std::pin::pin!(__orch_run_fixed_tick(context, program, step));
+            let mut tick = OrchSyncTick { context, future: body.as_mut() };
+            match std::future::Future::poll(std::pin::Pin::new(&mut tick), &mut std::task::Context::from_waker(std::task::Waker::noop())) {
+                std::task::Poll::Ready(()) => Ok(()),
+                std::task::Poll::Pending => Ok(runtime.block_on(tick)),
+            }
+        }));
+        ticked.unwrap_or_else(|payload| Err(self.stop_after_panic(payload)))
+    }
+    /// A hook panicked on the calling thread: its state may be half-changed, so the
+    /// instance stops, and every later tick says why.
+    fn stop_after_panic(&self, payload: Box<dyn std::any::Any + Send>) -> String {
+        let message = payload.downcast_ref::<&str>().map(|m| m.to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "a hook panicked".to_string());
+        let _ = self.context.panicked.set(message.clone());
+        self.context.shutdown.send_replace(true);
+        let _ = self.commands.send(OrchCommand::Shutdown);
+        format!("tick panicked: {message}")
+    }
+    /// The child processes this instance has running now — one per secret or landline
+    /// serverlet that has started — as (serverlet name, OS process id), in name order. A
+    /// child that died drops out when the serverlet notices, at its next call, and a
+    /// restarted one comes back with its new id. For a supervising host that would
+    /// otherwise walk the process table.
+    pub fn child_processes(&self) -> Vec<(String, u32)> {
+        self.context.children.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter().map(|(name, pid)| (name.clone(), *pid)).collect()
     }
     pub fn stop_requested(&self) -> bool {
         self.context.stop_requested.load(std::sync::atomic::Ordering::Acquire)
@@ -832,7 +880,7 @@ pub fn start_with_options(runtime: &tokio::runtime::Handle, host: impl Host, opt
     let context = std::sync::Arc::new(OrchContext {
         host: std::sync::Arc::new(host), options, events: Default::default(), batch: Default::default(), clock_nanos: 0.into(), frame: 0.into(), dt_bits: 0.into(), stop_requested: false.into(), closing, shutdown,
         tasks: Default::default(), active: 0.into(), idle: tokio::sync::Notify::new(), assets, runtime: runtime.clone(),
-        program: OrchSlot::new(), has_events: false.into(), draining_program: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
+        program: OrchSlot::new(), has_events: false.into(), draining_program: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()), panicked: std::sync::OnceLock::new(), children: Default::default(),
 
     event_update_orchestrator: Default::default(),
 

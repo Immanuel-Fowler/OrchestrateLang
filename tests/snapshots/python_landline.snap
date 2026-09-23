@@ -98,6 +98,10 @@ fn __orch_children_dir() -> std::path::PathBuf {
     if own.is_dir() { own } else { dir }
 }
 
+/// Records that a serverlet's child process started (`Some(pid)`) or ended (`None`),
+/// for a host to ask about. A standalone program has no host, so it records nothing.
+fn __orch_child(serverlet: &str, pid: Option<u32>) { let _ = (serverlet, pid); }
+
 type ProcessRef = std::sync::Arc<dyn Fn() -> tokio::task::JoinHandle<()> + Send + Sync + 'static>;
 
 /// Aborts a task when dropped: a worker's supervisor holds its current run in one, so
@@ -284,7 +288,7 @@ pub fn start_Counter() -> CounterClient {
                 }
             }.await;
             let (mut __child, mut __cin, mut __cout) = match __startup {
-                Ok(started) => { __failed_starts = 0; started }
+                Ok(started) => { __failed_starts = 0; __orch_child("Counter", started.0.id()); started }
                 Err(__error) => {
                     // Not closed for good: calls are answered with their default until the
                     // next try, which comes sooner than a caller would give up waiting.
@@ -331,6 +335,7 @@ pub fn start_Counter() -> CounterClient {
                     Err(__error) => {
                         eprintln!("[orchestrate] landline 'Counter' crashed: {}", __error);
                         let _ = __child.kill().await;
+                        __orch_child("Counter", None);
                         
                         let _ = reply_to.send(Default::default());
                         continue 'restart;
@@ -344,6 +349,7 @@ pub fn start_Counter() -> CounterClient {
             if tokio::time::timeout(std::time::Duration::from_secs(2), __child.wait()).await.is_err() {
                 let _ = __child.kill().await;
             }
+            __orch_child("Counter", None);
             break;
         }
     });

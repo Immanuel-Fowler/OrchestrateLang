@@ -86,6 +86,7 @@ impl Codegen {
                     Err(__error) => {{
                         eprintln!("[orchestrate] landline '{name}' crashed: {{}}", __error);
                         let _ = __child.kill().await;
+                        __orch_child("{name}", None);
                         {recovery}
                         let _ = reply_to.send(Default::default());
                         continue 'restart;

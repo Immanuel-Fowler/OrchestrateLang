@@ -384,7 +384,11 @@ async fn __orch_entry(mut commands: tokio::sync::mpsc::UnboundedReceiver<OrchCom
     }
 
     pub(super) fn library_adjust(&self, code: String) -> String {
-        code.replace("tokio::spawn(", "crate::__orch_spawn(")
+        code.replace(
+                "fn __orch_child(serverlet: &str, pid: Option<u32>) { let _ = (serverlet, pid); }",
+                "fn __orch_child(serverlet: &str, pid: Option<u32>) { crate::__orch_context().record_child(serverlet, pid) }",
+            )
+            .replace("tokio::spawn(", "crate::__orch_spawn(")
             .replace("tokio::time::sleep(", "crate::__orch_sleep(")
             .replace("tokio::time::timeout(", "crate::__orch_timeout(")
             .replace("__ORCH_LINE_SPAWN(", "crate::__orch_spawn_line(")

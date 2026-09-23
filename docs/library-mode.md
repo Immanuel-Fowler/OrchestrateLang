@@ -48,6 +48,11 @@ the host when there are no host functions.
 - `stop_orch()` sets this instance's stop-request flag. It does not exit Rust,
   automatically shut down the library, or affect other instances. A later tick returns
   an error; the host should call `shutdown()`.
+- `child_processes()` lists the child processes the instance has running now — one per
+  secret or landline serverlet that has started — as `(serverlet name, OS process id)`,
+  for a host supervising its processes. A child that died drops out when its serverlet
+  notices, at the next call; a restarted one reappears with its new id. A TypeScript FFI
+  module's process is shared by every instance in the host process and is not listed.
 - `shutdown().await` cancels a pending tick, stops the orchestrator task, runs
   `on_stop`, aborts owned workers, and closes sidecars. Idle pipe children receive BYE;
   children with unfinished calls are terminated after `StartOptions::shutdown_grace`.
@@ -334,7 +339,20 @@ impl scripts::Host for AppHost {
 
 In library mode, `print` output, runtime diagnostics (such as a failed host call), and
 the stderr of Python, TypeScript, and secret serverlet children all go through `log`. `LogLevel` is
-`Info`, `Warning`, or `Error`. Rust's process-wide panic hook is outside this logger.
+`Info`, `Warning`, or `Error`.
+
+A panic is reported through `log` too, at `Error`, with its message: a worker's, as the
+report that it crashed and whether it will restart; a serverlet handler's, as the failed
+call; a hook's, as the error the tick returns. But Rust's process-wide panic hook runs
+first, wherever the panic happens, and prints it to stderr: that hook belongs to the host,
+so the library does not replace it. A host that wants every panic in its own logger
+installs a hook of its own with `std::panic::set_hook`.
+
+A panic inside a hook never unwinds into the host. Under `tick`, `tick_blocking`, and the
+other coordinator calls, the hook runs on the coordinator's task, and the call returns an
+error with the panic's message. Under `tick_sync` and `fixed_tick_sync`, which run the
+hook on the calling thread, the panic is caught there and returned the same way. Either
+way the instance stops — its state may be half-changed — and every later call says why.
 
 ## Packaging
 
