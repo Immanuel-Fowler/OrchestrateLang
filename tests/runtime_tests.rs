@@ -1261,6 +1261,12 @@ orchestrator main(procs: process[a]) {
 /// running process's id after `after`, then collects everything it printed.
 #[cfg(unix)]
 fn build_and_run_with(test_name: &str, source: &str, after: std::time::Duration, during: impl FnOnce(u32, &std::path::Path)) -> (String, String, Scratch) {
+    build_prepare_and_run(test_name, source, |_| {}, after, during)
+}
+
+/// `build_and_run_with`, with `prepare` run on the build directory before the program
+/// starts, for a test whose setup must not race the program's first steps.
+fn build_prepare_and_run(test_name: &str, source: &str, prepare: impl FnOnce(&std::path::Path), after: std::time::Duration, during: impl FnOnce(u32, &std::path::Path)) -> (String, String, Scratch) {
     let scratch = Scratch::new(test_name);
     let src_file = scratch.path().join("program.orch");
     fs::write(&src_file, source).unwrap();
@@ -1270,6 +1276,7 @@ fn build_and_run_with(test_name: &str, source: &str, after: std::time::Duration,
         .output()
         .unwrap();
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    prepare(scratch.path());
     let child = Command::new(&binary)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -1376,7 +1383,11 @@ orchestrator main() {
 #[cfg(unix)]
 #[test]
 fn runtime_secret_child_that_cannot_start_is_tried_again() {
-    let (stdout, stderr, _scratch) = build_and_run_with("secret_start_retry", r#"
+    // Gone before the program starts, so the first call cannot find it, and back a second
+    // later, well before the later call two seconds after that.
+    let child = |dir: &std::path::Path| dir.join("program_bin.children/secret_Late");
+    let hidden = |dir: &std::path::Path| dir.join("program_bin.children/secret_Late.hidden");
+    let (stdout, stderr, _scratch) = build_prepare_and_run("secret_start_retry", r#"
 serverlet Late secret {
     let n = 0
     on check() -> int {
@@ -1387,17 +1398,12 @@ serverlet Late secret {
 orchestrator main() {
     let r = start Late()
     print("first {r.check()}")
-    sleep(1500)
+    sleep(3000)
     print("later {r.check()}")
     stop_orch()
 }
-"#, std::time::Duration::from_millis(0), |_, dir| {
-        // Gone when the first call starts it, and back before the later one.
-        let child = dir.join("program_bin.children/secret_Late");
-        let hidden = dir.join("program_bin.children/secret_Late.hidden");
-        fs::rename(&child, &hidden).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        fs::rename(&hidden, &child).unwrap();
+"#, |dir| fs::rename(child(dir), hidden(dir)).unwrap(), std::time::Duration::from_millis(1000), |_, dir| {
+        fs::rename(hidden(dir), child(dir)).unwrap();
     });
     assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["first 0", "later 1"], "{stderr}");
     assert!(stderr.contains("could not start"), "{stderr}");
