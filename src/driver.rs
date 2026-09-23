@@ -487,6 +487,9 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
         format!("Type Error: {}", lines.join("\n"))
     })?;
 
+    let checked_modules: Vec<(PathBuf, Vec<ast::Stmt>)> = modules_data.iter().map(|(_, stmts, path)| (path.clone(), stmts.clone())).collect();
+    check_modules(&ast, &checked_modules)?;
+
     let bundle_dir = cache_dir.join("landlines");
     if bundle_dir.exists() { fs::remove_dir_all(&bundle_dir).map_err(|e| e.to_string())?; }
     stage_landlines(&ast, &bundle_dir)?;
@@ -1012,23 +1015,31 @@ pub fn run_check(input_file: &str, library: bool) -> Result<(), String> {
 
     type_checker.type_check(&ast).map_err(|e| type_error_in(input_file, &e))?;
 
-    // A module's own declarations, checked in the module's own scope as the entry file's
-    // are in its: a serverlet declared in a module used to be looked at first by codegen,
-    // during a build. Its foreign functions are callable by their bare names inside it.
-    for (module_path, module_stmts) in &modules {
-        let mut module_checker = typechecker::TypeChecker::new();
-        register_module_sidecars(&mut module_checker, MODULE_SELF, module_path, module_stmts)?;
-        module_checker.expose_module_functions(MODULE_SELF);
-        let file = module_path.join("module.orch");
-        module_checker
-            .type_check(module_stmts)
-            .map_err(|e| type_error_in(&file.to_string_lossy(), &e))?;
-    }
+    check_modules(&ast, &modules)?;
 
     let module_stmts: Vec<&[ast::Stmt]> = modules.iter().map(|(_, stmts)| stmts.as_slice()).collect();
     library_rules(input_file, &ast, &module_stmts, library)?;
 
     println!("[orchestrate] {} — no type errors found", input_file);
+    Ok(())
+}
+
+/// Each imported module's own declarations, checked in the module's own scope as the
+/// entry file's are in its: a serverlet declared in a module used to be looked at first by
+/// codegen, during a build. Its foreign functions are callable by their bare names inside
+/// it, and the entry file's `host` groups are in scope, since a module's grants name them:
+/// the build resolves them there, and so does this. `check` and the build both call it.
+fn check_modules(entry: &[ast::Stmt], modules: &[(PathBuf, Vec<ast::Stmt>)]) -> Result<(), String> {
+    for (module_path, module_stmts) in modules {
+        let mut module_checker = typechecker::TypeChecker::new();
+        register_module_sidecars(&mut module_checker, MODULE_SELF, module_path, module_stmts)?;
+        module_checker.expose_module_functions(MODULE_SELF);
+        module_checker.register_host_groups(entry)?;
+        let file = module_path.join("module.orch");
+        module_checker
+            .type_check(module_stmts)
+            .map_err(|e| type_error_in(&file.to_string_lossy(), &e))?;
+    }
     Ok(())
 }
 

@@ -91,7 +91,10 @@ impl TypeChecker {
         tc
     }
 
-    pub fn type_check(&mut self, stmts: &[Stmt]) -> Result<(), String> {
+    /// The `host` groups `stmts` declares, callable as `group.function`. The entry file's
+    /// own are registered by `type_check`; a module registers the entry file's, since its
+    /// grants and granted calls name them.
+    pub fn register_host_groups(&mut self, stmts: &[Stmt]) -> Result<(), String> {
         for stmt in stmts {
             if let StmtNode::Host { name, functions } = &stmt.node {
                 if !self.host_groups.insert(name.clone()) { return Err(format!("Duplicate host group '{}'", name)); }
@@ -103,6 +106,11 @@ impl TypeChecker {
                 }
             }
         }
+        Ok(())
+    }
+
+    pub fn type_check(&mut self, stmts: &[Stmt]) -> Result<(), String> {
+        self.register_host_groups(stmts)?;
         // Events come from `on name(...)` blocks, wherever they are written.
         for stmt in stmts {
             let declaration = match &stmt.node {

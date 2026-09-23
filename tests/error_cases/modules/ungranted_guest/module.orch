@@ -1,0 +1,9 @@
+// Calls a host function of the program that imports it, without the grant for it.
+serverlet Guest sandbox(memory_limit: "8mb", timeout: "20ms") {
+    grant call world.note
+    on go(n: int) -> int {
+        world.note(n)
+        world.reset()
+        return n
+    }
+}

@@ -356,6 +356,50 @@ fn main() {
     assert_eq!(output.trim(), "[0, 0, 7, 1101, 1, 1, 7, 1102, 2, 2, 7, 1103]");
 }
 
+/// A sandboxed serverlet declared in a module may grant a host function of the program
+/// that imports it. `check` and `check --lib` refused that in 0.15.1 while the build
+/// accepted it; now all three accept it, and the grant works under a host.
+#[test]
+fn library_module_guest_grant_names_the_entry_files_host() {
+    let root = root("module_guest_grant");
+    fs::create_dir_all(root.join("gmod")).unwrap();
+    fs::write(root.join("gmod/module.orch"), r#"
+serverlet Guest sandbox(memory_limit: "8mb", timeout: "20ms") {
+    grant call world.note
+    on go(n: int) -> int {
+        world.note(n)
+        return n + 1
+    }
+}
+"#).unwrap();
+    let source = r#"
+host world { fn note(n: int) }
+use module g: "./gmod"
+let guest = start g.Guest()
+on_tick(dt: float) { world.note(guest.go(41)) }
+orchestrator main() {}
+"#;
+    fs::write(root.join("main.orch"), source).unwrap();
+    let check = Command::new(env!("CARGO_BIN_EXE_orchestrate")).args(["check", "--lib"]).arg(root.join("main.orch")).output().unwrap();
+    assert!(check.status.success(), "{}", String::from_utf8_lossy(&check.stderr));
+    build(&root, source);
+    let output = host(&root, r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<i64>>>);
+impl scripts::Host for Host { fn world_note(&self, n: i64) -> Result<(), String> { self.0.lock().unwrap().push(n); Ok(()) } }
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let noted = Arc::new(Mutex::new(Vec::new()));
+    let mut scripts = scripts::start(runtime.handle(), Host(noted.clone())).unwrap();
+    scripts.ready_blocking(&runtime).unwrap();
+    scripts.tick_sync(&runtime, 0.016).unwrap();
+    scripts.shutdown_blocking(&runtime).unwrap();
+    println!("{:?}", noted.lock().unwrap());
+}
+"#);
+    assert_eq!(output.trim(), "[41, 42]");
+}
+
 #[test]
 fn library_secret_and_drop_shutdown() {
     let root = root("secret");

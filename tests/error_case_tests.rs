@@ -118,6 +118,9 @@ fn test_error_cases() {
     assert_check_fails("diagnostics/closure_writes_outer_binding.orch", "return the new value instead");
     assert_check_lib_fails("library_body_writes_state.orch", "the orchestrator body assigns to 'count'");
     assert_check_lib_fails("library_body_writes_state.orch", "write it from a hook");
+    // A module's grants name the entry file's host groups; an ungranted call there is
+    // caught by check, as the build catches it.
+    assert_check_lib_fails("module_sandbox_ungranted_host_call.orch", "calls world.reset, which it was not granted");
     // on_crash runs on the host; the guest's state is gone by then.
     assert_compilation_fails("sandbox_crash_uses_state.orch", "on_crash uses 'calls', which is the guest's state");
     remove_build_leftovers(&[PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/error_cases/.orch_cache")]);

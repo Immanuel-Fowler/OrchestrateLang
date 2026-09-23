@@ -1,0 +1,10 @@
+// A module's sandboxed guest reaches only what it was granted, and its grants name the
+// host groups of the program that imports it; `check --lib` resolves them there.
+host world {
+    fn note(n: int)
+    fn reset()
+}
+use module g: "./modules/ungranted_guest"
+let guest = start g.Guest()
+on_tick(dt: float) { guest.go(1) }
+orchestrator main() {}
