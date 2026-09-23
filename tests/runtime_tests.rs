@@ -762,6 +762,7 @@ let paced = automatic(restart: always, every: "10ms") {
 }
 
 orchestrator main(procs: process[paced]) {
+    let began = clock_micros()
     let book = start Book()
     let quiet = start Quiet()
     for i in range(20) { book.place(i) }
@@ -770,7 +771,9 @@ orchestrator main(procs: process[paced]) {
     quiet.hello()
     for i in range(5) { trigger hit(i) }
     sleep(120)
+    let ran = clock_micros() - began
     print(stats())
+    print("ran {ran} us")
     stop_orch()
 }
 "#);
@@ -782,8 +785,11 @@ orchestrator main(procs: process[paced]) {
     assert_eq!(counts("Book.place"), Some((20, 0)), "stdout: {stdout}");
     assert_eq!(counts("Book.crash"), Some((1, 1)), "a panic is a failed call: {stdout}");
     assert_eq!(counts("on hit"), Some((5, 0)), "stdout: {stdout}");
+    // At most one run a period of the time the program ran, the first at its start; the
+    // worker starts before `began`, so one more period's grace.
+    let ran_us: u64 = stdout.lines().find_map(|l| l.strip_prefix("ran ")?.strip_suffix(" us")?.parse().ok()).expect("ran line");
     let (runs, crashes) = counts("paced").expect("paced row");
-    assert!((3..=13).contains(&runs) && crashes == 0, "paced ran {runs} times: {stdout}");
+    assert!(runs >= 3 && runs <= ran_us / 10_000 + 2 && crashes == 0, "paced ran {runs} times in {ran_us} us: {stdout}");
     assert!(!stdout.contains("Book.ping") && !stdout.contains("Quiet"), "unmeasured units were recorded: {stdout}");
     let place = row("Book.place").unwrap();
     assert!(place[3] != "-" && place[7] != "-", "duration and start delay: {stdout}");
@@ -1535,6 +1541,10 @@ orchestrator main() {
             children = children_named(pid, "secret_Risk");
         }
         assert_eq!(children.len(), 1, "expected one secret child");
+        // Found as it starts, under load, so given time to finish its handshake and serve
+        // the four calls — microseconds of work — before it is killed, still well inside
+        // the three-second sleep. Killed any sooner, it failed to start instead.
+        std::thread::sleep(std::time::Duration::from_millis(1000));
         Command::new("kill").args(["-9", &children[0].to_string()]).status().unwrap();
     });
     assert_eq!(stdout.lines().collect::<Vec<_>>(),
