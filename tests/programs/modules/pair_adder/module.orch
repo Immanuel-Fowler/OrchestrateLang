@@ -1,0 +1,5 @@
+struct Pair { a: int, b: int }
+
+serverlet Adder sandbox(memory_limit: "8mb", timeout: "200ms") {
+    on add(p: Pair) -> int { return p.a + p.b }
+}

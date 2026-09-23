@@ -1,0 +1,14 @@
+// Regression: a struct declared in a module and in the entry file were two Rust types
+// (E0308 on `m::Pair` against `Pair`), and a C sidecar's struct declared only in its
+// module named the entry file's (E0425). A type is one type by name, wherever declared.
+struct Pair { a: int, b: int }
+use module m: "./modules/pair_adder"
+use module c: "./modules/c_point"
+
+orchestrator main() {
+    let adder = start m.Adder()
+    let sum = adder.add(Pair { a: 1, b: 2 })
+    let p = c.pt(3)
+    print("{sum} {p.x} {p.ok}")
+    stop_orch()
+}

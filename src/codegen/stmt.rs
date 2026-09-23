@@ -485,6 +485,10 @@ impl Codegen {
 
                 format!("{}\n\n{}\n\n{}", msg_enum, client_struct, start_fn)
             }
+            // A module's type is the crate root's, where the entry file defines it.
+            StmtNode::StructDef { name, .. } | StmtNode::EnumDef { name, .. } if !self.is_main => {
+                format!("pub use crate::{};", rust_ident(name))
+            }
             StmtNode::StructDef { name, fields } => {
                 let fields_str = fields.iter()
                     .map(|(fname, fty)| format!("    pub {}: {},", rust_ident(fname), self.compile_type(fty)))

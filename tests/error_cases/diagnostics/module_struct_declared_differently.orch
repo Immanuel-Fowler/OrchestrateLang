@@ -1,0 +1,3 @@
+struct Pair { a: int }
+use module m: "./modules/pair_declared_differently"
+orchestrator main() { print(m.total(Pair { a: 1 }))  stop_orch() }

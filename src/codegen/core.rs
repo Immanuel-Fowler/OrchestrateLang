@@ -411,6 +411,9 @@ pub struct Codegen {
     /// Set while a top-level event handler is compiled. In a library such a handler runs
     /// inside a tick, one at a time, and reaches instance state through it.
     pub(super) top_level_handler: bool,
+    /// For the entry file: the struct and enum declarations of every imported module,
+    /// which the entry file defines at the crate root so each is one type.
+    pub module_types: Vec<Stmt>,
 }
 
 impl Codegen {
@@ -450,6 +453,7 @@ impl Codegen {
             body_hooks: Vec::new(),
             program_fields: std::collections::BTreeMap::new(),
             top_level_handler: false,
+            module_types: Vec::new(),
         }
     }
 
@@ -1260,18 +1264,25 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
             code.push_str(&shared);
         }
 
-        self.struct_defs = stmts.iter().filter_map(|s| match &s.node {
+        // A struct or enum is one type however many files name it: the entry file defines
+        // every one at the crate root, its own and its modules', and a module re-exports
+        // the root's. The driver has already refused two definitions of one name that differ.
+        self.struct_defs = stmts.iter().chain(if is_main { self.module_types.iter() } else { [].iter() }).filter_map(|s| match &s.node {
             StmtNode::StructDef { name, fields } => Some((name.clone(), fields.clone())),
             _ => None,
-        }).collect();
+        }).fold(Vec::new(), |mut defs, (name, fields)| {
+            if !defs.iter().any(|(existing, _): &(String, _)| *existing == name) { defs.push((name, fields)); }
+            defs
+        });
         if self.has_secret {
             if self.library && !is_main {
+                // The wire impls are the root's, for every struct, since the trait is too.
                 code.push_str("use crate::{OrchWire, OrchFrame, __wire_to_bytes, __wire_from_bytes, __secret_write_frame, __secret_read_frame, ORCH_WIRE_VERSION, ORCH_KIND_HELLO, ORCH_KIND_READY, ORCH_KIND_CALL, ORCH_KIND_REPLY, ORCH_KIND_ERROR, ORCH_KIND_BYE};\n");
             } else {
                 code.push_str(SECRET_MIRROR_HELPERS);
                 code.push_str(WIRE_CODEC);
+                code.push_str(&super::stmt::wire_struct_impls(&self.struct_defs));
             }
-            code.push_str(&super::stmt::wire_struct_impls(&self.struct_defs));
         }
 
         let mut global_stmts = Vec::new();
@@ -1320,6 +1331,17 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
                 });
             }
             global_stmts.push(main_decl.unwrap());
+            // Types declared only in modules are defined here, beside the entry file's.
+            let entry_types: HashSet<String> = stmts.iter().filter_map(|s| match &s.node {
+                StmtNode::StructDef { name, .. } | StmtNode::EnumDef { name, .. } => Some(name.clone()),
+                _ => None,
+            }).collect();
+            let mut defined = entry_types;
+            let module_types: Vec<Stmt> = self.module_types.iter().filter(|s| match &s.node {
+                StmtNode::StructDef { name, .. } | StmtNode::EnumDef { name, .. } => defined.insert(name.clone()),
+                _ => false,
+            }).cloned().collect();
+            global_stmts.splice(0..0, module_types);
         } else {
             global_stmts = stmts.to_vec();
         }

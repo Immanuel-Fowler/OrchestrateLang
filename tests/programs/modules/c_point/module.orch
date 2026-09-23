@@ -1,0 +1,4 @@
+load_foreign "c" "./point.c"
+
+// Declared only here; the C wrapper and the program that imports this use the same type.
+struct Pt { x: int, ok: int }

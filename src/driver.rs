@@ -623,6 +623,7 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
         _ => None,
     }).collect();
     if library.is_some() { generator.scan_events(&module_event_stmts); }
+    generator.module_types = module_event_stmts.iter().filter(|s| matches!(s.node, ast::StmtNode::StructDef { .. } | ast::StmtNode::EnumDef { .. })).cloned().collect();
     let main_rust = generator.generate(&ast, true);
     if let Some(error) = generator.errors.first() {
         return Err(format!("{}: {}", input_file, error));
@@ -1030,6 +1031,28 @@ pub fn run_check(input_file: &str, library: bool) -> Result<(), String> {
 /// it, and the entry file's `host` groups are in scope, since a module's grants name them:
 /// the build resolves them there, and so does this. `check` and the build both call it.
 fn check_modules(entry: &[ast::Stmt], modules: &[(PathBuf, Vec<ast::Stmt>)]) -> Result<(), String> {
+    // A struct or enum is one type by name, however many files declare it, so every
+    // declaration of a name must say the same thing.
+    let mut declared: std::collections::HashMap<String, (String, &ast::StmtNode)> = std::collections::HashMap::new();
+    let files = std::iter::once(("the entry file".to_string(), entry)).chain(modules.iter().map(|(path, stmts)| (path.join("module.orch").display().to_string(), stmts.as_slice())));
+    for (file, stmts) in files {
+        for stmt in stmts {
+            let (kind, name) = match &stmt.node {
+                ast::StmtNode::StructDef { name, .. } => ("struct", name),
+                ast::StmtNode::EnumDef { name, .. } => ("enum", name),
+                _ => continue,
+            };
+            match declared.get(name) {
+                Some((first, node)) if *node != &stmt.node => {
+                    return Err(format!(
+                        "{kind} '{name}' is declared in {first} and in {file}, differently. A type named in two files is one type, so declare it the same way in both, or rename one"
+                    ));
+                }
+                Some(_) => {}
+                None => { declared.insert(name.clone(), (file.clone(), &stmt.node)); }
+            }
+        }
+    }
     for (module_path, module_stmts) in modules {
         let mut module_checker = typechecker::TypeChecker::new();
         register_module_sidecars(&mut module_checker, MODULE_SELF, module_path, module_stmts)?;
