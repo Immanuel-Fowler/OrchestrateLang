@@ -1091,6 +1091,7 @@ impl Codegen {
                 for a in args { self.scan_events_in_expr(a); }
             }
             ExprNode::StartProcess { target } => self.scan_events_in_expr(target),
+            ExprNode::StartFrom { source, .. } => self.scan_events_in_expr(source),
             ExprNode::AutomaticBlock { body, crash_handler, .. } => {
                 self.scan_events_in_expr(body);
                 if let Some((_, handler)) = crash_handler { self.scan_events_in_expr(handler); }
@@ -1193,6 +1194,7 @@ impl Codegen {
                 for a in args { self.get_free_vars_expr(a, local_env, free_vars); }
             }
             ExprNode::StartProcess { target } => self.get_free_vars_expr(target, local_env, free_vars),
+            ExprNode::StartFrom { source, .. } => self.get_free_vars_expr(source, local_env, free_vars),
             ExprNode::AutomaticBlock { body, crash_handler, .. } => {
                 self.get_free_vars_expr(body, local_env, free_vars);
                 if let Some((err_name, handler)) = crash_handler {

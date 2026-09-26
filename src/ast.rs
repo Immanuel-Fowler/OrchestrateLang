@@ -119,6 +119,9 @@ pub struct SandboxConfig {
     pub timeout: String,
     /// `every: "100ms"`: how often, in host time, the runtime calls the serverlet's `tick`.
     pub every_micros: Option<u64>,
+    /// Its handlers have no bodies: the guest is a `.wasm` file the program is handed while
+    /// it runs, started with `start X from path`, rather than compiled in.
+    pub loaded: bool,
 }
 
 /// How often a cadenced tick hook runs: a period of host time, or every so many ticks.
@@ -310,6 +313,13 @@ pub enum ExprNode {
     StartServerlet {
         name: String,
         args: Vec<Expr>,
+    },
+    /// `start X from path`: a serverlet whose implementation is a file named while the
+    /// program runs — a `.wasm` guest for a loaded sandbox, a `.py` source for a Python
+    /// landline. A `result<X.client>`: the file may be missing or not implement `X`.
+    StartFrom {
+        name: String,
+        source: Box<Expr>,
     },
     AutomaticBlock {
         body: Box<Expr>,
@@ -546,6 +556,7 @@ fn walk_expr_inner<'a>(expr: &'a Expr, visit: &mut dyn FnMut(Node<'a>), deferred
         },
         ExprNode::TriggeredBlock { body, .. } | ExprNode::Closure { body, .. } => if deferred { go(body, visit); },
         ExprNode::StartProcess { target } => go(target, visit),
+        ExprNode::StartFrom { source, .. } => go(source, visit),
         ExprNode::StructLiteral { fields, .. } => for (_, value) in fields { go(value, visit); },
         ExprNode::FieldAccess { object, .. } => go(object, visit),
         ExprNode::Index { object, index, .. } => { go(object, visit); go(index, visit); }

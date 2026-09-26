@@ -34,6 +34,7 @@ properties config does not:
 | `serverlet X secret { }` | A separate native executable | A pipe and a protocol |
 | `serverlet X via python(source: …)` | A persistent Python process | An interpreter, and its encoding |
 | `serverlet X sandbox(memory_limit: …, timeout: …)` | A wasmtime guest | A cap, a deadline, and a copy per value |
+| handlers with no bodies, `start X from path` | A guest handed to the program while it runs | A compile and a check when it is started |
 | `grant call world.record` | One mediated host function | Exactly that function, and nothing else |
 | `on_tick(dt: float) every "100ms"` | A hook at a divisor of the host's clock | A counter per hook |
 | `via python(..., every: "100ms")` | A serverlet the runtime calls on that cadence | One call per period, inside the tick |

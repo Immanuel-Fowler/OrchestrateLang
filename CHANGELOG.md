@@ -10,6 +10,20 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 ## [Unreleased]
 
 ### Added
+- **A sandboxed guest can be loaded while the program runs.** Every boundary was resolved
+  when the program was built, so a program that runs plugins it was never compiled with
+  had to reach them through a Python landline. A sandboxed serverlet whose handlers have
+  no bodies now declares what a guest must implement, and `start Model from path` reads a
+  `.wasm`, compiles it, instantiates it under the declaration's memory limit, timeout, and
+  grants, and checks it implements each declared handler — a `result<Model.client>`, `err`
+  naming what is wrong when the file is missing or does not match. Loading another file
+  under a name in a `map<string, Model.client>` replaces the guest behind it. `orchestrate
+  build --guest model.orch -o model.wasm` builds a guest on its own; every guest now
+  exports `orch_interface`, what it implements. A Python landline takes the same form,
+  `start Slot from "user/model.py"`, to run another source than the one it was built with.
+  Tests: `library_loads_a_guest_while_it_runs` (normal and deterministic runs),
+  `loaded_guest_diagnostics`, `python_landline_starts_from_a_path`,
+  `build_guest_needs_one_guest`; example: `examples/loaded_guest.orch`.
 - **`check --lib` warns of a name a Rust host must write raw.** A struct, field, enum, or
   variant named with a Rust keyword — `box`, `type`, `move`, `ref`, and the rest — compiles,
   escaped, and the host then has to write `Settings { r#box: 2.0 }`. Nothing is wrong,

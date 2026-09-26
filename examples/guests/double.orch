@@ -1,0 +1,9 @@
+// A guest for examples/loaded_guest.orch, built on its own:
+//   orchestrate build --guest examples/guests/double.orch -o examples/.orch_cache/guests/double.wasm
+// Its limits here are only for this file; the program that loads it sets its own.
+
+serverlet Scorer sandbox(memory_limit: "8mb", timeout: "50ms") {
+    on score(values: int[]) -> int[] {
+        return map(values, fn(v: int) -> int { v * 2 })
+    }
+}

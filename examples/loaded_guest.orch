@@ -1,0 +1,38 @@
+// Plugins handed to the program while it runs. A sandboxed serverlet whose handlers have
+// no bodies declares what a guest must implement, under limits this program sets;
+// `start Scorer from path` reads a .wasm, checks it against the declaration, and answers
+// `ok` with a client or `err` saying why not. Clients are kept by name, and loading
+// another file under a name replaces the guest behind it.
+//
+// Build the two guests first, from the repository root:
+//   orchestrate build --guest examples/guests/double.orch -o examples/.orch_cache/guests/double.wasm
+//   orchestrate build --guest examples/guests/square.orch -o examples/.orch_cache/guests/square.wasm
+// then: orchestrate run examples/loaded_guest.orch
+
+serverlet Scorer sandbox(memory_limit: "8mb", timeout: "50ms") {
+    on score(values: int[]) -> result<int[]>
+}
+
+fn show(values: int[]) -> string {
+    let text = ""
+    for v in values { text = text + " " + to_string(v) }
+    return text
+}
+
+orchestrator main() {
+    let scorers: map<string, Scorer.client> = map {}
+    for name in ["double", "square", "missing"] {
+        match start Scorer from "examples/.orch_cache/guests/" + name + ".wasm" {
+            result::Ok(scorer) => scorers[name] = scorer
+            result::Err(why) => print("not loaded: " + why)
+        }
+    }
+    for name in keys(scorers) {
+        let scorer = scorers[name]
+        match scorer.score([1, 2, 3]) {
+            result::Ok(scores) => print(name + ":" + show(scores))
+            result::Err(why) => print(name + " failed: " + why)
+        }
+    }
+    stop_orch()
+}

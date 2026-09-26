@@ -2122,3 +2122,129 @@ fn main() {
 "#);
     assert_eq!(output.trim(), "30\n50");
 }
+
+/// A sandboxed serverlet whose handlers have no bodies is a guest the program is handed
+/// while it runs: `start Model from path` reads the `.wasm`, instantiates it under the
+/// declaration's limits and grants, and checks it implements the declaration, answering
+/// `err` if not. Guests are kept by name and replaced by loading another file under it;
+/// the same run replays in deterministic mode.
+#[test]
+fn library_loads_a_guest_while_it_runs() {
+    let root = root("loaded_guest");
+    let guest = |file: &str, source: &str| {
+        fs::write(root.join(format!("{file}.orch")), source).unwrap();
+        let result = Command::new(env!("CARGO_BIN_EXE_orchestrate"))
+            .args(["build", "--guest"]).arg(root.join(format!("{file}.orch")))
+            .arg("-o").arg(root.join(format!("{file}.wasm")))
+            .output().unwrap();
+        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    };
+    guest("scale", r#"
+host world { fn note(message: string) }
+serverlet Model sandbox(memory_limit: "8mb", timeout: "20ms") {
+    grant call world.note
+    on radial(r2: float[], params: float[]) -> float[] {
+        world.note("scale saw " + to_string(length(r2)))
+        return map(r2, fn(x: float) -> float { params[0] * x })
+    }
+}
+"#);
+    guest("negate", r#"
+serverlet Model sandbox(memory_limit: "8mb", timeout: "20ms") {
+    on radial(r2: float[], params: float[]) -> float[] { return map(r2, fn(x: float) -> float { 0.0 - x }) }
+    on unused() -> int { return 1 }
+}
+"#);
+    guest("wrong", r#"
+serverlet Model sandbox(memory_limit: "8mb", timeout: "20ms") {
+    on radial(r2: float[]) -> float[] { return r2 }
+}
+"#);
+    build(&root, r#"
+host world { fn note(message: string) fn record(value: float) }
+serverlet Model sandbox(memory_limit: "8mb", timeout: "200ms") {
+    grant call world.note
+    on radial(r2: float[], params: float[]) -> result<float[]>
+}
+let models: map<string, Model.client> = map {}
+on load_model(name: string, path: string) {
+    match start Model from path {
+        result::Ok(model) => models[name] = model
+        result::Err(why) => world.note("not loaded: " + why)
+    }
+}
+on_tick(dt: float) {
+    for name in keys(models) {
+        let model = models[name]
+        match model.radial([2.0], [3.0]) {
+            result::Ok(forces) => world.record(forces[0])
+            result::Err(why) => world.note(why)
+        }
+    }
+}
+orchestrator main() {}
+"#);
+    let dir = root.to_string_lossy().to_string();
+    let output = host(&root, &format!(r#"
+use std::sync::{{Arc, Mutex}};
+struct Host(Arc<Mutex<Vec<String>>>);
+impl scripts::Host for Host {{
+    fn world_note(&self, message: String) -> Result<(), String> {{ self.0.lock().unwrap().push(message); Ok(()) }}
+    fn world_record(&self, value: f64) -> Result<(), String> {{ self.0.lock().unwrap().push(format!("{{value}}")); Ok(()) }}
+}}
+fn run(deterministic: bool) -> Vec<String> {{
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let options = scripts::StartOptions {{ deterministic, ..Default::default() }};
+    let mut scripts = scripts::start_with_options(runtime.handle(), Host(log.clone()), options).unwrap();
+    scripts.ready_blocking(&runtime).unwrap();
+    scripts.trigger_load_model("a".to_string(), "{dir}/scale.wasm".to_string()).unwrap();
+    scripts.tick_sync(&runtime, 0.1).unwrap();
+    scripts.trigger_load_model("b".to_string(), "{dir}/wrong.wasm".to_string()).unwrap();
+    scripts.trigger_load_model("c".to_string(), "{dir}/missing.wasm".to_string()).unwrap();
+    scripts.tick_sync(&runtime, 0.1).unwrap();
+    scripts.trigger_load_model("a".to_string(), "{dir}/negate.wasm".to_string()).unwrap();
+    scripts.tick_sync(&runtime, 0.1).unwrap();
+    scripts.shutdown_blocking(&runtime).unwrap();
+    let log = log.lock().unwrap().clone();
+    log
+}}
+fn main() {{
+    let normal = run(false);
+    for line in &normal {{ println!("{{line}}"); }}
+    assert_eq!(run(true), normal, "a deterministic run gave another log");
+    println!("replayed");
+}}
+"#));
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0..3], ["scale saw 1", "6", "not loaded: wasm module 'Model': interface mismatch: handler 'radial' is declared as radial(float[],float[])->float[] but the guest defines radial(float[])->float[]"], "{output}");
+    assert!(lines[3].starts_with("not loaded: sandboxed serverlet 'Model': cannot read '") && lines[3].contains("missing.wasm"), "{output}");
+    assert_eq!(lines[4..], ["scale saw 1", "6", "-2", "replayed"], "{output}");
+}
+
+/// What `start X from path` accepts, and what it refuses by name: a loaded sandbox must
+/// be started from a file and a compiled-in one cannot be, a TypeScript landline is built
+/// in, the path is a string, and a sandbox's handlers all have bodies or none do.
+#[test]
+fn loaded_guest_diagnostics() {
+    use orchestrate_lib::{lexer::Lexer, parser::Parser, typechecker::TypeChecker};
+    let check = |source: &str| -> Result<(), String> {
+        let ast = Parser::new(Lexer::new(source).tokenize().unwrap()).parse()?;
+        TypeChecker::new().type_check(&ast).map(|_| ())
+    };
+    let loaded = "serverlet M sandbox(memory_limit: \"8mb\", timeout: \"20ms\") { on f(x: int) -> int }\n";
+    let built = "serverlet B sandbox(memory_limit: \"8mb\", timeout: \"20ms\") { on f(x: int) -> int { return x } }\n";
+    assert!(check(&format!("{loaded}orchestrator main() {{ match start M from \"m.wasm\" {{ result::Ok(m) => print(to_string(m.f(1))) result::Err(e) => print(e) }} }}")).is_ok());
+    let cases = [
+        (format!("{loaded}orchestrator main() {{ let m = start M() }}"), "is loaded from a file"),
+        (format!("{built}orchestrator main() {{ let b = start B from \"b.wasm\" }}"), "is compiled into the program"),
+        (format!("{loaded}orchestrator main() {{ let m = start M from 3 }}"), "takes the path of a file, a string; this is int"),
+        ("serverlet T via typescript(source: \"t.ts\") { on f() -> int }\norchestrator main() { let t = start T from \"t.ts\" }".to_string(), "is a TypeScript landline"),
+        ("serverlet X sandbox(memory_limit: \"8mb\", timeout: \"20ms\") { on f() -> int { return 1 } on g() -> int }".to_string(), "either all have bodies"),
+        ("serverlet X sandbox(memory_limit: \"8mb\", timeout: \"20ms\") { let n = 0 on g() -> int }".to_string(), "its state is the guest's own"),
+    ];
+    for (source, expected) in cases {
+        let error = check(&source).unwrap_err();
+        assert!(error.contains(expected), "{source}\n{error}");
+    }
+}

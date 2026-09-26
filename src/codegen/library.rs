@@ -78,6 +78,7 @@ impl Codegen {
             }
             ExprNode::TriggeredBlock { body, .. } | ExprNode::Closure { body, .. } => Self::hook_names(body, names),
             ExprNode::StartProcess { target } => Self::hook_names(target, names),
+            ExprNode::StartFrom { source, .. } => Self::hook_names(source, names),
             ExprNode::ArrayLiteral(items) => for item in items { Self::hook_names(item, names); },
             ExprNode::StructLiteral { fields, .. } => for (_, value) in fields { Self::hook_names(value, names); },
             ExprNode::FieldAccess { object, .. } | ExprNode::SomeLiteral(object) | ExprNode::OkLiteral(object)

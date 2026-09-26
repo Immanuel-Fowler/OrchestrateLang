@@ -1,0 +1,13 @@
+// A guest for examples/loaded_guest.orch, built on its own:
+//   orchestrate build --guest examples/guests/square.orch -o examples/.orch_cache/guests/square.wasm
+// It keeps state between calls, inside the guest, and implements one handler the program
+// does not declare, which the program therefore cannot call.
+
+serverlet Scorer sandbox(memory_limit: "8mb", timeout: "50ms") {
+    let calls = 0
+    on score(values: int[]) -> int[] {
+        calls = calls + 1
+        return map(values, fn(v: int) -> int { v * v })
+    }
+    on calls_so_far() -> int { return calls }
+}

@@ -327,7 +327,9 @@ impl Codegen {
                 // Sandboxed serverlet: stash a WASM guest crate (compiled by the
                 // driver). The orchestrator still runs the serverlet in-process for
                 // now — host integration is step 3 — and the driver warns about it.
-                if sandbox.is_some() {
+                // A loaded guest is a file the program is handed while it runs, so there is
+                // nothing to compile here.
+                if sandbox.as_ref().is_some_and(|c| !c.loaded) {
                     // A grant is a hole punched in the wall on purpose: each one becomes
                     // exactly one import the guest can reach, defined in the linker by
                     // the host loop below and called through a stub in the guest.
@@ -1453,6 +1455,34 @@ impl Codegen {
             )
         };
 
+        // A guest loaded from a file is read, compiled, and checked against this declaration
+        // when it is started, and the caller is told if any of that failed; the program runs
+        // on with what it had.
+        if config.loaded {
+            let expected = self.guest_interface(handlers).iter().map(|line| format!("{line:?}")).collect::<Vec<_>>().join(", ");
+            return format!(
+                "{codecs}{grants_fn}#[allow(non_snake_case)]\npub fn start_{name}_from(path: String) -> Result<{name}Client, String> {{\n    \
+                     let (tx, mut rx) = tokio::sync::mpsc::channel::<{name}Msg>(100);\n    \
+                     let __bytes = std::fs::read(&path).map_err(|__error| format!(\"sandboxed serverlet '{name}': cannot read '{{}}': {{}}\", path, __error))?;\n    \
+                     let mut __guest = crate::__OrchGuest::new({name:?}, &__bytes, Some({memory}), Some({timeout}).filter(|_| !__orch_deterministic()), {grants_arg})?;\n    \
+                     __guest.check_interface(&[{expected}])?;\n    \
+                     let actor = __OrchActor::spawn(true, async move {{\n        \
+                         let mut __guest = __guest;\n        \
+                         while let Some(msg) = rx.recv().await {{\n            \
+                             match msg {{\n{arms}\n            }}\n        }}\n    \
+                     }});\n    \
+                     Ok({name}Client {{ tx, actor }})\n}}",
+                codecs = codecs,
+                grants_fn = grants_fn,
+                grants_arg = grants_arg,
+                name = name,
+                memory = config.memory_bytes().unwrap_or(64 * 1024 * 1024),
+                timeout = config.timeout_ms().unwrap_or(5_000),
+                expected = expected,
+                arms = arms.join("\n"),
+            );
+        }
+
         format!(
             "{codecs}{grants_fn}#[allow(non_snake_case)]\npub fn start_{name}() -> {name}Client {{\n    \
                  let (tx, mut rx) = tokio::sync::mpsc::channel::<{name}Msg>(100);\n    \
@@ -1482,6 +1512,20 @@ impl Codegen {
     /// string or an array crosses as a pointer and a length or count into the guest's own
     /// memory, and a struct as its `#[repr(C)]` bytes, all allocated by the allocator
     /// both sides share.
+    /// What a sandbox guest implements, as it says so and as a program that loads it
+    /// expects: the protocol, then one signature per handler, each struct spelled out with
+    /// its fields, since a struct crosses as its bytes.
+    fn guest_interface(&self, handlers: &[Handler]) -> Vec<String> {
+        std::iter::once(GUEST_PROTOCOL.to_string())
+            .chain(handlers.iter().map(|h| format!(
+                "{}({})->{}",
+                h.name,
+                h.params.iter().map(|p| self.landline_type_name(&p.ty)).collect::<Vec<_>>().join(","),
+                self.landline_type_name(answered_type(&h.return_type))
+            )))
+            .collect()
+    }
+
     fn compile_sandbox_guest(&mut self, name: &str, state: &[Stmt], handlers: &[Handler], grants: &[String]) -> String {
         // The entry file's serverlets were checked by the typechecker; a module's were
         // not, so the gate is here too, reported by the driver before anything builds.
@@ -1687,6 +1731,13 @@ impl Codegen {
             ""
         };
 
+        // What this guest implements, for a program that loads it from a file: that program
+        // checks each handler it declared against this before it calls any.
+        exports.push(format!(
+            "#[unsafe(export_name = \"orch_interface\")]\npub extern \"C\" fn __orch_interface() -> i64 {{\n    __orch_pack({:?}.to_string())\n}}",
+            self.guest_interface(handlers).join("\n")
+        ));
+
         // The file's structs and enums, so a handler body or the state can use them; the
         // codecs, for the ones that can cross.
         let structs = self.standalone_type_definitions() + &sandbox_struct_codecs(&self.struct_defs);
@@ -1815,6 +1866,10 @@ pub(super) fn literal_type(value: &crate::ast::Expr) -> Option<Type> {
 }
 
 type StructDefs = [(String, Vec<(String, Type)>)];
+
+/// The first line of what a sandbox guest says it implements: the calling convention its
+/// exports follow, so a guest built for another one is refused rather than misread.
+const GUEST_PROTOCOL: &str = "orchestrate-guest 1";
 
 /// Returns Some(reason) if a function uses a type the wire codec can't carry: int, float,
 /// bool, string, arrays of carryable types, and structs declared in the same file whose

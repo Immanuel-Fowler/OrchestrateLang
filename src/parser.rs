@@ -455,6 +455,7 @@ impl Parser {
         let mut handlers = Vec::new();
         let mut grants = Vec::new();
         let mut crash_handler: Option<(String, Box<Expr>)> = None;
+        let mut sandbox_bodies = Vec::new();
         while self.peek().kind != TokenKind::RBrace && self.peek().kind != TokenKind::EOF {
             if matches!(&self.peek().kind, TokenKind::Identifier(s) if s == "grant") {
                 self.advance();
@@ -473,7 +474,11 @@ impl Parser {
                 state.push(Spanned { node, span });
                 let _ = self.match_token(TokenKind::Semicolon);
             } else if self.match_token(TokenKind::On) {
-                handlers.push(self.parse_handler(landline.is_some())?);
+                // A sandboxed serverlet's handlers may all go without bodies: the guest is
+                // then a file the program loads while it runs.
+                let bodyless = landline.is_some() || (sandbox.is_some() && self.handler_has_no_body());
+                handlers.push(self.parse_handler(bodyless)?);
+                if sandbox.is_some() { sandbox_bodies.push(!bodyless); }
             } else if self.match_token(TokenKind::OnCrash) {
                 let err_tok = self.advance().clone();
                 let err_name = match &err_tok.kind {
@@ -488,6 +493,17 @@ impl Parser {
             }
         }
         self.consume(TokenKind::RBrace, "Expected '}' to end serverlet body")?;
+        if let Some(config) = &mut sandbox {
+            if sandbox_bodies.contains(&false) {
+                if sandbox_bodies.contains(&true) {
+                    return Err(format!("sandboxed serverlet '{}': its handlers either all have bodies, and the guest is compiled in, or none do, and the guest is a file the program loads with `start {} from path`; it has both", name, name));
+                }
+                if !state.is_empty() {
+                    return Err(format!("sandboxed serverlet '{}' is loaded from a file, so its state is the guest's own: declare it in the guest, not here", name));
+                }
+                config.loaded = true;
+            }
+        }
         // `serverlet X unmeasured { }` leaves out every handler it declares.
         if unmeasured {
             for handler in &mut handlers { handler.unmeasured = true; }
@@ -595,7 +611,7 @@ impl Parser {
         if memory_limit.is_empty() || timeout.is_empty() {
             return Err("sandbox(...) needs both 'memory_limit' and 'timeout'".into());
         }
-        let config = crate::ast::SandboxConfig { memory_limit, timeout, every_micros };
+        let config = crate::ast::SandboxConfig { memory_limit, timeout, every_micros, loaded: false };
         // Checked here so a typo is a parse error, not a limit that silently misses.
         if config.memory_bytes().is_none() {
             return Err(format!(
@@ -610,6 +626,26 @@ impl Parser {
             ));
         }
         Ok(config)
+    }
+
+    /// Whether the handler starting here, after `on`, ends at its signature: after its
+    /// name and parameters, the next `{` is not its body when a `on`, `let`, `grant`,
+    /// `on_crash`, or the serverlet's closing `}` comes first.
+    fn handler_has_no_body(&self) -> bool {
+        let mut depth = 0usize;
+        let mut index = self.pos;
+        while index < self.tokens.len() {
+            match &self.tokens[index].kind {
+                TokenKind::LParen => depth += 1,
+                TokenKind::RParen => depth = depth.saturating_sub(1),
+                TokenKind::LBrace if depth == 0 => return false,
+                TokenKind::On | TokenKind::Let | TokenKind::OnCrash | TokenKind::RBrace | TokenKind::EOF if depth == 0 => return true,
+                TokenKind::Identifier(word) if depth == 0 && word == "grant" => return true,
+                _ => {}
+            }
+            index += 1;
+        }
+        true
     }
 
     fn parse_handler(&mut self, foreign: bool) -> Result<Handler, String> {
@@ -1372,6 +1408,19 @@ impl Parser {
                 self.tokens[self.pos].kind = TokenKind::Identifier("start".to_string());
                 self.parse_prefix_node()
             }
+            // `start X from path`, or `start alias.X from path`: the serverlet's
+            // implementation is a file named while the program runs.
+            TokenKind::Start if matches!(&self.peek_at(2).kind, TokenKind::Identifier(w) if w == "from")
+                || (self.peek_at(2).kind == TokenKind::Dot && matches!(&self.peek_at(4).kind, TokenKind::Identifier(w) if w == "from")) => {
+                self.advance();
+                let mut name = self.parse_ident("serverlet name")?;
+                if self.match_token(TokenKind::Dot) {
+                    name = format!("{}::{}", name, self.parse_ident("serverlet name")?);
+                }
+                self.advance(); // from
+                let source = self.parse_expression(Precedence::Lowest)?;
+                Ok(ExprNode::StartFrom { name, source: Box::new(source) })
+            }
             TokenKind::Start => {
                 self.advance();
                 let expr = self.parse_expression(Precedence::Lowest)?;
@@ -1416,7 +1465,7 @@ impl Parser {
                                     TokenKind::Str(text) => text.clone(),
                                     _ => return Err(format!("Expected a duration such as \"50ms\" after 'backoff:' at line {}", value_tok.line)),
                                 };
-                                let config = SandboxConfig { memory_limit: String::new(), timeout: text.clone(), every_micros: None };
+                                let config = SandboxConfig { memory_limit: String::new(), timeout: text.clone(), every_micros: None, loaded: false };
                                 backoff_ms = Some(config.timeout_ms().ok_or_else(|| format!(
                                     "Invalid backoff \"{}\" at line {}: write a duration of at least 1ms, such as \"50ms\" or \"2s\"", text, value_tok.line
                                 ))?);

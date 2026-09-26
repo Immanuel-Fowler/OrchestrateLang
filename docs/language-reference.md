@@ -2064,6 +2064,43 @@ It runs for a call that ran past its timeout, exhausted its memory, or stopped i
 It cannot reach the serverlet's state, which is inside the instance being thrown away;
 a handler that names a state binding is a compile error saying so.
 
+**A guest loaded while the program runs.** A sandboxed serverlet whose handlers have no
+bodies is not compiled in: it declares what a guest must implement, under the limits and
+grants this program sets, and `start X from path` loads one from a `.wasm` file named
+while the program runs. It is a `result<X.client>`, `err` when the file is missing, is
+not a module, or does not implement the declaration:
+
+```orchestrate
+serverlet Model sandbox(memory_limit: "8mb", timeout: "20ms") {
+    grant call world.note
+    on radial(r2: float[], params: float[]) -> result<float[]>   // no body: the file brings it
+}
+
+let models: map<string, Model.client> = map {}
+
+on load_model(name: string, path: string) {
+    match start Model from path {
+        result::Ok(model) => models[name] = model          // loading again under a name replaces it
+        result::Err(why) => world.note("not loaded: " + why)
+    }
+}
+```
+
+A guest is built on its own with `orchestrate build --guest model.orch -o model.wasm`, from
+a file holding one sandboxed serverlet whose handlers have bodies. It carries what it
+implements — each handler's signature, structs spelled out with their fields — and `start`
+finds each declared handler there by name: a missing one, or one with other types, is
+`err` naming it; handlers the program does not declare are not reachable. The guest's own
+state lives in it, so the loading declaration has none, and the handlers either all have
+bodies or none do. The limits and grants are the loading program's: the guest's file
+declares its own only so that it compiles, and a grant the loader does not give traps
+when called. A call that traps replaces the instance from the same file, as for a
+compiled-in guest. The path is relative to the working directory, and the file is read,
+compiled, and checked when `start` runs, which takes milliseconds; load a guest from an
+event handler or at startup rather than on every tick. A guest written in another
+language can be loaded if it exports the same calling convention and an `orch_interface`
+function returning its signatures; `build --guest` is the supported way to make one.
+
 **v1 limitations:**
 
 - State whose type cannot be inferred needs an annotation, which is always true for a
@@ -2227,6 +2264,14 @@ same-file structs to matching object shapes. Its optional constructor receives
 `{ tickNumber, tickDt, host }`; granted host functions are available under
 `host.<group>.<function>` only during a handler. `tickNumber` and `tickDt` are populated
 for a `tick` handler called from a typed library tick.
+
+A Python landline can run another source than the one it was built with:
+`start Slot from "user/model.py"` starts the same declaration from that file, whose own
+folder is searched for its imports. It is a `result<Slot.client>`, `err` when there is no
+such file; whether the file implements the declaration is found in the startup handshake,
+as for any start, so a mismatch fails its calls — `err` for a `result` handler — naming the
+handler. A TypeScript landline is compiled when the program is built, and cannot be
+started from a file.
 
 `source` is relative to its declaring file. Python builds copy the source and SDK into
 `app.children/landline_<Name>/` beside the binary `app`. TypeScript builds put a compiled

@@ -11,6 +11,7 @@ fn print_help(invocation: &str) {
     println!("  build <file.orch>            Compile to a standalone binary");
     println!("  build <file.orch> -o <out>   Specify the output binary name");
     println!("  build --lib <file.orch> -o <dir>   Generate a host-linkable Rust crate");
+    println!("  build --guest <file.orch> -o <file.wasm>   Compile the file's sandboxed serverlet to a guest loaded with `start X from path`");
     println!("  build --lib --rust-version <x.y>   Set the generated crate's rust-version");
     println!("  build --lib --dependency '<name> = <spec>'   Add a Cargo dependency to the generated crate (repeatable)");
     println!("  build --lib --dependencies <file.toml>       Add the dependencies a TOML fragment declares");
@@ -101,6 +102,7 @@ pub fn run(invocation: &str, args: &[String]) {
             let mut input = None;
             let mut out = None;
             let mut library = false;
+            let mut guest = false;
             let mut target = None;
             let mut rust_version = None;
             let mut dependency_args: Vec<(&str, &str)> = Vec::new();
@@ -108,6 +110,7 @@ pub fn run(invocation: &str, args: &[String]) {
             while let Some(arg) = options.next() {
                 match arg.as_str() {
                     "--lib" => library = true,
+                    "--guest" => guest = true,
                     "--target" => target = options.next().map(String::as_str),
                     "--rust-version" => rust_version = options.next().map(String::as_str),
                     "--dependency" | "--dependencies" => match options.next() {
@@ -120,6 +123,9 @@ pub fn run(invocation: &str, args: &[String]) {
                 }
             }
             let result = match input {
+                Some(_) if guest && (library || target.is_some() || rust_version.is_some() || !dependency_args.is_empty()) =>
+                    Err("build --guest takes a file and -o, and nothing else".into()),
+                Some(input) if guest => driver::run_build_guest(input, out),
                 Some(input) if library => parse_dependency_args(&dependency_args)
                     .and_then(|dependencies| driver::run_build_library_for_target(input, out, target, rust_version, &dependencies)),
                 Some(_) if rust_version.is_some() => Err("--rust-version applies to build --lib".into()),

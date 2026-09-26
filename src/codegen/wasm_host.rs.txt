@@ -291,6 +291,37 @@ impl __OrchGuest {
         Ok(__OrchGuest { name, module, memory_bytes, store, instance, timeout, grants })
     }
 
+    /// A guest loaded from a file says what it implements: its `orch_interface` export
+    /// returns its protocol and then its handlers' signatures, one a line. Each handler
+    /// the program declared is found there by name and must match; the guest may
+    /// implement more, which the program cannot call.
+    fn check_interface(&mut self, expected: &[&str]) -> Result<(), String> {
+        let function = self.instance.get_typed_func::<(), i64>(&mut self.store, "orch_interface")
+            .map_err(|_| format!("wasm module '{}' exports no `orch_interface`, so it cannot say what it implements; build a guest with `orchestrate build --guest`", self.name))?;
+        self.begin();
+        let packed = function.call(&mut self.store, ()).map_err(|e| self.failed("orch_interface", &e))?;
+        let text = self.read_string(packed)?;
+        let mut lines = text.lines();
+        let (protocol, handlers) = expected.split_first().expect("a protocol line");
+        match lines.next() {
+            Some(line) if line == *protocol => {}
+            got => return Err(format!("wasm module '{}' follows {}, and this program expects {}", self.name, got.unwrap_or("no protocol"), protocol)),
+        }
+        let got: Vec<&str> = lines.collect();
+        for want in handlers {
+            let name = want.split('(').next().unwrap_or(want);
+            match got.iter().find(|line| line.split('(').next() == Some(name)) {
+                Some(line) if line == want => {}
+                Some(line) => return Err(format!("wasm module '{}': interface mismatch: handler '{}' is declared as {} but the guest defines {}", self.name, name, want, line)),
+                None => return Err(format!(
+                    "wasm module '{}': interface mismatch: handler '{}' is declared as {} but the guest defines no handler '{}'; it defines {}",
+                    self.name, name, want, name, if got.is_empty() { "none".to_string() } else { got.join(", ") }
+                )),
+            }
+        }
+        Ok(())
+    }
+
     /// Called just before the guest function runs — after its arguments are written into
     /// the guest — so each call gets the whole timeout, measured from its own start.
     fn begin(&mut self) {

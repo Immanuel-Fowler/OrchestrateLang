@@ -271,6 +271,15 @@ impl Codegen {
                 let args_str = self.compile_values(args);
                 format!("{}({})", start_fn, args_str)
             }
+            // A file named while the program runs: a result, since it may be missing or
+            // not implement the serverlet.
+            ExprNode::StartFrom { name, source } => {
+                let start_fn = match name.split_once("::") {
+                    Some((module, serverlet)) => format!("{}::start_{}_from", module, serverlet),
+                    None => format!("start_{}_from", name),
+                };
+                format!("{}(({}).to_string())", start_fn, self.compile_expr(source))
+            }
             ExprNode::AutomaticBlock { body, restart_policy, backoff_ms, every_micros, unmeasured, crash_handler } => {
                 let own_name = self.naming.take();
                 let worker = own_name.as_ref().map(|name| format!(" '{name}'")).unwrap_or_default();

@@ -1,5 +1,22 @@
 #[allow(non_snake_case)]
 pub fn start_@NAME@() -> @NAME@Client {
+    __start_@NAME@_with(None)
+}
+
+/// `start @NAME@ from path`: the same landline, running the source at `path` rather than the
+/// one it was built with. The file has to be there; whether it implements the declaration
+/// is found in the handshake, as for any start.
+#[allow(non_snake_case)]
+pub fn start_@NAME@_from(path: String) -> Result<@NAME@Client, String> {
+    let source = std::fs::canonicalize(&path)
+        .ok()
+        .filter(|source| source.is_file())
+        .ok_or_else(|| format!("landline '@NAME@': no file '{}'", path))?;
+    Ok(__start_@NAME@_with(Some(source.to_string_lossy().to_string())))
+}
+
+#[allow(non_snake_case)]
+fn __start_@NAME@_with(__source: Option<String>) -> @NAME@Client {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<@NAME@Msg>(100);
     let __latest = std::sync::Arc::new(@NAME@Latest::default());
     let latest = __latest.clone();
@@ -12,7 +29,7 @@ pub fn start_@NAME@() -> @NAME@Client {
         'restart: loop {
             let python = std::env::var_os("ORCH_PYTHON").unwrap_or_else(|| "python3".into());
             let __spawned = tokio::process::Command::new(python)
-                .arg("-u").arg(directory.join("main.py"))
+                .arg("-u").arg(directory.join("main.py")).args(__source.iter())
                 .kill_on_drop(true)
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped()).spawn();

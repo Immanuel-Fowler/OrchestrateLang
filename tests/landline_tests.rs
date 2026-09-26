@@ -677,6 +677,38 @@ landline.serve(Echo)
     assert!(!output.status.success() && stderr.contains("Cannot resolve landline file 'missing.json'"), "{}", stderr);
 }
 
+/// `start X from path` runs a Python landline from a source named while the program runs,
+/// which imports the modules beside it; a path with no file is `err`.
+#[test]
+fn python_landline_starts_from_a_path() {
+    let dir = directory("start_from");
+    let root: &std::path::Path = &dir;
+    fs::create_dir_all(root.join("user")).unwrap();
+    fs::write(root.join("user/consts.py"), "SCALE = 3.0\n").unwrap();
+    fs::write(root.join("user/model.py"), "from consts import SCALE\nfrom orchestratelang import landline\nclass Slot(landline.Serverlet):\n    def force(self, r: float) -> float: return SCALE / r\nlandline.serve(Slot)\n").unwrap();
+    let path = root.join("user/model.py").to_string_lossy().to_string();
+    let missing = root.join("user/none.py").to_string_lossy().to_string();
+    let (stdout, stderr) = run(root, &format!(r#"
+serverlet Slot via python(source: "impl.py") {{
+    on force(r: float) -> result<float>
+}}
+orchestrator main() {{
+    let built = start Slot()
+    match built.force(2.0) {{ result::Ok(f) => print("built " + to_string(f)) result::Err(w) => print(w) }}
+    match start Slot from {path:?} {{
+        result::Ok(slot) => match slot.force(2.0) {{ result::Ok(f) => print("user " + to_string(f)) result::Err(w) => print(w) }}
+        result::Err(why) => print(why)
+    }}
+    match start Slot from {missing:?} {{
+        result::Ok(slot) => print("started a missing file")
+        result::Err(why) => print(why)
+    }}
+    stop_orch()
+}}
+"#), "from orchestratelang import landline\nclass Slot(landline.Serverlet):\n    def force(self, r: float) -> float: return 0.0\nlandline.serve(Slot)\n");
+    assert_eq!(stdout, format!("built 0\nuser 1.5\nlandline 'Slot': no file '{missing}'"), "{}", stderr);
+}
+
 #[test]
 fn python_landline_call_keeps_the_callers_arguments() {
     // A string, an array, and a struct are each used again after the call that

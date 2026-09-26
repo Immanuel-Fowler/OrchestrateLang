@@ -181,6 +181,60 @@ fn build_sandbox_guest(cache_dir: &Path, name: &str, lib_src: &str) -> Result<()
     Ok(())
 }
 
+/// `orchestrate build --guest model.orch -o model.wasm`: the file's sandboxed serverlet,
+/// compiled to a `.wasm` guest on its own. A program that declares the same handlers with
+/// no bodies loads it while it runs, with `start X from path`, and checks it against its
+/// declaration then; the guest carries what it implements in its `orch_interface` export.
+pub fn run_build_guest(input_file: &str, output: Option<&str>) -> Result<(), String> {
+    let input_path = Path::new(input_file);
+    let source = fs::read_to_string(input_path)
+        .map_err(|e| format!("Failed to read source file '{}': {}", input_file, e))?;
+    let tokens = lexer::Lexer::new(&source).tokenize()?;
+    let ast = parser::Parser::new(tokens).parse()?;
+    if ast.iter().any(|s| matches!(s.node, ast::StmtNode::UseModule { .. })) {
+        return Err(format!("{}: a guest is one file: it cannot use a module, since nothing but its grants reaches it", input_file));
+    }
+    let mut type_checker = typechecker::TypeChecker::new();
+    type_checker.type_check(&ast).map_err(|e| type_error_in(input_file, &e))?;
+    let guests: Vec<&String> = ast.iter().filter_map(|s| match &s.node {
+        ast::StmtNode::Serverlet { name, sandbox: Some(config), .. } if !config.loaded => Some(name),
+        _ => None,
+    }).collect();
+    let name = match guests.as_slice() {
+        [one] => (*one).clone(),
+        [] => return Err(format!("{}: build --guest builds a sandboxed serverlet whose handlers have bodies, and this file declares none", input_file)),
+        many => return Err(format!(
+            "{}: build --guest builds one guest, and this file declares {}: {}; put each in a file of its own",
+            input_file, many.len(), many.iter().map(|n| n.as_str()).collect::<Vec<_>>().join(", ")
+        )),
+    };
+    let mut generator = codegen::Codegen::new(std::collections::HashSet::new());
+    generator.serverlet_state_types = type_checker.serverlet_state.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    // A guest's grants name the file's `host` functions, which it imports by name; the
+    // program that loads it grants them in its own declaration.
+    generator.host_functions = ast.iter().flat_map(|s| match &s.node {
+        ast::StmtNode::Host { name, functions } => functions.iter().map(|h| (name.clone(), h.clone())).collect(),
+        _ => Vec::new(),
+    }).collect();
+    let _ = generator.generate(&ast, true);
+    if let Some(error) = generator.errors.first() {
+        return Err(format!("{}: {}", input_file, error));
+    }
+    let (_, guest) = generator.sandbox_programs.iter().find(|(n, _)| *n == name)
+        .ok_or_else(|| format!("{}: sandboxed serverlet '{}' produced no guest", input_file, name))?;
+    let cache_dir = prepare_cache_dir(input_path)?.join("guest");
+    fs::create_dir_all(cache_dir.join("src")).map_err(|e| e.to_string())?;
+    build_sandbox_guest(&cache_dir, &name, guest)?;
+    let output = output.map(PathBuf::from).unwrap_or_else(|| input_path.with_extension("wasm"));
+    if let Some(parent) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
+    }
+    fs::copy(cache_dir.join("src").join(format!("sandbox_{}.wasm", name)), &output)
+        .map_err(|e| format!("Failed to write {}: {}", output.display(), e))?;
+    println!("[orchestrate] Guest '{}' written to {}", name, output.display());
+    Ok(())
+}
+
 /// The `build.rs` helper that turns one C# file into a native shared library.
 ///
 /// Shared, not static: two NativeAOT **static** archives cannot be linked into one module
@@ -1653,7 +1707,9 @@ fn stage_landlines(stmts: &[ast::Stmt], destination: &Path) -> Result<(), String
             let sdk = directory.join("orchestratelang");
             fs::create_dir_all(&sdk).map_err(|e| e.to_string())?;
             fs::copy(&config.source, directory.join("implementation.py")).map_err(|e| e.to_string())?;
-            fs::write(directory.join("main.py"), "import os, runpy, sys\nsys.stdout = sys.stderr\nrunpy.run_path(os.path.join(os.path.dirname(__file__), 'implementation.py'), run_name='__main__')\n").map_err(|e| e.to_string())?;
+            // `start X from path` passes another source to run, whose own folder is then
+            // searched for its imports, after this one and the SDK in it.
+            fs::write(directory.join("main.py"), "import os, runpy, sys\nsys.stdout = sys.stderr\nsource = os.path.join(os.path.dirname(__file__), 'implementation.py')\nif len(sys.argv) > 1:\n    source = os.path.abspath(sys.argv[1])\n    sys.path.insert(1, os.path.dirname(source))\nsys.argv = [source]\nrunpy.run_path(source, run_name='__main__')\n").map_err(|e| e.to_string())?;
             fs::write(sdk.join("__init__.py"), include_str!("../sdk/python/orchestratelang/__init__.py")).map_err(|e| e.to_string())?;
             fs::write(sdk.join("landline.py"), include_str!("../sdk/python/orchestratelang/landline.py")).map_err(|e| e.to_string())?;
             stage_landline_files(name, config, &directory)?;

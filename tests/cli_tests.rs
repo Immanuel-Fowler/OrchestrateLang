@@ -57,3 +57,22 @@ fn check_lib_warns_of_names_a_host_writes_raw() {
     assert!(output.status.success() && !String::from_utf8_lossy(&output.stderr).contains("warning"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `build --guest` builds one sandboxed serverlet with bodies, and says what is wrong with a
+/// file that has none, or several.
+#[test]
+fn build_guest_needs_one_guest() {
+    let dir = std::env::temp_dir().join(format!("orch_cli_guest_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("guest.orch");
+    for (source, expected) in [
+        ("serverlet A sandbox(memory_limit: \"8mb\", timeout: \"20ms\") { on f() -> int }\n", "this file declares none"),
+        ("serverlet A sandbox(memory_limit: \"8mb\", timeout: \"20ms\") { on f() -> int { return 1 } }\nserverlet B sandbox(memory_limit: \"8mb\", timeout: \"20ms\") { on f() -> int { return 2 } }\n", "this file declares 2: A, B"),
+    ] {
+        std::fs::write(&file, source).unwrap();
+        let output = orchestrate().args(["build", "--guest"]).arg(&file).output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success() && stderr.contains(expected), "{stderr}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

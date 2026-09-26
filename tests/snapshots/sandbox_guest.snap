@@ -234,3 +234,8 @@ pub extern "C" fn echo(s_pointer: i32, s_length: i32) -> i64 {
         return s;
 } }))
 }
+
+#[unsafe(export_name = "orch_interface")]
+pub extern "C" fn __orch_interface() -> i64 {
+    __orch_pack("orchestrate-guest 1\ntally(int)->int\necho(string)->string".to_string())
+}

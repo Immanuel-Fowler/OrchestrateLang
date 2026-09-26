@@ -381,6 +381,23 @@ impl CounterClient {
 
 #[allow(non_snake_case)]
 pub fn start_Counter() -> CounterClient {
+    __start_Counter_with(None)
+}
+
+/// `start Counter from path`: the same landline, running the source at `path` rather than the
+/// one it was built with. The file has to be there; whether it implements the declaration
+/// is found in the handshake, as for any start.
+#[allow(non_snake_case)]
+pub fn start_Counter_from(path: String) -> Result<CounterClient, String> {
+    let source = std::fs::canonicalize(&path)
+        .ok()
+        .filter(|source| source.is_file())
+        .ok_or_else(|| format!("landline 'Counter': no file '{}'", path))?;
+    Ok(__start_Counter_with(Some(source.to_string_lossy().to_string())))
+}
+
+#[allow(non_snake_case)]
+fn __start_Counter_with(__source: Option<String>) -> CounterClient {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<CounterMsg>(100);
     let __latest = std::sync::Arc::new(CounterLatest::default());
     let latest = __latest.clone();
@@ -393,7 +410,7 @@ pub fn start_Counter() -> CounterClient {
         'restart: loop {
             let python = std::env::var_os("ORCH_PYTHON").unwrap_or_else(|| "python3".into());
             let __spawned = tokio::process::Command::new(python)
-                .arg("-u").arg(directory.join("main.py"))
+                .arg("-u").arg(directory.join("main.py")).args(__source.iter())
                 .kill_on_drop(true)
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped()).spawn();

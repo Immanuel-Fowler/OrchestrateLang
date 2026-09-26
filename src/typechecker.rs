@@ -31,6 +31,9 @@ pub struct TypeChecker {
     pub serverlet_state: HashMap<String, Vec<(String, Type)>>,
     /// Serverlets declared in this file, so `start X()` can be checked.
     serverlet_names: HashSet<String>,
+    /// Where each serverlet's implementation comes from, in this file and every module's
+    /// (`alias::X`), so `start X()` and `start X from path` can be checked.
+    serverlet_sources: HashMap<String, ServerletSource>,
     /// A binding to the serverlet it was started from, so `c.add(1)` can be checked
     /// against that serverlet's handlers.
     var_serverlet: HashMap<String, String>,
@@ -90,6 +93,7 @@ impl TypeChecker {
             try_errors: Vec::new(),
             serverlet_state: HashMap::new(),
             serverlet_names: HashSet::new(),
+            serverlet_sources: HashMap::new(),
             var_serverlet: HashMap::new(),
             cadenced: HashSet::new(),
             queues: HashMap::new(),
@@ -231,6 +235,7 @@ impl TypeChecker {
                     self.enum_defs.insert(name.clone(), variants.clone());
                 }
                 StmtNode::Serverlet { name, handlers, .. } if { self.serverlet_names.insert(name.clone()); false } => { let _ = handlers; }
+                StmtNode::Serverlet { name, landline, sandbox, .. } if { self.serverlet_sources.insert(name.clone(), ServerletSource::of(landline, sandbox)); false } => {}
                 StmtNode::Serverlet { name, handlers, landline, sandbox, .. } => {
                     for h in handlers {
                         let param_types: Vec<Type> = h.params.iter().map(|p| p.ty.clone()).collect();
@@ -363,6 +368,7 @@ impl TypeChecker {
                     self.functions.insert(full_name, (param_types, return_type.clone()));
                 }
                 StmtNode::Serverlet { name: serverlet_name, handlers, landline, sandbox, .. } => {
+                    self.serverlet_sources.insert(format!("{}::{}", alias, serverlet_name), ServerletSource::of(landline, sandbox));
                     for h in handlers {
                         let param_types: Vec<Type> = h.params.iter().map(|p| p.ty.clone()).collect();
                         let alias_name = format!("{}::{}", alias, h.name);
@@ -698,6 +704,7 @@ impl TypeChecker {
                 inner.extend(else_branch.as_deref());
             }
             ExprNode::StartProcess { target } => inner.push(target),
+            ExprNode::StartFrom { source, .. } => inner.push(source),
             ExprNode::StructLiteral { fields, .. } => inner.extend(fields.iter().map(|(_, value)| &**value)),
             ExprNode::FieldAccess { object, .. } => inner.push(object),
             ExprNode::Index { object, index, .. } => inner.extend([&**object, &**index]),
@@ -1472,7 +1479,7 @@ impl TypeChecker {
                     // A landline handler is a declaration; its body is in Python or
                     // TypeScript, so there is nothing here to fall off the end of.
                     let checked = self.infer_expr(&h.body).and_then(|body_ty| {
-                        if landline.is_some() { return Ok(()); }
+                        if landline.is_some() || sandbox.as_ref().is_some_and(|c| c.loaded) { return Ok(()); }
                         Self::check_body_returns("handler", &h.name, &h.return_type, &h.body, body_ty, stmt.span.line, stmt.span.col)
                     });
                     self.pop_env();
@@ -2192,7 +2199,37 @@ impl TypeChecker {
                         if known.is_empty() { String::new() } else { format!(". This file declares: {}.", known.iter().map(|n| n.as_str()).collect::<Vec<_>>().join(", ")) }
                     ));
                 }
+                if self.serverlet_sources.get(name) == Some(&ServerletSource::Loaded) {
+                    return Err(format!(
+                        "line {}, col {}: '{}' is loaded from a file: its handlers have no bodies, so there is no guest to start without one. Start it with `start {} from path`, which is a result<{}.client>",
+                        expr.span.line, expr.span.col, name, name.replace("::", "."), name.replace("::", ".")
+                    ));
+                }
                 Ok(Type::Client(name.clone()))
+            }
+            ExprNode::StartFrom { name, source } => {
+                let source_ty = self.infer_expr(source)?;
+                if source_ty != Type::Str {
+                    return Err(format!(
+                        "line {}, col {}: `start {} from` takes the path of a file, a string; this is {}",
+                        expr.span.line, expr.span.col, name.replace("::", "."), source_ty.display_name()
+                    ));
+                }
+                let shown = name.replace("::", ".");
+                match self.serverlet_sources.get(name) {
+                    Some(ServerletSource::Loaded) | Some(ServerletSource::Python) => {
+                        Ok(Type::Result(Box::new(Type::Client(name.clone())), Box::new(Type::Str)))
+                    }
+                    Some(ServerletSource::TypeScript) => Err(format!(
+                        "line {}, col {}: '{}' is a TypeScript landline, which is compiled when the program is built, so it cannot be started from a file named while it runs; start it with `start {}()`",
+                        expr.span.line, expr.span.col, shown, shown
+                    )),
+                    Some(ServerletSource::Compiled) => Err(format!(
+                        "line {}, col {}: '{}' is compiled into the program. `start {} from path` starts a serverlet whose implementation is a file: a sandboxed serverlet whose handlers have no bodies, or a Python landline",
+                        expr.span.line, expr.span.col, shown, shown
+                    )),
+                    None => Err(format!("line {}, col {}: unknown serverlet '{}'", expr.span.line, expr.span.col, shown)),
+                }
             }
             ExprNode::AutomaticBlock { body, crash_handler, .. } => {
                 self.infer_expr(body)?;
@@ -2810,5 +2847,29 @@ mod tests {
     #[test]
     fn test_filter_builtin() {
         assert!(check("let xs = [1, 2, 3]; let evens = filter(xs, fn(x: int) -> bool { x == 2 });").is_ok());
+    }
+}
+
+/// Where a serverlet's implementation comes from, which decides how it may be started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServerletSource {
+    /// In-process, secret, or a sandbox whose handlers have bodies: `start X()` only.
+    Compiled,
+    /// A sandbox whose handlers have no bodies: `start X from path` only.
+    Loaded,
+    /// Either: `start X()` runs the declared source, `start X from path` another.
+    Python,
+    /// Compiled when the program is built: `start X()` only.
+    TypeScript,
+}
+
+impl ServerletSource {
+    fn of(landline: &Option<crate::ast::LandlineConfig>, sandbox: &Option<crate::ast::SandboxConfig>) -> ServerletSource {
+        match (landline, sandbox) {
+            (Some(config), _) if config.runtime == "typescript" => ServerletSource::TypeScript,
+            (Some(_), _) => ServerletSource::Python,
+            (_, Some(config)) if config.loaded => ServerletSource::Loaded,
+            _ => ServerletSource::Compiled,
+        }
     }
 }
