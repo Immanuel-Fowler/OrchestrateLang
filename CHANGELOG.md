@@ -208,6 +208,14 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   write, which is why this release is a minor one.
 
 ### Fixed
+- **A sandboxed call made a timeout or more after the one before it no longer traps
+  before it starts.** The host copies a call's strings, arrays, and structs into the guest
+  through its allocator before the call's own clock starts, and that copy ran under the
+  deadline and start the previous call left behind: once a timeout had passed since, and
+  the engine's clock had ticked, the copy was stopped as a guest that "ran past its
+  timeout" and the call answered its default. Each call the host makes into a guest —
+  allocating before a call, freeing after — now gets a timeout of its own. Test:
+  `tests/programs/sandbox_call_after_a_pause.orch`.
 - **An array crosses a Python or TypeScript landline as one block.** Both SDKs encoded and
   decoded arrays an element at a time — a `struct.pack` and a slice per float in Python, a
   fresh buffer and `DataView` per element in TypeScript — so the boundary the reference

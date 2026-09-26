@@ -1,0 +1,20 @@
+// A sandboxed call made long after the one before it keeps its whole timeout. The host
+// copies the arguments in through the guest's allocator before the call starts, and that
+// copy ran under the last call's deadline and start: once a timeout had passed since, it
+// was stopped as "ran past its timeout", and the call answered 0.
+
+serverlet Sum sandbox(memory_limit: "8mb", timeout: "20ms") {
+    on total(xs: float[]) -> float {
+        let t = 0.0
+        for x in xs { t = t + x }
+        return t
+    }
+}
+
+orchestrator main() {
+    let s = start Sum()
+    print(to_string(s.total([1.0, 2.0])))
+    sleep(100)
+    print(to_string(s.total([3.0, 4.0])))
+    stop_orch()
+}

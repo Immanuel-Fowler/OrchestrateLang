@@ -294,8 +294,17 @@ impl __OrchGuest {
     /// Called just before the guest function runs — after its arguments are written into
     /// the guest — so each call gets the whole timeout, measured from its own start.
     fn begin(&mut self) {
-        self.store.data_mut().started = std::time::Instant::now();
+        self.window();
         self.store.data_mut().answered_err = None;
+    }
+
+    /// A fresh timeout for one call into the guest, measured from now. The host's own
+    /// calls — to the allocator, before a call's arguments go in and after its results come
+    /// out — each get one too: otherwise they ran under whatever deadline and start the last
+    /// call left behind, and a copy made a timeout or more after it was stopped as a guest
+    /// that ran past its timeout.
+    fn window(&mut self) {
+        self.store.data_mut().started = std::time::Instant::now();
         self.store.set_epoch_deadline(if self.timeout.is_some() { 1 } else { __ORCH_WASM_NO_DEADLINE });
     }
 
@@ -336,6 +345,7 @@ impl __OrchGuest {
             .get_typed_func::<i32, i32>(&mut self.store, "orch_alloc")
             .map_err(|_| __orch_wasm_missing_allocator(self.name))?;
         let memory = self.memory()?;
+        self.window();
         let pointer = alloc
             .call(&mut self.store, bytes.len() as i32)
             .map_err(|e| self.failed("orch_alloc", &e))?;
@@ -380,6 +390,7 @@ impl __OrchGuest {
             return;
         }
         if let Ok(free) = self.instance.get_typed_func::<(i32, i32), ()>(&mut self.store, "orch_free") {
+            self.window();
             let _ = free.call(&mut self.store, (pointer, length));
         }
     }
