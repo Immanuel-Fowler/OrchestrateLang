@@ -27,7 +27,7 @@ import tempfile
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 KIND_ORDER = ["local-let", "shared-let", "loop-only", "in-process", "sandbox", "secret", "python", "typescript"]
-PAYLOAD_ORDER = ["int", "string-1KB", "int[1000]", "statement"]
+PAYLOAD_ORDER = ["int", "string-1KB", "int[1000]", "float[1000]", "float[10000]", "float[50000]", "statement"]
 RATE_ORDER = ["unpaced", "100hz", "1khz", "10khz", "callers-1", "callers-2", "callers-4", "callers-8", "batch-1000"]
 
 
@@ -163,7 +163,9 @@ def markdown(env, rows):
               f"TypeScript rung {'included' if env['typescript'] else 'skipped: Bun or TypeScript 7 not found'}. "
               f"Round trips in microseconds unless the unit says otherwise; the state rungs are nanoseconds per statement. "
               f"Your numbers will differ.", ""]
-    payload = [r for r in rows if r["rate"] == "unpaced" and r["payload"] != "statement"]
+    payload = [r for r in rows if r["rate"] == "unpaced" and r["payload"] != "statement" and not r["payload"].startswith("float[")]
+    arrays = [r for r in rows if r["payload"].startswith("float[")]
+    arrays.sort(key=lambda r: (PAYLOAD_ORDER.index(r["payload"]), KIND_ORDER.index(r["kind"]) if r["kind"] in KIND_ORDER else 99))
     rate = [r for r in rows if r["payload"] == "int" and r["rate"] in ("unpaced", "100hz", "1khz", "10khz")]
     callers = [r for r in rows if r["payload"] == "int" and (r["rate"].startswith("callers-") or r["rate"] == "unpaced")]
     state = [r for r in rows if r["payload"] == "statement"]
@@ -178,6 +180,7 @@ def markdown(env, rows):
     callers.sort(key=lambda r: (KIND_ORDER.index(r["kind"]) if r["kind"] in KIND_ORDER else 99, int(r["rate"].split("-")[1])))
     parts = header
     parts.append(table("Payload sweep", "Calls back to back, one caller.", payload, ["Kind", "Payload"]))
+    parts.append(table("Array sweep", "A `float[]` echoed back, calls back to back: the array crosses twice per call.", arrays, ["Payload", "Kind"]))
     parts.append(table("Call-rate sweep", "The `int` payload. At 100 Hz and 1 kHz the caller sleeps between calls; at 10 kHz it spins.", rate, ["Kind", "Rate"]))
     parts.append(table("Concurrent callers", "The `int` payload with 1, 2, 4, or 8 callers sharing one serverlet; each sample is one caller's round trip.", callers, ["Kind", "Rate"]))
     parts.append(table("State rungs", "Nanoseconds per statement, each sample a batch of 1,000 statements; `loop-only` is the counting loop by itself.", state, ["Kind"]))

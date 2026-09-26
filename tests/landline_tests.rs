@@ -439,6 +439,186 @@ landline.serve(Echo)
     assert!(stderr.contains("but the source defines bump(Pt{b:int,a:float,lambda:int})"), "{}", stderr);
 }
 
+fn python_available_module(module: &str) -> bool {
+    let python = std::env::var_os("ORCH_PYTHON").unwrap_or_else(|| "python3".into());
+    Command::new(python).arg("-c").arg(format!("import {module}")).output().is_ok_and(|o| o.status.success())
+}
+
+/// An array of floats, ints or bools crosses as one block. The block path must write the
+/// same bytes as the per-element path, read the same values back, and refuse what it
+/// refused, with the same error; a numpy array annotation gets a writable numpy array.
+#[test]
+fn python_array_blocks_match_the_element_path() {
+    let script = r#"
+import struct
+from orchestratelang import landline as L
+
+def both(ty, value):
+    L._BLOCKS = True
+    fast = L._encode(ty, value)
+    L._BLOCKS = False
+    slow = L._encode(ty, value)
+    assert fast == slow, (ty, value)
+    r = L._Reader(slow); want = r.value(ty); r.finish()
+    L._BLOCKS = True
+    r = L._Reader(fast); got = r.value(ty); r.finish()
+    assert repr(got) == repr(want) and type(got) is list, (got, want)
+
+both(list[float], [0.0, -0.0, 1.5, float("inf"), float("-inf"), float("nan"), 5e-324, 1.7976931348623157e308])
+both(list[int], [0, -1, 2**63 - 1, -2**63, 42])
+both(list[bool], [True, False, True])
+both(list[float], [])
+both(list[list[float]], [[1.0, 2.0], [], [3.5]])
+both(list[list[int]], [[1], [2, 3]])
+
+def fails(ty, value):
+    outcomes = []
+    for blocks in (True, False):
+        L._BLOCKS = blocks
+        try:
+            L._encode(ty, value)
+            outcomes.append(None)
+        except TypeError as error:
+            outcomes.append(str(error))
+        except (OverflowError, struct.error):
+            outcomes.append("out of range")
+    L._BLOCKS = True
+    assert outcomes[0] is not None and outcomes[0] == outcomes[1], (ty, value, outcomes)
+
+fails(list[float], [1.0, 2])
+fails(list[float], [1.0, True])
+fails(list[int], [1, 2.0])
+fails(list[int], [1, True])
+fails(list[int], [2**63])
+fails(list[bool], [True, 1])
+fails(list[float], (1.0, 2.0))
+
+for blocks in (True, False):
+    L._BLOCKS = blocks
+    for payload, ty in ((struct.pack("<I", 2) + bytes([1, 2]), list[bool]), (struct.pack("<I", 3) + bytes(16), list[float])):
+        try:
+            L._Reader(payload).value(ty)
+            raise SystemExit(f"accepted {payload!r} as {ty}")
+        except ValueError:
+            pass
+L._BLOCKS = True
+
+try:
+    import numpy
+    from numpy.typing import NDArray
+except ImportError:
+    numpy = None
+if numpy is not None:
+    assert L._type_name(NDArray[numpy.float64]) == "float[]"
+    assert L._type_name(NDArray[numpy.int64]) == "int[]"
+    assert L._type_name(NDArray[numpy.bool_]) == "bool[]"
+    try:
+        L._type_name(NDArray[numpy.float32])
+        raise SystemExit("accepted float32")
+    except TypeError:
+        pass
+    wire = L._encode(list[float], [1.0, -2.5, 3.0])
+    assert L._encode(NDArray[numpy.float64], numpy.array([1.0, -2.5, 3.0])) == wire
+    assert L._encode(list[float], numpy.array([1.0, -2.5, 3.0])) == wire
+    got = L._Reader(wire).value(NDArray[numpy.float64])
+    assert type(got) is numpy.ndarray and got.dtype == numpy.float64 and list(got) == [1.0, -2.5, 3.0]
+    got[0] = 9.0
+    flags = L._Reader(L._encode(list[bool], [True, False])).value(NDArray[numpy.bool_])
+    assert flags.dtype == numpy.bool_ and list(flags) == [True, False]
+    grid = numpy.array([[1.0, 2.0], [3.0, 4.0]])
+    assert L._encode(list[list[float]], grid) == L._encode(list[list[float]], [[1.0, 2.0], [3.0, 4.0]])
+    for wrong in (numpy.array([1, 2]), numpy.zeros((2, 2))):
+        try:
+            L._encode(list[float], wrong)
+            raise SystemExit(f"accepted {wrong!r}")
+        except TypeError:
+            pass
+print("ok")
+"#;
+    let python = std::env::var_os("ORCH_PYTHON").unwrap_or_else(|| "python3".into());
+    let output = Command::new(python)
+        .env("PYTHONPATH", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/python"))
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .arg("-c")
+        .arg(script)
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "ok", "{}", String::from_utf8_lossy(&output.stderr));
+}
+
+/// Arrays of each block type, nested arrays, and arrays inside a struct cross a landline
+/// both ways; so does a numpy array, for a handler annotated with one.
+#[test]
+fn python_landline_carries_arrays() {
+    let program = r#"
+struct Batch { xs: float[], ids: int[], flags: bool[] }
+serverlet Numbers via python(source: "impl.py") {
+    on scale(xs: float[], by: float) -> float[]
+    on shift(ids: int[]) -> int[]
+    on flip(flags: bool[]) -> bool[]
+    on rows(grid: float[][]) -> float[][]
+    on batch(b: Batch) -> Batch
+}
+orchestrator main() {
+    let n = start Numbers()
+    let xs = n.scale([1.0, -2.5, 0.25], 2.0)
+    print(to_string(xs[0]) + " " + to_string(xs[1]) + " " + to_string(xs[2]))
+    let ids = n.shift([-5, 0, 1000000000000])
+    print(to_string(ids[0]) + " " + to_string(ids[2]) + " " + to_string(length(ids)))
+    let flags = n.flip([true, false, false])
+    print(to_string(flags[0]) + " " + to_string(flags[1]))
+    let grid = n.rows([[1.0, 2.0], [], [3.0]])
+    print(to_string(length(grid)) + " " + to_string(length(grid[1])) + " " + to_string(grid[2][0]))
+    let b = n.batch(Batch { xs: [0.5], ids: [7, 8], flags: [true] })
+    print(to_string(b.xs[0]) + " " + to_string(b.ids[1]) + " " + to_string(b.flags[0]))
+    stop_orch()
+}
+"#;
+    let expected = "2 -5 0.5\n-4 1000000000001 3\nfalse true\n3 0 30\n1.5 16 false";
+    let (stdout, stderr) = run(&directory("arrays"), program, r#"
+from dataclasses import dataclass
+from orchestratelang import landline
+@dataclass
+class Batch:
+    xs: list[float]
+    ids: list[int]
+    flags: list[bool]
+class Numbers(landline.Serverlet):
+    def scale(self, xs: list[float], by: float) -> list[float]: return [x * by for x in xs]
+    def shift(self, ids: list[int]) -> list[int]: return [i + 1 for i in ids]
+    def flip(self, flags: list[bool]) -> list[bool]: return [not f for f in flags]
+    def rows(self, grid: list[list[float]]) -> list[list[float]]: return [[x * 10.0 for x in r] for r in grid]
+    def batch(self, b: Batch) -> Batch: return Batch([x + 1.0 for x in b.xs], [i * 2 for i in b.ids], [not f for f in b.flags])
+landline.serve(Numbers)
+"#);
+    assert_eq!(stdout, expected, "{}", stderr);
+    if !python_available_module("numpy") {
+        eprintln!("numpy is not installed: the numpy-annotated half of this test is skipped");
+        return;
+    }
+    let (stdout, stderr) = run(&directory("arrays_numpy"), program, r#"
+from dataclasses import dataclass
+import numpy
+from numpy.typing import NDArray
+from orchestratelang import landline
+@dataclass
+class Batch:
+    xs: NDArray[numpy.float64]
+    ids: NDArray[numpy.int64]
+    flags: NDArray[numpy.bool_]
+class Numbers(landline.Serverlet):
+    def scale(self, xs: NDArray[numpy.float64], by: float) -> NDArray[numpy.float64]:
+        xs *= by
+        return xs
+    def shift(self, ids: NDArray[numpy.int64]) -> NDArray[numpy.int64]: return ids + 1
+    def flip(self, flags: NDArray[numpy.bool_]) -> NDArray[numpy.bool_]: return ~flags
+    def rows(self, grid: list[NDArray[numpy.float64]]) -> list[NDArray[numpy.float64]]: return [r * 10.0 for r in grid]
+    def batch(self, b: Batch) -> Batch: return Batch(b.xs + 1.0, b.ids * 2, ~b.flags)
+landline.serve(Numbers)
+"#);
+    assert_eq!(stdout, expected, "{}", stderr);
+}
+
 #[test]
 fn python_landline_call_keeps_the_callers_arguments() {
     // A string, an array, and a struct are each used again after the call that

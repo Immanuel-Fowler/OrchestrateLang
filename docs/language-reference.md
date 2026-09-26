@@ -2175,7 +2175,12 @@ reply in time returns right away: with `late: "drop"` (the default) it returns t
 default value, or for a `result<T>` handler `err` saying it missed its budget, and with
 `late: "latest"` it returns the handler's most recent completed result, which a late
 reply replaces (`err` if there is none yet). A queued call whose caller has already given up is
-not sent. `late` requires `budget`. Pass arrays to handle many items in one call.
+not sent. `late` requires `budget`. Pass arrays to handle many items in one call: an
+array of floats, ints, or bools crosses a landline as one block copy each way. Moving
+50,000 floats to Python and back as a list costs about 2 ms (the boundary ladder's array
+sweep, in [benchmarks/README.md](../benchmarks/README.md)); most of that is building
+Python float objects, which a handler that takes `NDArray[numpy.float64]` does not pay
+(see the [Python SDK guide](../sdk/python/README.md)).
 
 **`latest` is per handler, not per argument.** It is the most recent answer the handler
 gave to *any* call, so a late `echo(2)` returns what `echo(1)` answered. That is what

@@ -1,4 +1,5 @@
 """Protocol v1 serverlets. Requires Python 3.10+; no third-party dependencies."""
+import array
 import dataclasses
 import inspect
 import keyword
@@ -25,12 +26,70 @@ def _field_name(name):
     return name
 
 
+# An array of floats, ints or bools crosses as one block. The wire holds little-endian
+# 8-byte floats and ints and 1-byte bools, which is what an `array.array` of "d" or "q"
+# holds on a little-endian machine, so one copy replaces a struct call per element; a
+# big-endian machine byte-swaps the block. Elements are checked as the per-element path
+# checked them, by exact type, before anything is copied.
+_BLOCK = {float: "d", int: "q"}
+_BLOCKS = all(array.array(code).itemsize == 8 for code in _BLOCK.values())
+_LITTLE = sys.byteorder == "little"
+_DTYPE = {float: "<f8", int: "<i8", bool: "u1"}
+_KIND = {float: "f", int: "i", bool: "b"}
+
+
+def _array_element(ty):
+    """The element type of an array annotation, `list[T]` or numpy's
+    `NDArray[numpy.float64]` (or `int64`, `bool_`), or None for any other type."""
+    origin = typing.get_origin(ty)
+    if origin is list:
+        (inner,) = typing.get_args(ty)
+        return inner
+    if getattr(origin, "__name__", None) == "ndarray" and getattr(origin, "__module__", None) == "numpy":
+        args = typing.get_args(ty)
+        scalars = typing.get_args(args[1]) if len(args) == 2 else ()
+        element = {"float64": float, "int64": int, "bool": bool, "bool_": bool}.get(getattr(scalars[0], "__name__", None) if scalars else None)
+        if element is None:
+            raise TypeError("a numpy array annotation names its dtype: NDArray[numpy.float64], NDArray[numpy.int64], or NDArray[numpy.bool_]")
+        return element
+    return None
+
+
+def _is_ndarray(ty):
+    origin = typing.get_origin(ty)
+    return getattr(origin, "__name__", None) == "ndarray" and getattr(origin, "__module__", None) == "numpy"
+
+
+def _ndarray(value):
+    """Whether a value is a numpy array, without importing numpy."""
+    kind = type(value)
+    return kind.__name__ == "ndarray" and kind.__module__ == "numpy"
+
+
+def _encode_block(inner, value):
+    if _ndarray(value):
+        if value.ndim != 1 or value.dtype.kind != _KIND[inner]:
+            raise TypeError(f"expected a one-dimensional array of {inner.__name__}, got {value.ndim} dimensions of {value.dtype}")
+        return struct.pack("<I", len(value)) + value.astype(_DTYPE[inner], copy=False).tobytes()
+    if not isinstance(value, list):
+        raise TypeError("expected list")
+    wrong = [kind for kind in set(map(type, value)) if kind is not inner]
+    if wrong:
+        raise TypeError(f"expected {inner.__name__}, got {wrong[0].__name__}")
+    if inner is bool:
+        return struct.pack("<I", len(value)) + bytes(value)
+    block = array.array(_BLOCK[inner], value)
+    if not _LITTLE:
+        block.byteswap()
+    return struct.pack("<I", len(value)) + block.tobytes()
+
+
 def _type_name(ty, seen=()):
     primitives = {int: "int", float: "float", bool: "bool", str: "string", type(None): "void"}
     if ty in primitives:
         return primitives[ty]
-    if typing.get_origin(ty) is list:
-        (inner,) = typing.get_args(ty)
+    if _array_element(ty) is not None:
+        inner = _array_element(ty)
         if inner is type(None):
             raise TypeError("void array elements are unsupported")
         return _type_name(inner, seen) + "[]"
@@ -68,10 +127,12 @@ def _encode(ty, value):
             raise TypeError("expected string")
         raw = value.encode("utf-8")
         return struct.pack("<I", len(raw)) + raw
-    if typing.get_origin(ty) is list:
-        if not isinstance(value, list):
+    inner = _array_element(ty)
+    if inner is not None:
+        if inner in (float, int, bool) and _BLOCKS:
+            return _encode_block(inner, value)
+        if not isinstance(value, list) and not _ndarray(value):
             raise TypeError("expected list")
-        (inner,) = typing.get_args(ty)
         return struct.pack("<I", len(value)) + b"".join(_encode(inner, x) for x in value)
     if typing.get_origin(ty) is dict:
         if not isinstance(value, dict):
@@ -111,9 +172,11 @@ class _Reader:
         if ty is str:
             size = struct.unpack("<I", self.take(4))[0]
             return self.take(size).decode("utf-8")
-        if typing.get_origin(ty) is list:
+        inner = _array_element(ty)
+        if inner is not None:
             size = struct.unpack("<I", self.take(4))[0]
-            (inner,) = typing.get_args(ty)
+            if inner in (float, int, bool) and _BLOCKS:
+                return self.block(inner, size, _is_ndarray(ty))
             return [self.value(inner) for _ in range(size)]
         if typing.get_origin(ty) is dict:
             size = struct.unpack("<I", self.take(4))[0]
@@ -127,6 +190,24 @@ class _Reader:
             hints = typing.get_type_hints(ty)
             return ty(**{f.name: self.value(hints[f.name]) for f in dataclasses.fields(ty)})
         raise TypeError(f"unsupported wire type: {ty!r}")
+
+    def block(self, inner, size, as_ndarray):
+        """`size` floats, ints or bools in one copy: a list, or a writable numpy array for a
+        parameter annotated as one."""
+        data = self.take(size * (1 if inner is bool else 8))
+        if inner is bool and data.translate(None, b"\x00\x01"):
+            raise ValueError("invalid bool")
+        if as_ndarray:
+            import numpy
+            values = numpy.frombuffer(bytearray(data), dtype=_DTYPE[inner])
+            return values.astype(bool) if inner is bool else values
+        if inner is bool:
+            return list(map(bool, data))
+        block = array.array(_BLOCK[inner])
+        block.frombytes(data)
+        if not _LITTLE:
+            block.byteswap()
+        return block.tolist()
 
     def finish(self):
         if self.pos != len(self.data):

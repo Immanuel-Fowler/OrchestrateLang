@@ -11,5 +11,8 @@ class PyEcho(landline.Serverlet):
     def numbers(self, items: list[int]) -> list[int]:
         return items
 
+    def floats(self, items: list[float]) -> list[float]:
+        return items
+
 
 landline.serve(PyEcho)

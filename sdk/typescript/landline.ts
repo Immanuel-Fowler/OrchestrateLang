@@ -7,6 +7,31 @@ type Schema = Record<string, Field[]>;
 const utf8 = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true });
 const MAX_FRAME = 64 * 1024 * 1024;
+// An array of floats, ints or bools crosses as one block. A Float64Array or BigInt64Array
+// holds the wire's little-endian bytes on a little-endian machine; a big-endian machine
+// takes the per-element path. Elements are checked as the per-element path checks them.
+const LITTLE = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
+const INT_MIN = -(1n << 63n), INT_END = 1n << 63n;
+function encodeBlock(inner: string, value: any): Uint8Array | null {
+    if (inner === 'float' && LITTLE) {
+        if (value instanceof Float64Array) return join([uint(value.length), new Uint8Array(value.buffer, value.byteOffset, value.byteLength)]);
+        if (!Array.isArray(value)) throw new Error('expected array');
+        for (const v of value) if (typeof v !== 'number') throw new Error('expected number');
+        return join([uint(value.length), new Uint8Array(Float64Array.from(value).buffer)]);
+    }
+    if (inner === 'int' && LITTLE) {
+        if (value instanceof BigInt64Array) return join([uint(value.length), new Uint8Array(value.buffer, value.byteOffset, value.byteLength)]);
+        if (!Array.isArray(value)) throw new Error('expected array');
+        for (const v of value) if (typeof v !== 'bigint' || v < INT_MIN || v >= INT_END) throw new Error('expected signed 64-bit bigint');
+        return join([uint(value.length), new Uint8Array(BigInt64Array.from(value).buffer)]);
+    }
+    if (inner === 'bool') {
+        if (!Array.isArray(value)) throw new Error('expected array');
+        for (const v of value) if (typeof v !== 'boolean') throw new Error('expected boolean');
+        return join([uint(value.length), Uint8Array.from(value, (v: boolean) => (v ? 1 : 0))]);
+    }
+    return null;
+}
 function join(parts: Uint8Array[]): Uint8Array {
     const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
     let pos = 0;
@@ -87,7 +112,20 @@ class Reader {
     take(n: number): Uint8Array { if (this.pos + n > this.bytes.length) throw new Error('truncated value'); const b = this.bytes.slice(this.pos, this.pos + n); this.pos += n; return b; }
     count(): number { return new DataView(this.take(4).buffer).getUint32(0, true); }
     value(type: string): any {
-        if (type.endsWith('[]')) { const n = this.count(); if (n > MAX_FRAME) throw new Error('array too large'); return Array.from({ length: n }, () => this.value(type.slice(0, -2))); }
+        if (type.endsWith('[]')) {
+            const n = this.count();
+            if (n > MAX_FRAME) throw new Error('array too large');
+            const inner = type.slice(0, -2);
+            // `take` copies into a buffer of its own, so a typed array over it is aligned.
+            if (inner === 'float' && LITTLE) return Array.from(new Float64Array(this.take(n * 8).buffer, 0, n));
+            if (inner === 'int' && LITTLE) return Array.from(new BigInt64Array(this.take(n * 8).buffer, 0, n));
+            if (inner === 'bool') {
+                const bytes = this.take(n);
+                for (const b of bytes) if (b > 1) throw new Error('invalid bool');
+                return Array.from(bytes, b => b === 1);
+            }
+            return Array.from({ length: n }, () => this.value(inner));
+        }
         if (type === 'int') return new DataView(this.take(8).buffer).getBigInt64(0, true);
         if (type === 'float') return new DataView(this.take(8).buffer).getFloat64(0, true);
         if (type === 'bool') { const n = this.take(1)[0]; if (n > 1) throw new Error('invalid bool'); return n === 1; }
@@ -110,7 +148,12 @@ class Reader {
     finish(): void { if (this.pos !== this.bytes.length) throw new Error('trailing payload'); }
 }
 function encode(type: string, value: any, schema: Schema): Uint8Array {
-    if (type.endsWith('[]')) { if (!Array.isArray(value)) throw new Error('expected array'); return join([uint(value.length), ...value.map(v => encode(type.slice(0, -2), v, schema))]); }
+    if (type.endsWith('[]')) {
+        const block = encodeBlock(type.slice(0, -2), value);
+        if (block) return block;
+        if (!Array.isArray(value)) throw new Error('expected array');
+        return join([uint(value.length), ...value.map(v => encode(type.slice(0, -2), v, schema))]);
+    }
     if (type === 'void') { if (value !== undefined) throw new Error('expected void'); return new Uint8Array(); }
     if (type === 'int') { if (typeof value !== 'bigint' || value < -(1n << 63n) || value >= (1n << 63n)) throw new Error('expected signed 64-bit bigint'); const b = new Uint8Array(8); new DataView(b.buffer).setBigInt64(0, value, true); return b; }
     if (type === 'float') { if (typeof value !== 'number') throw new Error('expected number'); const b = new Uint8Array(8); new DataView(b.buffer).setFloat64(0, value, true); return b; }

@@ -515,3 +515,52 @@ orchestrator main() {
     let lines: Vec<&str> = stdout.lines().filter(|l| !l.starts_with("[orchestrate]")).collect();
     assert_eq!(lines, vec!["apple 8", "pear 5", "zucchini 3", "9 1"], "stdout: {stdout}");
 }
+
+#[test]
+fn typescript_landline_carries_arrays() {
+    // Arrays of floats, ints and bools cross as one block each way, nested arrays too, and
+    // a handler may answer a float array with a Float64Array.
+    if !available() {
+        return;
+    }
+    let root = root("arrays");
+    fs::write(
+        root.join("numbers.ts"),
+        r#"
+export default class Numbers {
+    scale(xs: number[], by: number): number[] { return xs.map(x => x * by); }
+    shift(ids: bigint[]): bigint[] { return ids.map(i => i + 1n); }
+    flip(flags: boolean[]): boolean[] { return flags.map(f => !f); }
+    rows(grid: number[][]): number[][] { return grid.map(r => r.map(x => x * 10)); }
+    typed(xs: number[]): number[] { return Float64Array.from(xs, x => x + 0.5) as unknown as number[]; }
+}
+"#,
+    )
+    .unwrap();
+    let src = r#"
+serverlet Numbers via typescript(source: "numbers.ts") {
+    on scale(xs: float[], by: float) -> float[]
+    on shift(ids: int[]) -> int[]
+    on flip(flags: bool[]) -> bool[]
+    on rows(grid: float[][]) -> float[][]
+    on typed(xs: float[]) -> float[]
+}
+orchestrator main() {
+    let n = start Numbers()
+    let xs = n.scale([1.0, -2.5, 0.25], 2.0)
+    print(to_string(xs[0]) + " " + to_string(xs[1]) + " " + to_string(xs[2]))
+    let ids = n.shift([-5, 0, 1000000000000])
+    print(to_string(ids[0]) + " " + to_string(ids[2]) + " " + to_string(length(ids)))
+    let flags = n.flip([true, false, false])
+    print(to_string(flags[0]) + " " + to_string(flags[1]))
+    let grid = n.rows([[1.0, 2.0], [], [3.0]])
+    print(to_string(length(grid)) + " " + to_string(length(grid[1])) + " " + to_string(grid[2][0]))
+    let t = n.typed([1.0, 2.0])
+    print(to_string(t[0]) + " " + to_string(t[1]))
+    stop_orch()
+}
+"#;
+    let stdout = success(&compile(&root, src, false, "bun"));
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.starts_with("[orchestrate]")).collect();
+    assert_eq!(lines, vec!["2 -5 0.5", "-4 1000000000001 3", "false true", "3 0 30", "1.5 2.5"], "stdout: {stdout}");
+}

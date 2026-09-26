@@ -4,6 +4,8 @@
 //
 // Four sweeps, all with warm-up calls first and the tail (p90, p99, max) reported:
 //   payload  — int, a 1,024-character string, and a 1,000-element int[], calls back to back
+//   arrays   — float[] of 1,000, 10,000, and 50,000 elements, echoed back: the cost of
+//              moving a batch across each boundary, both ways
 //   rate     — the int payload paced at 100 Hz and 1 kHz (the caller sleeps between calls,
 //              as a host would) and at 10 kHz (the caller spins), against unpaced
 //   callers  — the int payload with 2, 4, and 8 concurrent callers on one serverlet
@@ -19,6 +21,7 @@ serverlet PyEcho via python(source: "echo.py") {
     on number(n: int) -> int
     on text(s: string) -> string
     on numbers(items: int[]) -> int[]
+    on floats(items: float[]) -> float[]
 }
 
 // @typescript-start
@@ -26,6 +29,7 @@ serverlet TsEcho via typescript(source: "echo.ts") {
     on number(n: int) -> int
     on text(s: string) -> string
     on numbers(items: int[]) -> int[]
+    on floats(items: float[]) -> float[]
 }
 // @typescript-end
 
@@ -33,18 +37,21 @@ serverlet SecretEcho secret {
     on number(n: int) -> int { return n }
     on text(s: string) -> string { return s }
     on numbers(items: int[]) -> int[] { return items }
+    on floats(items: float[]) -> float[] { return items }
 }
 
 serverlet LocalEcho {
     on number(n: int) -> int { return n }
     on text(s: string) -> string { return s }
     on numbers(items: int[]) -> int[] { return items }
+    on floats(items: float[]) -> float[] { return items }
 }
 
 serverlet GuestEcho sandbox(memory_limit: "64mb", timeout: "5s") {
     on number(n: int) -> int { return n }
     on text(s: string) -> string { return s }
     on numbers(items: int[]) -> int[] { return items }
+    on floats(items: float[]) -> float[] { return items }
 }
 
 // The rung between a plain `let` and a serverlet: one mutex, taken once per statement.
@@ -73,6 +80,20 @@ orchestrator main() {
     }
     let texts = [text]
     let arrays = [items]
+    // Float arrays for the array sweep, and how many calls each size gets: fewer for the
+    // larger ones, the first tenth of each discarded as warm-up.
+    let floats_1k = [0.0]
+    remove(floats_1k, 0)
+    for i in range(1000) { append(floats_1k, to_float(i) * 0.5) }
+    let floats_10k = [0.0]
+    remove(floats_10k, 0)
+    for i in range(10000) { append(floats_10k, to_float(i) * 0.5) }
+    let floats_50k = [0.0]
+    remove(floats_50k, 0)
+    for i in range(50000) { append(floats_50k, to_float(i) * 0.5) }
+    let float_arrays = [floats_1k, floats_10k, floats_50k]
+    let float_labels = ["float[1000]", "float[10000]", "float[50000]"]
+    let float_calls = [1100, 330, 110]
 
     let warmup = 200
     let total = 2200
@@ -178,6 +199,65 @@ orchestrator main() {
         let r = ts.numbers(payload)
         let elapsed = clock_micros() - began
         if i >= warmup { print("typescript,int[1000],unpaced,{elapsed}") }
+    }
+    // @typescript-end
+
+    // ---- array sweep: float[] of three sizes, echoed back ----
+    for s in range(3) {
+        let calls = float_calls[s]
+        let label = float_labels[s]
+        for i in range(calls) {
+            let payload = float_arrays[s]
+            let began = clock_micros()
+            let r = local.floats(payload)
+            let elapsed = clock_micros() - began
+            if i >= calls / 10 { print("in-process,{label},unpaced,{elapsed}") }
+        }
+    }
+    for s in range(3) {
+        let calls = float_calls[s]
+        let label = float_labels[s]
+        for i in range(calls) {
+            let payload = float_arrays[s]
+            let began = clock_micros()
+            let r = guest.floats(payload)
+            let elapsed = clock_micros() - began
+            if i >= calls / 10 { print("sandbox,{label},unpaced,{elapsed}") }
+        }
+    }
+    for s in range(3) {
+        let calls = float_calls[s]
+        let label = float_labels[s]
+        for i in range(calls) {
+            let payload = float_arrays[s]
+            let began = clock_micros()
+            let r = child.floats(payload)
+            let elapsed = clock_micros() - began
+            if i >= calls / 10 { print("secret,{label},unpaced,{elapsed}") }
+        }
+    }
+    for s in range(3) {
+        let calls = float_calls[s]
+        let label = float_labels[s]
+        for i in range(calls) {
+            let payload = float_arrays[s]
+            let began = clock_micros()
+            let r = python.floats(payload)
+            let elapsed = clock_micros() - began
+            if i >= calls / 10 { print("python,{label},unpaced,{elapsed}") }
+        }
+    }
+    // @typescript-start
+    for s in range(3) {
+        let calls = float_calls[s]
+        let label = float_labels[s]
+        for i in range(calls) {
+            let payload = float_arrays[s]
+            let began = clock_micros()
+            let r = ts.floats(payload)
+            let elapsed = clock_micros() - began
+            if i >= calls / 10 { print("typescript,{label},unpaced,{elapsed}") }
+        }
     }
     // @typescript-end
 

@@ -93,7 +93,9 @@ in library mode, reach `Host::log`; stdout is reserved for protocol frames.
 
 The wire mapping is `int` → `bigint`, `float` → `number`, `bool` → `boolean`, `string` →
 `string`, arrays → `T[]`, and same-file `.orch` structs → matching TypeScript object
-shapes. Values are checked at the boundary. Optional/result/function types are not wire
+shapes. Values are checked at the boundary. An array of floats, ints, or bools crosses as
+one block copy rather than an element at a time, and a handler may return a
+`Float64Array` for `float[]` or a `BigInt64Array` for `int[]`. Optional/result/function types are not wire
 types. Like Python landlines, TypeScript landlines run as the host OS user and are not a
 sandbox. They are also excluded from deterministic library mode.
 

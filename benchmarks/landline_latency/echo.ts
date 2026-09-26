@@ -1,5 +1,5 @@
 // The same echo handlers as echo.py, for the TypeScript landline rung: `int` crosses as
-// `bigint`, `string` as `string`, and `int[]` as `bigint[]`.
+// `bigint`, `string` as `string`, `int[]` as `bigint[]`, and `float[]` as `number[]`.
 export default class TsEcho {
     number(n: bigint): bigint {
         return n;
@@ -8,6 +8,9 @@ export default class TsEcho {
         return s;
     }
     numbers(items: bigint[]): bigint[] {
+        return items;
+    }
+    floats(items: number[]): number[] {
         return items;
     }
 }

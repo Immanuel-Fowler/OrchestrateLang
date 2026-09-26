@@ -194,6 +194,22 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   write, which is why this release is a minor one.
 
 ### Fixed
+- **An array crosses a Python or TypeScript landline as one block.** Both SDKs encoded and
+  decoded arrays an element at a time — a `struct.pack` and a slice per float in Python, a
+  fresh buffer and `DataView` per element in TypeScript — so the boundary the reference
+  recommends for batched work cost hundreds of nanoseconds per number. A `float[]`,
+  `int[]`, or `bool[]` now moves as one copy (`array.array` in Python, typed arrays in
+  TypeScript), with the same bytes on the wire, the same exact-type checks, and a
+  byte swap on a big-endian machine. The generated Rust side reads and writes the block
+  in one piece too. Boundary ladder, `float[50000]` echoed, p50 with this change against
+  fb96b8b, same machine (load ~5): Python 30,986 → 2,161 µs, TypeScript 23,790 →
+  1,881 µs; `int[1000]`: Python 611 → 62 µs, TypeScript 336 → 96 µs; a secret child's
+  `float[50000]` 437 → 303 µs. A Python handler may annotate an array
+  `NDArray[numpy.float64]` (or `int64`, `bool_`) to receive a writable numpy array with no
+  per-element work, and may return one; a TypeScript handler may return a `Float64Array`
+  or `BigInt64Array`. Tests: `python_array_blocks_match_the_element_path`,
+  `python_landline_carries_arrays`, `typescript_landline_carries_arrays`; the ladder has an
+  array sweep at 1,000, 10,000, and 50,000 floats on every boundary.
 - **A Python landline's dataclass is checked against its struct, field by field.** The
   handshake named a struct and nothing else, so a dataclass with the struct's fields in
   another order was accepted and each value was decoded into the wrong field: a handler

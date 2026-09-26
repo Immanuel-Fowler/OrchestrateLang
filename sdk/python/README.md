@@ -38,8 +38,20 @@ exposed. A class is instantiated once per process after the handshake.
 | `bool` | `bool` |
 | `string` | `str` (UTF-8) |
 | `T[]` | `list[T]` |
+| `float[]`, `int[]`, `bool[]` | also `NDArray[numpy.float64]`, `NDArray[numpy.int64]`, `NDArray[numpy.bool_]` |
+| `map<K, V>` | `dict[K, V]` |
 | same-file struct | same-named `@dataclass`, the same fields in the same order |
 | void return | `None` |
+
+An array of floats, ints, or bools crosses as one block copy rather than an element at a
+time. A `list[float]` parameter arrives as a Python list, which costs one Python object per
+element to build (about 10–15 ns each); a parameter annotated
+`numpy.typing.NDArray[numpy.float64]` arrives as a writable numpy array, with no per-element
+work at all, and is what a numerical handler wants. Either kind of handler may return a
+list or a one-dimensional numpy array of the matching dtype. Elements are checked by exact
+type either way: an `int` in a `list[float]`, or an `int64` array for a `float[]`, is an
+error, not a conversion. numpy is optional; nothing imports it unless a handler asks for
+an array.
 
 Dataclasses and lists can nest. Recursive dataclasses, optional/union types,
 callbacks, and asynchronous handlers are unsupported. Dataclass fields must be
