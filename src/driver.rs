@@ -1131,9 +1131,52 @@ pub fn run_check(input_file: &str, library: bool) -> Result<(), String> {
 
     let module_stmts: Vec<&[ast::Stmt]> = modules.iter().map(|(_, stmts)| stmts.as_slice()).collect();
     library_rules(input_file, &ast, &module_stmts, library)?;
+    if library {
+        let files = std::iter::once((input_file.to_string(), ast.as_slice()))
+            .chain(modules.iter().map(|(path, stmts)| (path.join("module.orch").display().to_string(), stmts.as_slice())));
+        for (file, stmts) in files {
+            for warning in raw_identifier_warnings(&file, stmts) {
+                eprintln!("[orchestrate] warning: {}", warning);
+            }
+        }
+    }
 
     println!("[orchestrate] {} — no type errors found", input_file);
     Ok(())
+}
+
+/// A struct, field, enum, or variant named with a Rust keyword compiles, escaped as
+/// `r#name`, and a library's Rust host then has to write it that way. Nothing is wrong, but
+/// the host author meets Rust's keyword list in a type they did not write in Rust, so
+/// `check --lib` says so while the name is still cheap to change.
+fn raw_identifier_warnings(file: &str, stmts: &[ast::Stmt]) -> Vec<String> {
+    // A weak keyword is an ordinary identifier where a field or type name goes, so a host
+    // writes `union` whether the generated code spelled it `r#union` or not.
+    const WEAK: &[&str] = &["macro_rules", "union", "safe", "raw"];
+    let raw = |name: &str| codegen::core::RUST_KEYWORDS.contains(&name) && !WEAK.contains(&name);
+    let mut warnings = Vec::new();
+    let mut warn = |stmt: &ast::Stmt, what: String, name: &str| warnings.push(format!(
+        "{}:line {}, col {}: {} reaches a Rust host as `r#{}`, since `{}` is a Rust keyword; the host must write `r#{}`, or rename it",
+        file, stmt.span.line, stmt.span.col, what, name, name, name
+    ));
+    for stmt in stmts {
+        match &stmt.node {
+            ast::StmtNode::StructDef { name, fields } => {
+                if raw(name) { warn(stmt, format!("struct '{}'", name), name); }
+                for (field, _) in fields.iter().filter(|(field, _)| raw(field)) {
+                    warn(stmt, format!("struct '{}' field '{}'", name, field), field);
+                }
+            }
+            ast::StmtNode::EnumDef { name, variants } => {
+                if raw(name) { warn(stmt, format!("enum '{}'", name), name); }
+                for variant in variants.iter().filter(|v| raw(&v.name)) {
+                    warn(stmt, format!("enum '{}' variant '{}'", name, variant.name), &variant.name);
+                }
+            }
+            _ => {}
+        }
+    }
+    warnings
 }
 
 /// Each imported module's own declarations, checked in the module's own scope as the

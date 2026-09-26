@@ -237,6 +237,18 @@ The generated method becomes `tick(dt, input: Input) -> Result<Output, String>`,
 `tick_blocking(&runtime, dt, input)`. A typed hook must be the only `on_tick` in the
 program.
 
+Every struct and enum becomes a public Rust type of the same name, with fields and
+variants of the same names. A name that is a Rust keyword is escaped, so the host writes
+it as a raw identifier: `struct Settings { box: float }` is `Settings { r#box: 2.0 }` to
+the host. The names this applies to, which OrchestrateLang does not reserve itself, are
+`as`, `async`, `await`, `const`, `dyn`, `extern`, `impl`, `loop`, `mod`, `move`, `mut`,
+`pub`, `ref`, `static`, `trait`, `type`, `unsafe`, `where`, Rust's reserved words
+(`abstract`, `become`, `box`, `do`, `final`, `macro`, `override`, `priv`, `typeof`,
+`unsized`, `virtual`, `yield`), and `gen`, reserved from Rust 2024. `check --lib` warns
+about each one, naming it, while it is still cheap to rename. Python and TypeScript see the name as written: TypeScript has no reserved
+property names, and a Python dataclass writes a field named for a Python keyword with a
+trailing underscore (`lambda_` for `lambda`).
+
 Calls to a Python or TypeScript landline handler named `tick` are sent as a TICK message
 that also carries the tick number and `dt`. Python reads them from `self.tick_number` and
 `self.tick_dt`; TypeScript reads `context.tickNumber` and `context.tickDt`. Put arrays in
@@ -330,7 +342,7 @@ Calls in constructors or outside an active handler are rejected.
 
 Host functions use the existing binary wire types: primitives, arrays, and same-file
 structs. Python uses matching dataclasses; TypeScript uses matching object shapes. Their
-field order must match the OrchestrateLang struct. Host names must not begin with `_` or
+field order must match the OrchestrateLang struct; for Python the handshake checks it. Host names must not begin with `_` or
 produce colliding `group_function` Rust method names.
 
 OrchestrateLang code can also call `world.record(...)` directly. A returned host

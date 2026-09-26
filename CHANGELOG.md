@@ -10,6 +10,12 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 ## [Unreleased]
 
 ### Added
+- **`check --lib` warns of a name a Rust host must write raw.** A struct, field, enum, or
+  variant named with a Rust keyword — `box`, `type`, `move`, `ref`, and the rest — compiles,
+  escaped, and the host then has to write `Settings { r#box: 2.0 }`. Nothing is wrong,
+  but the host author meets Rust's keyword list in a type written in OrchestrateLang, so
+  `check --lib` now names each such name and says so; `docs/library-mode.md` lists them.
+  Test: `check_lib_warns_of_names_a_host_writes_raw`.
 - **A landline can be more than one file.** A Python landline's source was copied into
   the build alone, so `import helper` failed at run time with `ModuleNotFoundError`. The
   build now follows a Python source's imports to the local modules and packages beside it,

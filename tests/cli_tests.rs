@@ -37,3 +37,23 @@ fn help_into_a_pipe_that_closes_does_not_panic() {
     child.wait().unwrap();
     assert!(!stderr.contains("panicked"), "{stderr}");
 }
+
+/// A struct field named with a Rust keyword compiles, escaped as `r#box`, and a library's
+/// Rust host has to write it that way; `check --lib` warns, naming it, and still passes.
+/// A standalone program has no host, and says nothing.
+#[test]
+fn check_lib_warns_of_names_a_host_writes_raw() {
+    let dir = std::env::temp_dir().join(format!("orch_cli_raw_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("main.orch");
+    std::fs::write(&file, "struct Settings { box: float, count: int }\nenum Mode { Fast, Slow }\nhost app { fn note(message: string) }\non_tick(dt: float, input: Settings) -> Settings {\n    app.note(\"tick\")\n    return input\n}\norchestrator main() {}\n").unwrap();
+    let output = orchestrate().arg("check").arg("--lib").arg(&file).output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("struct 'Settings' field 'box' reaches a Rust host as `r#box`"), "{stderr}");
+    assert_eq!(stderr.matches("warning").count(), 1, "{stderr}");
+    std::fs::write(&file, "struct Settings { box: float }\norchestrator main() {\n    let s = Settings { box: 1.0 }\n    print(to_string(s.box))\n}\n").unwrap();
+    let output = orchestrate().arg("check").arg(&file).output().unwrap();
+    assert!(output.status.success() && !String::from_utf8_lossy(&output.stderr).contains("warning"));
+    let _ = std::fs::remove_dir_all(&dir);
+}

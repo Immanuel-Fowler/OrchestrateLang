@@ -778,7 +778,7 @@ fn __wire_from_bytes<T: OrchWire + Default>(bytes: &[u8]) -> T {
 /// Every keyword of Rust editions 2021 and 2024 — strict, reserved, and weak — that an
 /// OrchestrateLang name could collide with. `self`, `Self`, `super`, and `crate` cannot
 /// be raw identifiers at all; the lexer refuses them as names, so they are not here.
-const RUST_KEYWORDS: &[&str] = &[
+pub(crate) const RUST_KEYWORDS: &[&str] = &[
     // strict
     "as", "async", "await", "break", "const", "continue", "dyn", "else", "enum", "extern",
     "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut",
