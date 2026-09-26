@@ -187,6 +187,12 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   write, which is why this release is a minor one.
 
 ### Fixed
+- **A struct or enum with a one-letter name can be written as a type.** Outside a generic
+  declaration, any single capital letter in a type was read as a type parameter, so
+  `fn get(p: P) -> int { return p.a }` was refused with `field access '.a' on non-struct
+  type P` although the file declares `struct P`. A name the file declares as a struct or
+  enum is now that type; a function's own `<T>` still wins inside it. Test:
+  `tests/programs/one_letter_struct.orch`.
 - **`orchestrate run` becomes the program it built, on Unix**, so a signal sent to `run`
   reaches the program. `run` started the program as a child and waited: killed by a
   supervisor's SIGTERM or a timeout, it exited and left the program running alone, still

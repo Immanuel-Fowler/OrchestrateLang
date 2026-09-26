@@ -35,11 +35,18 @@ pub struct Parser {
     pos: usize,
     pub errors: Vec<String>,
     type_param_ctx: std::collections::HashSet<String>,
+    /// Every struct and enum the file declares, so a one-letter name like `P` in a type is
+    /// that struct rather than a type parameter.
+    declared_types: std::collections::HashSet<String>,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Parser { tokens, pos: 0, errors: Vec::new(), type_param_ctx: std::collections::HashSet::new() }
+        let declared_types = tokens.windows(2)
+            .filter(|pair| matches!(pair[0].kind, TokenKind::Struct | TokenKind::Enum))
+            .filter_map(|pair| match &pair[1].kind { TokenKind::Identifier(name) => Some(name.clone()), _ => None })
+            .collect();
+        Parser { tokens, pos: 0, errors: Vec::new(), type_param_ctx: std::collections::HashSet::new(), declared_types }
     }
 
     fn peek(&self) -> &Token {
@@ -943,10 +950,11 @@ impl Parser {
                 }
                 s => {
                     // Check the active generic declaration context first, then fall back to
-                    // single-uppercase heuristic for backward compatibility
+                    // single-uppercase heuristic for backward compatibility, unless the file
+                    // declares a struct or enum by that name.
                     if self.type_param_ctx.contains(s) {
                         Ok(Type::TypeParam(s.to_string()))
-                    } else if s.len() == 1 && s.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                    } else if s.len() == 1 && s.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) && !self.declared_types.contains(s) {
                         Ok(Type::TypeParam(s.to_string()))
                     } else {
                         Ok(Type::Named(s.to_string()))

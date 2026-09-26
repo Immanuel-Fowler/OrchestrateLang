@@ -1,0 +1,20 @@
+// A struct or enum may have a one-letter name. Written as a type, `P` is the struct the
+// file declares, not a type parameter; `T` below is one because `pick` declares it.
+
+struct P { a: int, b: float }
+enum D { North, South }
+
+fn get(p: P) -> int { return p.a }
+fn flip(d: D) -> D {
+    if d == D::North { return D::South }
+    return D::North
+}
+fn pick<T>(x: T, y: T, first: bool) -> T { if first { return x } return y }
+
+orchestrator main() {
+    let p: P = P { a: 4, b: 0.5 }
+    print(to_string(get(p)))
+    print(to_string(flip(D::North) == D::South))
+    print(to_string(pick(1, 2, false)))
+    stop_orch()
+}
