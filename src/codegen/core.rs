@@ -848,6 +848,10 @@ pub struct Codegen {
     pub foreign_handle_params: std::collections::HashMap<String, Vec<bool>>,
     /// Struct definitions in the file being generated, used by the serverlet wire codec.
     pub struct_defs: Vec<(String, Vec<(String, Type)>)>,
+    /// Every struct in the program, whichever file declares it. A module's own
+    /// `struct_defs` has only its file's; a Python handshake spells out any struct its
+    /// handlers or granted host functions use, including the entry file's.
+    pub program_structs: Vec<(String, Vec<(String, Type)>)>,
     /// Each enum's payload types, by variant, for the derives that depend on them.
     pub enum_defs: Vec<(String, Vec<(String, Type)>)>,
     /// Each enum's variants, for the crates that define their own copy: a sandbox guest
@@ -931,6 +935,7 @@ impl Codegen {
             foreign_handle_params: std::collections::HashMap::new(),
             sandbox_programs: Vec::new(),
             struct_defs: Vec::new(),
+            program_structs: Vec::new(),
             enum_defs: Vec::new(),
             enum_variants: Vec::new(),
             sandbox_codecs_emitted: false,

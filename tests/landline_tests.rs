@@ -355,6 +355,90 @@ orchestrator main() {
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "12");
 }
 
+/// A declaration names the handlers a program calls. The source may define more, in any
+/// order; a declared handler whose signature differs, or that the source lacks, is refused
+/// at startup with its name.
+#[test]
+fn python_landline_declares_a_subset_in_any_order() {
+    let source = r#"
+from orchestratelang import landline
+class Echo(landline.Serverlet):
+    def describe(self) -> str: return "echo"
+    def crunch(self, xs: list[float]) -> list[float]: return [x * 2.0 for x in xs]
+    def count(self) -> int: return 3
+landline.serve(Echo)
+"#;
+    let (stdout, stderr) = run(&directory("subset"), r#"
+serverlet Echo via python(source: "impl.py") {
+    on count() -> int
+    on crunch(xs: float[]) -> float[]
+}
+orchestrator main() {
+    let e = start Echo()
+    let r = e.crunch([1.0, 2.5])
+    print(to_string(r[0]) + " " + to_string(r[1]) + " " + to_string(e.count()))
+    stop_orch()
+}
+"#, source);
+    assert_eq!(stdout, "2 5 3", "{}", stderr);
+
+    let (stdout, stderr) = run(&directory("subset_mismatch"), r#"
+serverlet Echo via python(source: "impl.py") { on crunch(xs: int[]) -> float[] }
+orchestrator main() {
+    let e = start Echo()
+    print(to_string(length(e.crunch([1, 2]))))
+    stop_orch()
+}
+"#, source);
+    assert_eq!(stdout, "0");
+    assert!(stderr.contains("interface mismatch: handler 'crunch' is declared as crunch(int[])->float[] but the source defines crunch(float[])->float[]"), "{}", stderr);
+}
+
+/// A dataclass is matched to a struct by its fields, not only its name: one whose fields
+/// are in another order is refused at startup instead of decoded into the wrong fields. A
+/// field named for a Python keyword is written with a trailing underscore.
+#[test]
+fn python_landline_checks_struct_fields() {
+    let program = r#"
+struct Pt { a: float, b: int, lambda: int }
+serverlet Echo via python(source: "impl.py") { on bump(p: Pt) -> Pt }
+orchestrator main() {
+    let e = start Echo()
+    let q = e.bump(Pt { a: 1.5, b: 7, lambda: 2 })
+    print(to_string(q.a) + " " + to_string(q.b) + " " + to_string(q.lambda))
+    stop_orch()
+}
+"#;
+    let (stdout, stderr) = run(&directory("struct_fields"), program, r#"
+from dataclasses import dataclass
+from orchestratelang import landline
+@dataclass
+class Pt:
+    a: float
+    b: int
+    lambda_: int
+class Echo(landline.Serverlet):
+    def bump(self, p: Pt) -> Pt: return Pt(a=p.a, b=p.b + 1, lambda_=p.lambda_ * 10)
+landline.serve(Echo)
+"#);
+    assert_eq!(stdout, "1.5 8 20", "{}", stderr);
+
+    let (stdout, stderr) = run(&directory("struct_fields_order"), program, r#"
+from dataclasses import dataclass
+from orchestratelang import landline
+@dataclass
+class Pt:
+    b: int
+    a: float
+    lambda_: int
+class Echo(landline.Serverlet):
+    def bump(self, p: Pt) -> Pt: return Pt(b=p.b + 1, a=p.a, lambda_=p.lambda_)
+landline.serve(Echo)
+"#);
+    assert_eq!(stdout, "0 0 0", "{}", stderr);
+    assert!(stderr.contains("but the source defines bump(Pt{b:int,a:float,lambda:int})"), "{}", stderr);
+}
+
 #[test]
 fn python_landline_call_keeps_the_callers_arguments() {
     // A string, an array, and a struct are each used again after the call that

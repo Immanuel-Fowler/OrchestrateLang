@@ -324,12 +324,17 @@ are HELLO=1, READY=2, CALL=3, REPLY=4, ERROR=5, HOST_CALL=6, HOST_REPLY=7,
 BYE=8, TICK=9.
 
 For secret serverlets and implemented Python/TypeScript landlines, HELLO uses call ID 0 and encodes an i64 version followed by
-an array of signature strings such as `echo(int)->int`, in declaration order.
-READY has call ID 0 and an empty payload. CALL starts with an i64 handler index
-(zero-based), followed by arguments in parameter order. REPLY contains the return
+an array of signature strings such as `echo(int)->int`, in the order the foreign side
+defines them. The orchestrator finds each declared handler in that list by name, and
+refuses one that is missing or whose signature differs. READY has call ID 0 and an empty
+payload. CALL starts with an i64 handler index — the handler's zero-based place in the
+HELLO list — followed by arguments in parameter order. REPLY contains the return
 value (empty for void); ERROR contains a string. Both echo the CALL ID.
-BYE uses call ID 0 and an empty payload. Struct signatures currently identify types
-by name; this handshake does not compare the fields of same-named structs.
+BYE uses call ID 0 and an empty payload. A Python signature spells out each struct with
+its fields, `shift(Point{x:int,y:int})->Point{x:int,y:int}`, so a dataclass whose fields
+differ from the struct's is refused rather than decoded into the wrong fields; READY's
+granted signatures spell structs the same way. A TypeScript landline's adapter is
+generated from the declaration, so its signatures name structs plainly.
 
 | Kind | Direction | Payload |
 |---|---|---|

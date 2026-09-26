@@ -506,6 +506,10 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
     let mut all_sandbox_programs: Vec<(String, String)> = Vec::new();
 
     let module_event_stmts = modules_data.iter().flat_map(|(_, stmts, _)| stmts.clone()).collect::<Vec<_>>();
+    let program_structs = ast.iter().chain(module_event_stmts.iter()).filter_map(|s| match &s.node {
+        ast::StmtNode::StructDef { name, fields } => Some((name.clone(), fields.clone())),
+        _ => None,
+    }).collect::<Vec<_>>();
     for ((local_name, module_stmts, module_path), bounds) in modules_data.into_iter().zip(module_bounds) {
         let mut generator = codegen::Codegen::new(all_tasks.clone());
         generator.generic_bounds = bounds;
@@ -513,6 +517,7 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
         generator.library = library.is_some();
         generator.serverlet_state_types = type_checker.serverlet_state.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         generator.host_functions = host_functions.clone();
+        generator.program_structs = program_structs.clone();
         // The module's own code calls its foreign functions by bare name.
         let prefix = format!("{}::", local_name);
         generator.foreign_handle_params = handle_params.iter()

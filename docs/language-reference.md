@@ -2136,8 +2136,14 @@ with `via`. The compiler rejects unsupported wire types and duplicate handlers.
 
 Python 3.10+ is required (`python3`, or the executable specified by `ORCH_PYTHON`).
 Implement annotated synchronous methods using the bundled `orchestratelang.landline`
-SDK. The startup handshake checks protocol version and ordered handler signatures.
-The SDK supports primitive values, lists, and dataclasses matching same-file structs.
+SDK. The startup handshake checks the protocol version and finds each declared handler by
+name, so the source may define methods the program does not call, in any order; a
+declared handler the source lacks, or defines with other types, is refused at startup,
+named. The SDK supports primitive values, lists, dicts, and dataclasses matching
+same-file structs. A dataclass must have the struct's fields in the struct's order, and
+the handshake checks that too: one whose fields differ is refused rather than decoded
+into the wrong fields. A field named for a Python keyword is written with a trailing
+underscore, so the struct field `lambda` is the dataclass field `lambda_`.
 
 Exceptions log errors and return default values while preserving process state.
 A process failure during a call invokes `on_crash`, returns a default without replaying

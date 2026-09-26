@@ -13,20 +13,25 @@ impl Codegen {
         if let Some(reason) = super::stmt::handler_wire_unsupported_reason(handlers, &self.struct_defs) {
             return format!("compile_error!({:?});", reason);
         }
+        // Python matches a struct to a dataclass by name, so its signatures spell out each
+        // struct's fields: a dataclass whose fields differ is refused at startup rather than
+        // decoded into the wrong fields. TypeScript's adapter is generated from this
+        // declaration, so its structs cannot differ and it keeps the plain names.
+        let python = config.runtime != "typescript";
         let signatures = handlers
             .iter()
             .map(|h| {
                 let params = h
                     .params
                     .iter()
-                    .map(|p| p.ty.display_name())
+                    .map(|p| self.handshake_type(&p.ty, python))
                     .collect::<Vec<_>>()
                     .join(",");
                 // A `result<T>` handler answers with a `T` or fails: in Python or
                 // TypeScript, failing is raising, so the implementation declares `T`.
                 format!(
                     "{:?}.to_string()",
-                    format!("{}({})->{}", h.name, params, super::stmt::answered_type(&h.return_type).display_name())
+                    format!("{}({})->{}", h.name, params, self.handshake_type(super::stmt::answered_type(&h.return_type), python))
                 )
             })
             .collect::<Vec<_>>()
@@ -86,7 +91,7 @@ impl Codegen {
                 __next_call = __next_call.wrapping_add(1);
                 let mut __payload = Vec::new();
                 {header}
-                {id}i64.wire_encode(&mut __payload);
+                __remote[{id}].wire_encode(&mut __payload);
                 {encode}
                 let __result: Result<_, String> = async {{
                     __secret_write_frame(&mut __cin, {kind}, __next_call, &__payload).await.map_err(|e| e.to_string())?;
@@ -165,10 +170,10 @@ impl Codegen {
                         handler
                             .params
                             .iter()
-                            .map(|p| p.ty.display_name())
+                            .map(|p| self.handshake_type(&p.ty, python))
                             .collect::<Vec<_>>()
                             .join(","),
-                        handler.return_type.display_name()
+                        self.handshake_type(&handler.return_type, python)
                     )
                 ));
             }
@@ -207,5 +212,27 @@ impl Codegen {
                 .replace("rx.recv().await", "crate::__orch_recv(&mut rx).await");
         }
         code
+    }
+
+    fn handshake_type(&self, ty: &Type, python: bool) -> String {
+        if python { self.landline_type_name(ty) } else { ty.display_name() }
+    }
+
+    /// A type as a Python landline's handshake names it: a struct with its fields, in
+    /// order, so `P{a:float,b:int}`, and any struct inside it the same way.
+    pub(super) fn landline_type_name(&self, ty: &Type) -> String {
+        match ty {
+            Type::Array(inner, _) => format!("{}[]", self.landline_type_name(inner)),
+            Type::Map(key, value) => format!("map<{}, {}>", self.landline_type_name(key), self.landline_type_name(value)),
+            Type::Named(name) => match self.struct_defs.iter().chain(self.program_structs.iter()).find(|(n, _)| n == name) {
+                Some((_, fields)) => format!(
+                    "{}{{{}}}",
+                    name,
+                    fields.iter().map(|(field, ty)| format!("{}:{}", field, self.landline_type_name(ty))).collect::<Vec<_>>().join(",")
+                ),
+                None => name.clone(),
+            },
+            _ => ty.display_name(),
+        }
     }
 }

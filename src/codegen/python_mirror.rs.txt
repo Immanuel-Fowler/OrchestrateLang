@@ -26,19 +26,35 @@ pub fn start_@NAME@() -> @NAME@Client {
                 let mut pos = 0;
                 let version = i64::wire_decode(&hello.payload, &mut pos).ok_or("invalid protocol version")?;
                 let signatures = Vec::<String>::wire_decode(&hello.payload, &mut pos).ok_or("invalid handler signatures")?;
-                let expected: Vec<String> = vec![@SIGNATURES@];
-                if version != ORCH_WIRE_VERSION || signatures != expected || pos != hello.payload.len() {
-                    return Err(format!("interface mismatch: expected protocol {} {:?}, got protocol {} {:?}", ORCH_WIRE_VERSION, expected, version, signatures));
+                if version != ORCH_WIRE_VERSION || pos != hello.payload.len() {
+                    return Err(format!("protocol mismatch: this program speaks protocol {}, the landline's SDK sent protocol {}", ORCH_WIRE_VERSION, version));
                 }
-                __secret_write_frame(&mut __cin, ORCH_KIND_READY, 0, &[]).await.map_err(|e| e.to_string())
+                // Each declared handler is found by name, so the source may define methods the
+                // program does not call, in any order. A call names the handler by its place
+                // in the source's list.
+                let expected: Vec<String> = vec![@SIGNATURES@];
+                let mut __remote = Vec::with_capacity(expected.len());
+                for want in &expected {
+                    let name = want.split('(').next().unwrap_or(want);
+                    match signatures.iter().position(|got| got.split('(').next() == Some(name)) {
+                        Some(index) if signatures[index] == *want => __remote.push(index as i64),
+                        Some(index) => return Err(format!("interface mismatch: handler '{}' is declared as {} but the source defines {}", name, want, signatures[index])),
+                        None => return Err(format!(
+                            "interface mismatch: handler '{}' is declared as {} but the source defines no method '{}'; it defines {}",
+                            name, want, name, if signatures.is_empty() { "none".to_string() } else { signatures.join(", ") }
+                        )),
+                    }
+                }
+                __secret_write_frame(&mut __cin, ORCH_KIND_READY, 0, &[]).await.map_err(|e| e.to_string())?;
+                Ok::<Vec<i64>, String>(__remote)
             };
                 match tokio::time::timeout(std::time::Duration::from_secs(10), handshake).await {
-                    Ok(Ok(())) => Ok((__child, __cin, __cout)),
+                    Ok(Ok(__remote)) => Ok((__child, __cin, __cout, __remote)),
                     Ok(Err(error)) => { let _ = __child.kill().await; Err(error) }
                     Err(_) => { let _ = __child.kill().await; Err("no handshake within 10 s".to_string()) }
                 }
             }.await;
-            let (mut __child, mut __cin, mut __cout) = match __startup {
+            let (mut __child, mut __cin, mut __cout, __remote) = match __startup {
                 Ok(started) => { __failed_starts = 0; __orch_child("@NAME@", started.0.id()); started }
                 Err(__error) => {
                     // Not closed for good: calls fail — a `result` handler answers `err`, any

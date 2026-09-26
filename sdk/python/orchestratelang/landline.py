@@ -1,6 +1,7 @@
 """Protocol v1 serverlets. Requires Python 3.10+; no third-party dependencies."""
 import dataclasses
 import inspect
+import keyword
 import os
 import struct
 import sys
@@ -9,7 +10,19 @@ from types import SimpleNamespace
 
 
 class Serverlet:
-    """Implement annotated public methods in the same order as the .orch interface."""
+    """Implement an annotated public method for each handler the .orch file declares.
+
+    Methods are matched by name, so their order does not matter, and a method the program
+    does not declare is not called.
+    """
+
+
+def _field_name(name):
+    """The .orch name of a dataclass field: one named for a Python keyword is written with
+    a trailing underscore, so `lambda_` is the field `lambda`."""
+    if name.endswith("_") and keyword.iskeyword(name[:-1]):
+        return name[:-1]
+    return name
 
 
 def _type_name(ty, seen=()):
@@ -29,11 +42,15 @@ def _type_name(ty, seen=()):
     if isinstance(ty, type) and dataclasses.is_dataclass(ty):
         if ty in seen:
             raise TypeError("recursive dataclasses are unsupported")
-        for field_type in typing.get_type_hints(ty).values():
-            if field_type is type(None):
+        hints = typing.get_type_hints(ty)
+        fields = []
+        for field in dataclasses.fields(ty):
+            if hints[field.name] is type(None):
                 raise TypeError("void struct fields are unsupported")
-            _type_name(field_type, seen + (ty,))
-        return ty.__name__
+            fields.append(f"{_field_name(field.name)}:{_type_name(hints[field.name], seen + (ty,))}")
+        # The fields go in the name, so the handshake refuses a dataclass whose fields are
+        # not the struct's, in its order, instead of decoding one into the other.
+        return f"{ty.__name__}{{{','.join(fields)}}}"
     raise TypeError(f"unsupported wire type: {ty!r}")
 
 
@@ -147,8 +164,9 @@ def serve(serverlet_class):
     """Serve one instance until BYE or EOF; exceptions become ERROR replies.
 
     Public methods require complete annotations and positional parameters. Private
-    helper methods are ignored. Dataclasses map to same-named .orch structs with
-    fields in declaration order. stdout is reserved; Python print goes to stderr.
+    helper methods are ignored. Dataclasses map to same-named .orch structs with the
+    same fields in the same order, which the handshake checks. stdout is reserved;
+    Python print goes to stderr.
     """
     reader, writer = sys.stdin.buffer, sys.__stdout__.buffer
     sys.stdout = sys.stderr
@@ -227,12 +245,12 @@ def serve(serverlet_class):
 
 
 def _split_types(text):
-    """Types in a signature, separated by commas outside any <...>."""
+    """Types in a signature, separated by commas outside any <...> or {...}."""
     types, depth, start = [], 0, 0
     for i, ch in enumerate(text):
-        if ch == "<":
+        if ch in "<{":
             depth += 1
-        elif ch == ">":
+        elif ch in ">}":
             depth -= 1
         elif ch == "," and depth == 0:
             types.append(text[start:i])
@@ -251,8 +269,12 @@ def _host_type(name, namespace):
     primitives = {"int": int, "float": float, "bool": bool, "string": str, "void": type(None)}
     if name in primitives:
         return primitives[name]
-    ty = namespace.get(name)
-    _type_name(ty)
+    struct = name.split("{", 1)[0]
+    ty = namespace.get(struct)
+    if not (isinstance(ty, type) and dataclasses.is_dataclass(ty)):
+        raise TypeError(f"a host function uses the struct {name}, and this file has no dataclass {struct}")
+    if _type_name(ty) != name:
+        raise TypeError(f"a host function uses the struct {name}, and this file's dataclass is {_type_name(ty)}")
     return ty
 
 

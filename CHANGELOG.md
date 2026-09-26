@@ -143,6 +143,13 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   heartbeat window, and the whole fleet it served went link-lost while it waited.
 
 ### Changed
+- **A landline declaration names the handlers the program calls, in any order.** The
+  handshake required the source's public methods to be exactly the declared handlers, in
+  the same order, so a Python class with one method more, or two in another order, failed
+  to start and every call answered its default. Each declared handler is now found by
+  name; the source may define more. A handler the source lacks or defines with other
+  types is refused, and the error names it and says what the source defines. Test:
+  `python_landline_declares_a_subset_in_any_order`.
 - **A standalone build puts its child processes in `<binary>.children/`.** Secret
   serverlet binaries, landline sources, and TypeScript executables were copied beside the
   binary under names that carried only the serverlet's name, so two programs built into
@@ -187,6 +194,14 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   write, which is why this release is a minor one.
 
 ### Fixed
+- **A Python landline's dataclass is checked against its struct, field by field.** The
+  handshake named a struct and nothing else, so a dataclass with the struct's fields in
+  another order was accepted and each value was decoded into the wrong field: a handler
+  that added one to `b` turned `Pt { a: 1.5, b: 7 }` into `a=1.5000000000000002 b=7`.
+  Python signatures now spell out each struct's fields, `Pt{a:float,b:int}`, for handlers
+  and for granted host functions, and a mismatch is refused at startup naming both
+  shapes. A field named for a Python keyword is written with a trailing underscore
+  (`lambda_` for `lambda`). Test: `python_landline_checks_struct_fields`.
 - **A struct or enum with a one-letter name can be written as a type.** Outside a generic
   declaration, any single capital letter in a type was read as a type parameter, so
   `fn get(p: P) -> int { return p.a }` was refused with `field access '.a' on non-struct

@@ -25,8 +25,8 @@ class Counter(landline.Serverlet):
 landline.serve(Counter)
 ```
 
-Declare public methods directly on the class, in the same order as the `.orch`
-handlers. Annotate every parameter and return value (`-> None` for void).
+Declare a public method on the class for each `.orch` handler. Methods are matched by
+name, in any order, and a method the `.orch` file does not declare is not called. Annotate every parameter and return value (`-> None` for void).
 Handlers must be synchronous instance methods with positional parameters and no
 default arguments. Prefix helper methods with `_`. Inherited handlers are not
 exposed. A class is instantiated once per process after the handshake.
@@ -38,13 +38,15 @@ exposed. A class is instantiated once per process after the handshake.
 | `bool` | `bool` |
 | `string` | `str` (UTF-8) |
 | `T[]` | `list[T]` |
-| same-file struct | same-named `@dataclass`, fields in declaration order |
+| same-file struct | same-named `@dataclass`, the same fields in the same order |
 | void return | `None` |
 
 Dataclasses and lists can nest. Recursive dataclasses, optional/union types,
 callbacks, and asynchronous handlers are unsupported. Dataclass fields must be
-constructor parameters. The handshake compares type names, not dataclass field
-layouts; keep those layouts identical to the `.orch` declaration.
+constructor parameters. The handshake compares each dataclass's fields, names and types
+in order, with its struct's, and refuses a mismatch at startup naming both. A field
+named for a Python keyword takes a trailing underscore: the struct field `lambda` is the
+dataclass field `lambda_`.
 
 The compiler resolves `source` relative to the declaring `.orch` file, including
 loaded module files. `run` stages the source and SDK next to the cached binary.
