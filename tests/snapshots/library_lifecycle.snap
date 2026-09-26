@@ -1228,6 +1228,8 @@ impl std::fmt::Debug for __OrchUnit {
 struct __OrchUnit {
     name: String,
     kind: &'static str,
+    /// Counts calls toward the next CPU-time sample.
+    cpu_turn: std::sync::atomic::AtomicU64,
     calls: std::sync::atomic::AtomicU64,
     failures: std::sync::atomic::AtomicU64,
     duration: __OrchHistogram,
@@ -1236,7 +1238,7 @@ struct __OrchUnit {
 }
 impl __OrchUnit {
     fn new(name: &str, kind: &'static str) -> Self {
-        __OrchUnit { name: name.to_string(), kind, calls: 0.into(), failures: 0.into(), duration: __OrchHistogram::new(), delay: __OrchHistogram::new(), cpu: __OrchHistogram::new() }
+        __OrchUnit { name: name.to_string(), kind, cpu_turn: 0.into(), calls: 0.into(), failures: 0.into(), duration: __OrchHistogram::new(), delay: __OrchHistogram::new(), cpu: __OrchHistogram::new() }
     }
     fn called(&self, took: std::time::Duration) {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1244,9 +1246,18 @@ impl __OrchUnit {
     }
     fn failed(&self) { self.failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
     fn started_late(&self, by: std::time::Duration) { self.delay.record(by.as_nanos().min(u64::MAX as u128) as u64); }
-    /// CPU time between two readings of `__orch_thread_cpu`, where the platform has one.
+    /// The thread's CPU clock at the start of one call in sixteen, which is how often CPU
+    /// time is sampled: a reading costs about as much as a kernel call (~140 ns on macOS),
+    /// and every call would make measuring a cheap hook cost ten times the hook.
+    fn cpu_start(&self) -> Option<u64> {
+        if self.cpu_turn.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 16 == 0 { __orch_thread_cpu() } else { None }
+    }
+    /// CPU time since `cpu_start`, for a sampled call, where the platform has the clock.
     fn used(&self, before: Option<u64>) {
-        if let (Some(before), Some(after)) = (before, __orch_thread_cpu()) { self.cpu.record(after.saturating_sub(before)); }
+        // The clock is read only for a sampled call: a tuple of both would read it always.
+        if let Some(before) = before {
+            if let Some(after) = __orch_thread_cpu() { self.cpu.record(after.saturating_sub(before)); }
+        }
     }
     fn stats(&self) -> UnitStats {
         UnitStats {
