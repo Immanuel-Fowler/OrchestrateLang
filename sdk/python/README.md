@@ -60,6 +60,11 @@ in order, with its struct's, and refuses a mismatch at startup naming both. A fi
 named for a Python keyword takes a trailing underscore: the struct field `lambda` is the
 dataclass field `lambda_`.
 
+A source may import modules beside it: the build follows `import` and `from ... import`
+statements to local `.py` files and packages in the source's folder, and stages them with
+it. Data files, and modules in another folder, are listed in the declaration's
+`files: [...]`.
+
 The compiler resolves `source` relative to the declaring `.orch` file, including
 loaded module files. `run` stages the source and SDK next to the cached binary.
 `build -o app` places them in `app.children/landline_<Name>/` beside `app`; distribute

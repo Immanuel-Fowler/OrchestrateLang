@@ -1492,6 +1492,106 @@ fn resolve_landline_sources(stmts: &mut [ast::Stmt], directory: &Path) -> Result
                 .map_err(|e| format!("Cannot resolve Landline source '{}': {}", config.source, e))?;
             if !path.is_file() { return Err(format!("Landline source is not a file: {}", path.display())); }
             config.source = path.to_str().ok_or("Landline source path must be UTF-8")?.to_string();
+            for file in &mut config.files {
+                let path = directory.join(&*file).canonicalize()
+                    .map_err(|e| format!("Cannot resolve landline file '{}': {}", file, e))?;
+                *file = path.to_str().ok_or("Landline file paths must be UTF-8")?.to_string();
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Names a staged landline file may not take: the build writes these itself.
+const LANDLINE_RESERVED: &[&str] = &["implementation.py", "main.py", "orchestratelang", "serverlet", "serverlet.exe", "backend.txt"];
+
+/// The top-level modules a Python source imports: `import a.b, c as d` names `a` and `c`,
+/// `from e.f import g` names `e`. A relative import names a module inside a package, which
+/// is staged whole, so it adds nothing here.
+fn python_imports(text: &str) -> Vec<String> {
+    let top = |module: &str| module.split('.').next().unwrap_or("").to_string();
+    let mut names = Vec::new();
+    for line in text.lines().map(str::trim_start) {
+        if let Some(rest) = line.strip_prefix("import ") {
+            names.extend(rest.split(',').filter_map(|part| part.split_whitespace().next()).map(top));
+        } else if let Some(rest) = line.strip_prefix("from ") {
+            if let Some(module) = rest.split_whitespace().next().filter(|m| !m.starts_with('.')) {
+                names.push(top(module));
+            }
+        }
+    }
+    names.retain(|name| !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_'));
+    names
+}
+
+/// Copy a file, or a folder without its caches, and return the Python files copied.
+fn copy_landline_file(from: &Path, to: &Path) -> Result<Vec<PathBuf>, String> {
+    if from.is_dir() {
+        fs::create_dir_all(to).map_err(|e| e.to_string())?;
+        let mut python = Vec::new();
+        for entry in fs::read_dir(from).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let name = entry.file_name();
+            if name == "__pycache__" || name == ".orch_cache" || name.to_string_lossy().starts_with('.') { continue; }
+            python.extend(copy_landline_file(&entry.path(), &to.join(&name))?);
+        }
+        return Ok(python);
+    }
+    if let Some(parent) = to.parent() { fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
+    fs::copy(from, to).map_err(|e| format!("Cannot stage {}: {}", from.display(), e))?;
+    Ok(if from.extension().is_some_and(|e| e == "py") { vec![from.to_path_buf()] } else { Vec::new() })
+}
+
+/// What a landline needs beside its source: every file and folder its `files:` names, and,
+/// for Python, every local module the source imports — `import helper` or
+/// `from codec import pack` finds `helper.py` or the package `codec/` in the source's
+/// folder — and the modules those import in turn. An import with no local file is the
+/// standard library's or an installed package's, and is left to Python.
+fn stage_landline_files(name: &str, config: &ast::LandlineConfig, directory: &Path) -> Result<(), String> {
+    let source = Path::new(&config.source);
+    let root = source.parent().unwrap_or(Path::new("."));
+    // Where each staged file came from, by where it went, so two cannot land on one name.
+    let mut placed: std::collections::BTreeMap<PathBuf, PathBuf> = std::collections::BTreeMap::new();
+    let place = |from: &Path, relative: &Path, placed: &mut std::collections::BTreeMap<PathBuf, PathBuf>| -> Result<Option<Vec<PathBuf>>, String> {
+        let first = relative.components().next().map(|c| c.as_os_str().to_string_lossy().to_string()).unwrap_or_default();
+        if LANDLINE_RESERVED.contains(&first.as_str()) {
+            return Err(format!("landline '{}': '{}' would be staged as '{}', a name the build uses for itself; rename it", name, from.display(), first));
+        }
+        match placed.get(relative) {
+            Some(existing) if existing == from => return Ok(None),
+            Some(existing) => return Err(format!("landline '{}': '{}' and '{}' would both be staged as '{}'", name, existing.display(), from.display(), relative.display())),
+            None => {}
+        }
+        placed.insert(relative.to_path_buf(), from.to_path_buf());
+        copy_landline_file(from, &directory.join(relative)).map(Some)
+    };
+    let mut pending = Vec::new();
+    for file in &config.files {
+        let from = Path::new(file);
+        // Inside the source's folder a file keeps its place; outside it, it goes beside the
+        // source under its own name, so `import units` finds `../shared/units.py`.
+        let relative = match from.strip_prefix(root) {
+            Ok(relative) => relative.to_path_buf(),
+            Err(_) => PathBuf::from(from.file_name().ok_or_else(|| format!("landline '{}': cannot stage '{}'", name, file))?),
+        };
+        if let Some(python) = place(from, &relative, &mut placed)? { pending.extend(python); }
+    }
+    if config.runtime != "python" { return Ok(()); }
+    pending.push(source.to_path_buf());
+    let mut read = std::collections::BTreeSet::new();
+    while let Some(file) = pending.pop() {
+        if !read.insert(file.clone()) { continue; }
+        let text = fs::read_to_string(&file).map_err(|e| format!("Cannot read {}: {}", file.display(), e))?;
+        for module in python_imports(&text) {
+            let (from, relative) = if root.join(format!("{module}.py")).is_file() {
+                (root.join(format!("{module}.py")), PathBuf::from(format!("{module}.py")))
+            } else if root.join(&module).is_dir() {
+                (root.join(&module), PathBuf::from(&module))
+            } else {
+                continue;
+            };
+            if from == source { continue; }
+            if let Some(python) = place(&from, &relative, &mut placed)? { pending.extend(python); }
         }
     }
     Ok(())
@@ -1504,6 +1604,7 @@ fn stage_landlines(stmts: &[ast::Stmt], destination: &Path) -> Result<(), String
             if directory.exists() { return Err(format!("Landline serverlet names must be unique: '{}'", name)); }
             if config.runtime == "typescript" {
                 crate::typescript::build(Path::new(&config.source), &directory, handlers, stmts, false, config.backend.as_deref())?;
+                stage_landline_files(name, config, &directory)?;
                 continue;
             }
             let sdk = directory.join("orchestratelang");
@@ -1512,6 +1613,7 @@ fn stage_landlines(stmts: &[ast::Stmt], destination: &Path) -> Result<(), String
             fs::write(directory.join("main.py"), "import os, runpy, sys\nsys.stdout = sys.stderr\nrunpy.run_path(os.path.join(os.path.dirname(__file__), 'implementation.py'), run_name='__main__')\n").map_err(|e| e.to_string())?;
             fs::write(sdk.join("__init__.py"), include_str!("../sdk/python/orchestratelang/__init__.py")).map_err(|e| e.to_string())?;
             fs::write(sdk.join("landline.py"), include_str!("../sdk/python/orchestratelang/landline.py")).map_err(|e| e.to_string())?;
+            stage_landline_files(name, config, &directory)?;
         }
     }
     Ok(())

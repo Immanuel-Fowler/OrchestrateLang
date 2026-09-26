@@ -41,6 +41,7 @@ properties config does not:
 | `measure serverlets, hooks, workers` | Counts and timings, read with `stats()` | A few clock readings per measured call |
 | `unmeasured` | One thing left out of `measure` | Nothing |
 | `budget: "2ms"`, `late: "latest"` | A call that cannot hold the tick | A default or a stale result when it is late |
+| `via python(..., files: ["data/"])` | Those files staged beside the source | A copy per build |
 | `automatic(restart: 3) { } on_crash e { }` | A supervised worker | A task |
 | `shared let x = 0` | State any task may touch | One mutex, about 9 ns a statement |
 | `let x = 0` | Instance state | Nothing; only hooks reach it |
@@ -114,6 +115,10 @@ part. Each of these is deliberately *not* in the source:
   nothing — and a declaration that does say `(backend: "bun")` overrides it. That
   ordering is the principle: syntax wins where it is written, and the environment only
   fills silence.
+- **What a Python landline imports** is already written in its source: `import helper`
+  says the landline needs `helper.py`. The build reads those imports, and stages the local
+  modules they name, rather than asking for the same names again in the declaration.
+  `files:` is for what an import cannot say — data, or a module in another folder.
 - **`build` versus `build --lib`** is not a choice in the source either, and for the same
   reason as deterministic mode: it is the question of who owns the loop, which belongs to
   whoever is embedding. One source, two outputs, covered in

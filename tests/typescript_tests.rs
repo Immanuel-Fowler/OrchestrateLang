@@ -564,3 +564,41 @@ orchestrator main() {
     let lines: Vec<&str> = stdout.lines().filter(|l| !l.starts_with("[orchestrate]")).collect();
     assert_eq!(lines, vec!["2 -5 0.5", "-4 1000000000001 3", "false true", "3 0 30", "1.5 2.5"], "stdout: {stdout}");
 }
+
+#[test]
+fn typescript_landline_imports_and_files() {
+    // A TypeScript source's relative imports are bundled into its executable; `files:`
+    // stages data beside that executable.
+    if !available() {
+        return;
+    }
+    let root = root("imports");
+    fs::create_dir_all(root.join("data")).unwrap();
+    fs::write(root.join("helper.ts"), "export const VALUE = 7n;\n").unwrap();
+    fs::write(root.join("data/table.json"), "{\"rows\": 3}\n").unwrap();
+    fs::write(
+        root.join("echo.ts"),
+        "import { VALUE } from './helper.ts';\nexport default class Echo {\n    value(): bigint { return VALUE * 2n; }\n}\n",
+    )
+    .unwrap();
+    let src = r#"
+serverlet Echo via typescript(source: "echo.ts", files: ["data/table.json"]) {
+    on value() -> int
+}
+orchestrator main() {
+    let e = start Echo()
+    print(to_string(e.value()))
+    stop_orch()
+}
+"#;
+    fs::write(root.join("main.orch"), src).unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_orchestrate"))
+        .arg("build").arg(root.join("main.orch")).arg("-o").arg(root.join("app"))
+        .env("ORCH_TS_BACKEND", "bun").env("CARGO_NET_OFFLINE", "true")
+        .output().unwrap();
+    success(&build);
+    assert!(root.join("app.children/landline_Echo/data/table.json").is_file());
+    let run = Command::new(root.join("app")).output().unwrap();
+    let stdout = success(&run);
+    assert_eq!(stdout.lines().filter(|l| !l.starts_with("[orchestrate]")).collect::<Vec<_>>(), vec!["14"], "stdout: {stdout}");
+}

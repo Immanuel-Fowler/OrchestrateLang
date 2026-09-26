@@ -388,6 +388,7 @@ impl Parser {
             let mut backend = None;
             let mut keys = std::collections::HashSet::new();
             let mut every_micros = None;
+            let mut files = Vec::new();
             // Durations take a us, ms, or s suffix, e.g. "500us", "2ms", "0.5s".
             use crate::ast::duration_micros;
             while self.peek().kind != TokenKind::RParen {
@@ -397,6 +398,19 @@ impl Parser {
                 };
                 if !keys.insert(key.clone()) { return Err(format!("Duplicate landline config key '{}'", key)); }
                 self.consume(TokenKind::Colon, "Expected ':' after landline config key")?;
+                if key == "files" {
+                    self.consume(TokenKind::LBracket, "Expected '[' after files: (files: [\"codec.py\", \"data/\"])")?;
+                    while self.peek().kind != TokenKind::RBracket {
+                        match self.advance().kind.clone() {
+                            TokenKind::Str(path) if !path.is_empty() => files.push(path),
+                            _ => return Err("files: lists paths as strings, such as files: [\"codec.py\", \"data/\"]".into()),
+                        }
+                        if !self.match_token(TokenKind::Comma) { break; }
+                    }
+                    self.consume(TokenKind::RBracket, "Expected ']' to end files:")?;
+                    if !self.match_token(TokenKind::Comma) { break; }
+                    continue;
+                }
                 let value = match self.advance().kind.clone() {
                     TokenKind::Str(s) => s,
                     _ => return Err("Expected string landline config value".into()),
@@ -417,7 +431,7 @@ impl Parser {
                             "Invalid landline every '{}' (expected a duration of host time such as \"100ms\" or \"0.5s\")", value
                         ))?);
                     }
-                    _ => return Err(format!("Unsupported landline config '{}': '{}' (expected source, line: \"pipe\", budget, late: \"drop\" | \"latest\", every, or backend for typescript)", key, value)),
+                    _ => return Err(format!("Unsupported landline config '{}': '{}' (expected source, line: \"pipe\", budget, late: \"drop\" | \"latest\", every, files, or backend for typescript)", key, value)),
                 }
                 if !self.match_token(TokenKind::Comma) { break; }
             }
@@ -432,6 +446,7 @@ impl Parser {
                 every_micros,
                 late: late.unwrap_or(crate::ast::LatePolicy::Drop),
                 backend,
+                files,
             });
         }
         let unmeasured = self.parse_unmeasured();

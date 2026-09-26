@@ -2231,6 +2231,25 @@ for a `tick` handler called from a typed library tick.
 `source` is relative to its declaring file. Python builds copy the source and SDK into
 `app.children/landline_<Name>/` beside the binary `app`. TypeScript builds put a compiled
 executable there.
+
+A landline's source can be more than one file. A Python source's imports are followed:
+`import helper` or `from codec import pack` stages `helper.py` or the package `codec/`
+from the source's folder, and whatever those import in turn, beside the source. An import
+with no local file is the standard library's or an installed package's and is left to
+Python. A TypeScript source's relative imports are bundled into its executable. What an
+import cannot name goes in `files:`, paths relative to the declaring file:
+
+```orchestrate
+serverlet Slot via python(source: "slot.py", files: ["data/", "../shared/units.py"]) {
+    on open_model(path: string) -> string
+}
+```
+
+A file or folder inside the source's folder keeps its place beside it; one outside goes
+beside the source under its own name, so `import units` finds `../shared/units.py`. A
+Python handler finds data it was given with `os.path.dirname(__file__)`. A staged name the
+build needs for itself (`main.py`, `implementation.py`, `orchestratelang`) is refused, as
+are two files staged under one name.
 Library builds embed their respective assets. Python dependencies remain external; the
 TypeScript executable does not need Bun, TypeScript, scriptc, or the original source at
 runtime. Package application data and native dependencies separately. TypeScript artifacts

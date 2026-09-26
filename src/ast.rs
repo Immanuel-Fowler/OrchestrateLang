@@ -193,6 +193,9 @@ pub struct LandlineConfig {
     pub late: LatePolicy,
     /// TypeScript only: `auto`, `scriptc`, or `bun`.
     pub backend: Option<String>,
+    /// `files: ["codec.py", "data/"]`: files and folders staged beside the source, besides
+    /// the local modules a Python source imports, which are found and staged without it.
+    pub files: Vec<String>,
 }
 
 /// A duration in microseconds as a program would have written it: `5ms`, `250us`, `2s`.

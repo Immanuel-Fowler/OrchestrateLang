@@ -10,6 +10,14 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 ## [Unreleased]
 
 ### Added
+- **A landline can be more than one file.** A Python landline's source was copied into
+  the build alone, so `import helper` failed at run time with `ModuleNotFoundError`. The
+  build now follows a Python source's imports to the local modules and packages beside it,
+  and their imports in turn, and stages them with it; TypeScript's relative imports were
+  already bundled. `files: ["data/", "../shared/units.py"]` stages what an import cannot
+  name — data, or a module in another folder. A staged name the build uses itself, or two
+  files staged under one name, is refused at build time. Tests:
+  `python_landline_stages_what_it_imports`, `typescript_landline_imports_and_files`.
 - **`measure serverlets, hooks, workers`: the runtime keeps counts and timings, read with
   `stats()`.** Every measurement in three programs was `clock_micros` wrapped around a
   call by hand, carried out through timing fields and host functions. Now one line at the

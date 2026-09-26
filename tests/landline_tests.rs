@@ -619,6 +619,64 @@ landline.serve(Numbers)
     assert_eq!(stdout, expected, "{}", stderr);
 }
 
+/// A landline's source can import the local modules beside it: the build follows its
+/// imports, and those modules' imports, and stages what it finds. `files:` stages what an
+/// import cannot show — data, or a module outside the source's folder.
+#[test]
+fn python_landline_stages_what_it_imports() {
+    let dir = directory("imports");
+    let root: &std::path::Path = &dir;
+    fs::create_dir_all(root.join("codec")).unwrap();
+    fs::create_dir_all(root.join("data")).unwrap();
+    fs::create_dir_all(root.join("../orch_landline_imports_shared")).unwrap();
+    fs::write(root.join("helper.py"), "VALUE = 7\n").unwrap();
+    fs::write(root.join("codec/__init__.py"), "from .scale import factor\n\ndef pack(x):\n    return x * factor()\n").unwrap();
+    fs::write(root.join("codec/scale.py"), "import helper\n\ndef factor():\n    return helper.VALUE\n").unwrap();
+    fs::write(root.join("data/offset.txt"), "41\n").unwrap();
+    fs::write(root.join("../orch_landline_imports_shared/units.py"), "UNIT = 100\n").unwrap();
+    fs::write(root.join("unused.py"), "raise SystemExit('not imported, so not staged')\n").unwrap();
+    let (stdout, stderr) = run(root, r#"
+serverlet Echo via python(source: "impl.py", files: ["data/", "../orch_landline_imports_shared/units.py"]) {
+    on value() -> int
+}
+orchestrator main() {
+    let e = start Echo()
+    print(to_string(e.value()))
+    stop_orch()
+}
+"#, r#"
+import os
+import json, helper
+from codec import pack
+from units import UNIT
+from orchestratelang import landline
+class Echo(landline.Serverlet):
+    def value(self) -> int:
+        with open(os.path.join(os.path.dirname(__file__), "data", "offset.txt")) as f:
+            offset = int(f.read())
+        return helper.VALUE + pack(1) + UNIT + offset
+landline.serve(Echo)
+"#);
+    let _ = fs::remove_dir_all(root.join("../orch_landline_imports_shared"));
+    assert_eq!(stdout, "155", "{}", stderr);
+
+    // A local module whose name the build uses for itself is refused, naming it.
+    let dir = directory("imports_reserved");
+    fs::write(dir.join("main.py"), "X = 1\n").unwrap();
+    fs::write(dir.join("main.orch"), "serverlet Echo via python(source: \"impl.py\") { on value() -> int }\norchestrator main() { let e = start Echo() }\n").unwrap();
+    fs::write(dir.join("impl.py"), "import main\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_orchestrate")).arg("build").arg(dir.join("main.orch")).arg("-o").arg(dir.join("app")).output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string() + &String::from_utf8_lossy(&output.stdout);
+    assert!(!output.status.success() && stderr.contains("a name the build uses for itself"), "{}", stderr);
+
+    // A `files:` entry that does not exist is refused at build time.
+    fs::write(dir.join("impl.py"), "import os\n").unwrap();
+    fs::write(dir.join("main.orch"), "serverlet Echo via python(source: \"impl.py\", files: [\"missing.json\"]) { on value() -> int }\norchestrator main() { let e = start Echo() }\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_orchestrate")).arg("build").arg(dir.join("main.orch")).arg("-o").arg(dir.join("app")).output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string() + &String::from_utf8_lossy(&output.stdout);
+    assert!(!output.status.success() && stderr.contains("Cannot resolve landline file 'missing.json'"), "{}", stderr);
+}
+
 #[test]
 fn python_landline_call_keeps_the_callers_arguments() {
     // A string, an array, and a struct are each used again after the call that
