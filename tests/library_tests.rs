@@ -2248,3 +2248,34 @@ fn loaded_guest_diagnostics() {
         assert!(error.contains(expected), "{source}\n{error}");
     }
 }
+
+/// Instance state named in a struct literal a hook returns is copied into it: a string
+/// field was moved out of `&mut` state and reached rustc (E0507).
+#[test]
+fn library_struct_literal_copies_instance_state() {
+    let root = root("struct_literal_state");
+    build(&root, r#"
+struct Report { note: string, count: int }
+host app { fn show(n: int) }
+let note = "ready"
+let count = 0
+on_tick(dt: float) -> Report {
+    count = count + 1
+    return Report { note: note, count: count }
+}
+orchestrator main() {}
+"#);
+    let output = host(&root, r#"
+struct Host;
+impl scripts::Host for Host { fn app_show(&self, _: i64) -> Result<(), String> { Ok(()) } }
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let mut scripts = scripts::start(runtime.handle(), Host).unwrap();
+    for _ in 0..2 {
+        let report = scripts.tick_blocking(&runtime, 0.1).unwrap();
+        println!("{} {}", report.note, report.count);
+    }
+}
+"#);
+    assert_eq!(output.trim(), "ready 1\nready 2", "{output}");
+}

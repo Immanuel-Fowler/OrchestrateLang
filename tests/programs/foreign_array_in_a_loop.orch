@@ -1,0 +1,16 @@
+// Regression: an array passed to a foreign function is copied, as any argument is, so a
+// loop can pass the same array on every iteration. It was moved into the first call and
+// the second reached rustc (E0382).
+
+use module weights: "./modules/weights"
+
+orchestrator main() {
+    let xs = [1.0, 2.0, 3.0]
+    let sum = 0.0
+    for i in range(10) {
+        sum = sum + weights.total(xs)
+    }
+    print(to_string(sum))
+    print(to_string(length(xs)))
+    stop_orch()
+}
