@@ -150,7 +150,7 @@ python3 benchmarks/run_all.py
 ```
 
 It writes CSV, JSON, and Markdown under `benchmarks/results/`, each with an environment
-header. The tables below are that output. One run on Apple M2 (macOS-15.3.2-arm64-arm-64bit, arm64), 2026-09-23T21:11:27+00:00, commit `d54e936d93e5` (dirty tree). rustc 1.98.1 (48a229cea 2026-09-01); Python 3.12.7; wasmtime 37.0.3; TypeScript rung included. Round trips in microseconds unless the unit says otherwise; the state rungs are nanoseconds per statement.
+header. The tables below are that output. One run on Apple M2 (macOS-15.3.2-arm64-arm-64bit, arm64), 2026-09-30T21:41:01+00:00, commit `e85d785d28ea` (dirty tree). rustc 1.98.1 (48a229cea 2026-09-01); Python 3.12.7; wasmtime 37.0.3; TypeScript rung included. Round trips in microseconds unless the unit says otherwise; the state rungs are nanoseconds per statement.
 
 ### The boundary ladder
 
@@ -164,27 +164,56 @@ Calls back to back, one caller.
 
 | Kind | Payload | Samples | p50 | p90 | p99 | max |
 |---|---|---:|---:|---:|---:|---:|
-| in-process | int | 2000 | 9 | 12 | 22 | 29 |
-| in-process | string-1KB | 2000 | 9 | 13 | 25 | 64 |
-| in-process | int[1000] | 2000 | 9 | 12 | 23 | 36 |
-| sandbox | int | 2000 | 9 | 13 | 22 | 39 |
-| sandbox | string-1KB | 2000 | 10 | 14 | 28 | 48 |
-| sandbox | int[1000] | 2000 | 12 | 15 | 21 | 70 |
-| secret | int | 2000 | 20 | 40 | 82 | 525 |
-| secret | string-1KB | 2000 | 19 | 31 | 39 | 58 |
-| secret | int[1000] | 2000 | 24 | 33 | 47 | 81 |
-| python | int | 2000 | 20 | 30 | 41 | 167 |
-| python | string-1KB | 2000 | 26 | 35 | 50 | 1551 |
-| python | int[1000] | 2000 | 607 | 634 | 670 | 715 |
-| typescript | int | 2000 | 46 | 59 | 79 | 713 |
-| typescript | string-1KB | 2000 | 48 | 61 | 84 | 585 |
-| typescript | int[1000] | 2000 | 328 | 1122 | 1648 | 5690 |
+| in-process | int | 2000 | 8 | 21 | 34 | 56 |
+| in-process | string-1KB | 2000 | 8 | 14 | 26 | 38 |
+| in-process | int[1000] | 2000 | 7 | 11 | 26 | 58 |
+| sandbox | int | 2000 | 8 | 12 | 22 | 64 |
+| sandbox | string-1KB | 2000 | 10 | 22 | 35 | 58 |
+| sandbox | int[1000] | 2000 | 13 | 16 | 33 | 78 |
+| secret | int | 2000 | 20 | 45 | 318 | 1716 |
+| secret | string-1KB | 2000 | 19 | 32 | 49 | 68 |
+| secret | int[1000] | 2000 | 22 | 34 | 47 | 69 |
+| python | int | 2000 | 27 | 47 | 76 | 362 |
+| python | string-1KB | 2000 | 28 | 45 | 86 | 2554 |
+| python | int[1000] | 2000 | 59 | 75 | 112 | 849 |
+| typescript | int | 2000 | 49 | 67 | 102 | 879 |
+| typescript | string-1KB | 2000 | 51 | 71 | 110 | 786 |
+| typescript | int[1000] | 2000 | 96 | 124 | 348 | 785 |
 
 The sandbox costing about what an in-process actor costs is the useful surprise: the
-wasmtime call is small next to the channel round trip both pay. The Python array row is
-the honest one — its SDK encodes element by element, and that cost belongs to the
-boundary that chose it. The in-process `int` row runs first in the sweep and can still be
-warming; read rows within a kind rather than across the first one.
+wasmtime call is small next to the channel round trip both pay. A landline's array row
+is a copy each way plus building its language's own values, a list of Python ints or of
+JavaScript bigints; the array sweep below shows how that grows. The in-process `int` row
+runs first in the sweep and can still be warming; read rows within a kind rather than
+across the first one.
+
+#### Array sweep
+
+A `float[]` echoed back, calls back to back: the array crosses twice per call.
+
+| Payload | Kind | Samples | p50 | p90 | p99 | max |
+|---|---|---:|---:|---:|---:|---:|
+| float[1000] | in-process | 990 | 7 | 11 | 27 | 67 |
+| float[1000] | sandbox | 990 | 11 | 14 | 28 | 49 |
+| float[1000] | secret | 990 | 23 | 35 | 48 | 74 |
+| float[1000] | python | 990 | 77 | 168 | 275 | 748 |
+| float[1000] | typescript | 990 | 88 | 123 | 301 | 838 |
+| float[10000] | in-process | 297 | 8 | 10 | 30 | 33 |
+| float[10000] | sandbox | 297 | 47 | 59 | 75 | 89 |
+| float[10000] | secret | 297 | 86 | 96 | 120 | 150 |
+| float[10000] | python | 297 | 458 | 499 | 1518 | 3585 |
+| float[10000] | typescript | 297 | 374 | 537 | 1581 | 2278 |
+| float[50000] | in-process | 99 | 16 | 19 | 42 | 42 |
+| float[50000] | sandbox | 99 | 179 | 230 | 339 | 339 |
+| float[50000] | secret | 99 | 304 | 707 | 1738 | 1738 |
+| float[50000] | python | 99 | 2188 | 2303 | 3322 | 3322 |
+| float[50000] | typescript | 99 | 1899 | 2190 | 3415 | 3415 |
+
+Each boundary's cost is the copy of the array into it and back: the sandbox and the
+secret child move 50,000 floats each way in a fraction of a millisecond, and a landline,
+which also builds its language's own values, in about two milliseconds. A Python handler
+that takes `NDArray[numpy.float64]` skips building Python floats, which is most of its
+row.
 
 #### Call-rate sweep
 
@@ -192,32 +221,32 @@ The `int` payload. At 100 Hz and 1 kHz the caller sleeps between calls; at 10 kH
 
 | Kind | Rate | Samples | p50 | p90 | p99 | max |
 |---|---|---:|---:|---:|---:|---:|
-| in-process | unpaced | 2000 | 9 | 12 | 22 | 29 |
-| in-process | 100hz | 300 | 16 | 41 | 376 | 689 |
-| in-process | 1khz | 1000 | 11 | 24 | 59 | 489 |
-| in-process | 10khz | 2000 | 7 | 10 | 21 | 66 |
-| sandbox | unpaced | 2000 | 9 | 13 | 22 | 39 |
-| sandbox | 100hz | 300 | 18 | 54 | 2569 | 39062 |
-| sandbox | 1khz | 1000 | 11 | 15 | 64 | 148 |
-| sandbox | 10khz | 2000 | 7 | 21 | 71 | 209 |
-| secret | unpaced | 2000 | 20 | 40 | 82 | 525 |
-| secret | 100hz | 300 | 39 | 86 | 666 | 1353 |
-| secret | 1khz | 1000 | 24 | 66 | 193 | 1896 |
-| secret | 10khz | 2000 | 16 | 22 | 44 | 95 |
-| python | unpaced | 2000 | 20 | 30 | 41 | 167 |
-| python | 100hz | 300 | 61 | 87 | 254 | 340 |
-| python | 1khz | 1000 | 28 | 54 | 478 | 41401 |
-| python | 10khz | 2000 | 22 | 24 | 35 | 68 |
-| typescript | unpaced | 2000 | 46 | 59 | 79 | 713 |
-| typescript | 100hz | 300 | 93 | 134 | 239 | 278 |
-| typescript | 1khz | 1000 | 59 | 90 | 169 | 870 |
-| typescript | 10khz | 2000 | 43 | 51 | 72 | 462 |
+| in-process | unpaced | 2000 | 8 | 21 | 34 | 56 |
+| in-process | 100hz | 300 | 16 | 46 | 91 | 94 |
+| in-process | 1khz | 1000 | 11 | 32 | 62 | 93 |
+| in-process | 10khz | 2000 | 7 | 11 | 30 | 71 |
+| sandbox | unpaced | 2000 | 8 | 12 | 22 | 64 |
+| sandbox | 100hz | 300 | 17 | 38 | 95 | 419 |
+| sandbox | 1khz | 1000 | 12 | 33 | 73 | 92 |
+| sandbox | 10khz | 2000 | 7 | 12 | 52 | 456 |
+| secret | unpaced | 2000 | 20 | 45 | 318 | 1716 |
+| secret | 100hz | 300 | 42 | 93 | 8880 | 11247 |
+| secret | 1khz | 1000 | 21 | 48 | 99 | 234 |
+| secret | 10khz | 2000 | 16 | 29 | 57 | 792 |
+| python | unpaced | 2000 | 27 | 47 | 76 | 362 |
+| python | 100hz | 300 | 64 | 117 | 6931 | 44613 |
+| python | 1khz | 1000 | 30 | 54 | 110 | 262 |
+| python | 10khz | 2000 | 23 | 27 | 50 | 89 |
+| typescript | unpaced | 2000 | 49 | 67 | 102 | 879 |
+| typescript | 100hz | 300 | 88 | 116 | 186 | 203 |
+| typescript | 1khz | 1000 | 61 | 88 | 164 | 709 |
+| typescript | 10khz | 2000 | 43 | 53 | 95 | 557 |
 
 This is the table a ticking host should read. A caller that idles between calls pays to
-wake the actor or the child every time, and every rung pays it: unpaced medians of 9–46 µs
-become 16–93 µs at 100 Hz. The 100 Hz tails come from 300 samples, so three stalls of the
-machine set the p99: the sandbox's 2.6 ms p99 in this run was 59 µs in a rerun minutes
-later, beside 207 µs for v0.15.1 in the same back-to-back pair.
+wake the actor or the child every time, and every rung pays it: unpaced medians of 8–49 µs
+become 16–88 µs at 100 Hz. The 100 Hz tails come from 300 samples, so three stalls of the
+machine set the p99, and they move by an order of magnitude between reruns minutes apart;
+read the medians, and the tails across several runs.
 
 #### Concurrent callers
 
@@ -225,26 +254,26 @@ The `int` payload with 1, 2, 4, or 8 callers sharing one serverlet; each sample 
 
 | Kind | Rate | Samples | p50 | p90 | p99 | max |
 |---|---|---:|---:|---:|---:|---:|
-| in-process | callers-1 | 2000 | 9 | 12 | 22 | 29 |
-| in-process | callers-2 | 2000 | 10 | 15 | 24 | 33 |
-| in-process | callers-4 | 4000 | 10 | 16 | 23 | 42 |
-| in-process | callers-8 | 8000 | 12 | 19 | 27 | 106 |
-| sandbox | callers-1 | 2000 | 9 | 13 | 22 | 39 |
-| sandbox | callers-2 | 2000 | 12 | 30 | 323 | 1148 |
-| sandbox | callers-4 | 4000 | 24 | 65 | 196 | 426 |
-| sandbox | callers-8 | 8000 | 5 | 17 | 53 | 363 |
-| secret | callers-1 | 2000 | 20 | 40 | 82 | 525 |
-| secret | callers-2 | 2000 | 22 | 36 | 50 | 129 |
-| secret | callers-4 | 4000 | 47 | 63 | 79 | 129 |
-| secret | callers-8 | 8000 | 101 | 121 | 144 | 212 |
-| python | callers-1 | 2000 | 20 | 30 | 41 | 167 |
-| python | callers-2 | 2000 | 32 | 40 | 50 | 78 |
-| python | callers-4 | 4000 | 66 | 78 | 95 | 130 |
-| python | callers-8 | 8000 | 133 | 204 | 473 | 1645 |
-| typescript | callers-1 | 2000 | 46 | 59 | 79 | 713 |
-| typescript | callers-2 | 2000 | 86 | 170 | 287 | 987 |
-| typescript | callers-4 | 4000 | 155 | 189 | 356 | 837 |
-| typescript | callers-8 | 8000 | 303 | 347 | 470 | 1166 |
+| in-process | callers-1 | 2000 | 8 | 21 | 34 | 56 |
+| in-process | callers-2 | 2000 | 10 | 15 | 26 | 38 |
+| in-process | callers-4 | 4000 | 11 | 19 | 32 | 78 |
+| in-process | callers-8 | 8000 | 12 | 19 | 30 | 43 |
+| sandbox | callers-1 | 2000 | 8 | 12 | 22 | 64 |
+| sandbox | callers-2 | 2000 | 10 | 15 | 27 | 51 |
+| sandbox | callers-4 | 4000 | 11 | 16 | 27 | 44 |
+| sandbox | callers-8 | 8000 | 11 | 18 | 27 | 44 |
+| secret | callers-1 | 2000 | 20 | 45 | 318 | 1716 |
+| secret | callers-2 | 2000 | 22 | 35 | 44 | 63 |
+| secret | callers-4 | 4000 | 48 | 65 | 85 | 235 |
+| secret | callers-8 | 8000 | 102 | 123 | 146 | 206 |
+| python | callers-1 | 2000 | 27 | 47 | 76 | 362 |
+| python | callers-2 | 2000 | 34 | 52 | 72 | 120 |
+| python | callers-4 | 4000 | 65 | 78 | 92 | 108 |
+| python | callers-8 | 8000 | 126 | 155 | 205 | 386 |
+| typescript | callers-1 | 2000 | 49 | 67 | 102 | 879 |
+| typescript | callers-2 | 2000 | 77 | 94 | 117 | 734 |
+| typescript | callers-4 | 4000 | 157 | 181 | 206 | 781 |
+| typescript | callers-8 | 8000 | 321 | 408 | 980 | 2030 |
 
 An in-process or sandboxed serverlet keeps its per-call latency under load, because the
 actor turns calls over faster than callers queue them. A process-backed boundary does
@@ -257,7 +286,7 @@ Nanoseconds per statement, each sample a batch of 1,000 statements; `loop-only` 
 | Kind | Samples | p50 | p90 | p99 | max |
 |---|---:|---:|---:|---:|---:|
 | local-let | 2000 | 0 | 0 | 1 | 1 |
-| shared-let | 2000 | 10 | 10 | 11 | 32 |
+| shared-let | 2000 | 10 | 11 | 11 | 48 |
 | loop-only | 2000 | 0 | 0 | 1 | 1 |
 
 `local-let` reads zero because LLVM folds the loop; the honest statement is "below the
@@ -272,16 +301,16 @@ through its vtable alone.
 
 | Case | ns per tick (median) | fastest round | p90 round |
 |---|---:|---:|---:|
-| host_method_alone | 2.09 | 2.01 | 2.23 |
-| empty | 7.25 | 6.91 | 7.39 |
-| one_call | 10.55 | 8.29 | 11.23 |
-| five_calls | 16.19 | 15.92 | 16.93 |
-| instance_let | 8.39 | 8.20 | 8.62 |
-| shared_let | 13.64 | 13.26 | 13.94 |
-| event | 234.49 | 217.57 | 244.99 |
-| measured | 111.75 | 109.79 | 115.19 |
+| host_method_alone | 2.04 | 1.99 | 2.11 |
+| empty | 7.26 | 7.00 | 7.61 |
+| one_call | 8.73 | 8.50 | 8.83 |
+| five_calls | 16.17 | 15.85 | 16.83 |
+| instance_let | 7.80 | 7.13 | 9.16 |
+| shared_let | 16.04 | 14.16 | 17.02 |
+| event | 247.17 | 234.90 | 264.61 |
+| measured | 128.23 | 113.43 | 226.57 |
 
-Derived from the fastest rounds, which move least between runs: an empty tick costs 6.91 ns; each host call in a tick costs 1.91 ns (five calls minus one, over four), against 2.01 ns for the trait method called through its vtable alone. The empty tick and the one-call tick are within noise of each other at this resolution. Measuring the one hook (`measure hooks`) costs 102.88 ns a tick: two clock readings and the tick's own, three histogram updates, and on one tick in sixteen two readings of the thread's CPU clock.
+Derived from the fastest rounds, which move least between runs: an empty tick costs 7.00 ns; each host call in a tick costs 1.84 ns (five calls minus one, over four), against 1.99 ns for the trait method called through its vtable alone. The empty tick and the one-call tick are within noise of each other at this resolution. Measuring the one hook (`measure hooks`) costs 106.43 ns a tick: two clock readings and the tick's own, three histogram updates, and on one tick in sixteen two readings of the thread's CPU clock.
 
 Medians overlap between cases within a few nanoseconds: the OS moves the thread between core types and clock states during a run, which is why the fastest round is reported beside them. Run on an idle machine, and compare cases within one run.
 
