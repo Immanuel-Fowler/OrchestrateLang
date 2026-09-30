@@ -1409,9 +1409,11 @@ impl Parser {
                 self.parse_prefix_node()
             }
             // `start X from path`, or `start alias.X from path`: the serverlet's
-            // implementation is a file named while the program runs.
-            TokenKind::Start if matches!(&self.peek_at(2).kind, TokenKind::Identifier(w) if w == "from")
-                || (self.peek_at(2).kind == TokenKind::Dot && matches!(&self.peek_at(4).kind, TokenKind::Identifier(w) if w == "from")) => {
+            // implementation is a file named while the program runs. `from` is on the
+            // serverlet's line, so `start p` followed by a statement about a variable
+            // called `from` stays two statements.
+            TokenKind::Start if (matches!(&self.peek_at(2).kind, TokenKind::Identifier(w) if w == "from") && self.peek_at(2).line == self.peek_at(1).line)
+                || (self.peek_at(2).kind == TokenKind::Dot && matches!(&self.peek_at(4).kind, TokenKind::Identifier(w) if w == "from") && self.peek_at(4).line == self.peek_at(3).line) => {
                 self.advance();
                 let mut name = self.parse_ident("serverlet name")?;
                 if self.match_token(TokenKind::Dot) {

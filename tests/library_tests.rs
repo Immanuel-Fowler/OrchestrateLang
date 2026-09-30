@@ -2235,6 +2235,8 @@ fn loaded_guest_diagnostics() {
     let loaded = "serverlet M sandbox(memory_limit: \"8mb\", timeout: \"20ms\") { on f(x: int) -> int }\n";
     let built = "serverlet B sandbox(memory_limit: \"8mb\", timeout: \"20ms\") { on f(x: int) -> int { return x } }\n";
     assert!(check(&format!("{loaded}orchestrator main() {{ match start M from \"m.wasm\" {{ result::Ok(m) => print(to_string(m.f(1))) result::Err(e) => print(e) }} }}")).is_ok());
+    // `from` on the next line is a statement of its own, not a start from a file.
+    assert!(check("orchestrator main() {\n    let from = 1\n    let w = automatic { sleep(10) }\n    start w\n    from = 2\n    print(to_string(from))\n}\n").is_ok());
     let cases = [
         (format!("{loaded}orchestrator main() {{ let m = start M() }}"), "is loaded from a file"),
         (format!("{built}orchestrator main() {{ let b = start B from \"b.wasm\" }}"), "is compiled into the program"),
