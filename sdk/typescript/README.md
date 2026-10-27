@@ -53,7 +53,11 @@ report this as `NEEDS_IO_DRIVER`; see
 
 ## Landline serverlets
 
-Declare a serverlet in `.orch` and default-export a TypeScript class:
+Declare a serverlet in `.orch` and default-export a TypeScript class. The source may import
+other modules by relative path; they are bundled into the executable. Data the class reads
+at run time goes in the declaration's `files: [...]`, staged beside the executable. A
+TypeScript landline is compiled when the program is built, so it cannot be started from a
+file named at run time.
 
 ```orchestrate
 serverlet Counter via typescript(source: "counter.ts") {

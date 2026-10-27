@@ -63,7 +63,9 @@ dataclass field `lambda_`.
 A source may import modules beside it: the build follows `import` and `from ... import`
 statements to local `.py` files and packages in the source's folder, and stages them with
 it. Data files, and modules in another folder, are listed in the declaration's
-`files: [...]`.
+`files: [...]`. `start Counter from "user/counter.py"` runs another source than the one
+the program was built with, for a model or plugin a user supplies; its own folder is
+searched for its imports, and the handshake checks it as it checks any source.
 
 The compiler resolves `source` relative to the declaring `.orch` file, including
 loaded module files. `run` stages the source and SDK next to the cached binary.
