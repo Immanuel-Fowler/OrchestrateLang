@@ -2,7 +2,7 @@
 
 This document outlines planned features for the OrchestrateLang language and ecosystem, what problem each one solves, and a rough sketch of how it would work.
 
-> **Key:** Features marked **[SHIPPED]** are fully implemented and documented in `language-reference.md`.
+> **Key:** Features marked **[SHIPPED]** are fully implemented and documented in `language-reference.md`; **[PROPOSED]** ones are designed but not built. What has shipped since the last release is under `## [Unreleased]` in the [changelog](../CHANGELOG.md).
 
 ---
 
@@ -185,17 +185,19 @@ serverlet UntrustedPlugin sandbox(memory_limit: "64mb", timeout: "5s") {
 
 ---
 
-## 2b. Shared state (`shared let`) — **[PROPOSED]**
+## 2b. Shared state (`shared let`) — **[SHIPPED: 0.13.0; `shared queue` in 0.16]**
 
 **Problem it solves:** a top-level `let` is owned by the instance and only hooks can reach
 it, because a spawned worker can run while a tick holds it. The existing answer for state
 several concurrent things touch is a serverlet, at about 7.5 µs a call. There is nothing
 between "free but hooks only" and "safe but microseconds".
 
-**How it would work:** `shared let hits = 0` puts the binding behind one mutex on the
-context instead of in the program struct, reachable from any task and any `fn`, at an
-estimated ~15–20 ns. A plain `let` does not change and a program without the marker
-generates the same code it does today.
+**How it works:** `shared let hits = 0` puts the binding behind one mutex on the
+context instead of in the program struct, reachable from any task and any `fn`, at about
+10 ns a statement on the boundary ladder (estimated at 15–20 ns before it was built). A
+plain `let` does not change and a program without the marker generates the same code it
+did before. `shared queue jobs: Job (capacity: 256, full: "reject")` adds a bounded queue
+whose operations are each atomic.
 
 This is the language's own idiom — one construct, several backends, chosen by a word in the
 declaration, the way `secret`, `sandbox`, and `via` already work. The design, the guarantee
@@ -251,7 +253,7 @@ is [plans/language-gaps.md](plans/language-gaps.md).
   one ownership rule (NUL-terminated in; `malloc`'d out, copied and freed by the wrapper),
   and `handle` is an opaque native object released through the sidecar's `drop` function
   when its last owner drops — stateful native objects without a serverlet. Arrays and
-  structs across the C ABI are still to come.
+  structs across the C ABI shipped in 0.14.0.
 - **The standard library beyond `int` — shipped in 0.8.0.** `lists` was `int[]`-only
   because Rust sidecars were monomorphic. Sidecar signatures take type parameters,
   `reverse<T>(items: T[]) -> T[]`, so the structural list functions accept any element
@@ -265,6 +267,27 @@ is [plans/language-gaps.md](plans/language-gaps.md).
   unit enum variant that bound a value reached rustc, a `try` block whose body waited would
   not compile, and a `fn`, `task`, or `process` naming top-level state reported a missing
   Rust binding. Each is now either correct or an OrchestrateLang diagnostic.
+
+## 6. Gaps found by building programs on the language — **[SHIPPED in 0.16, except as noted]**
+
+Four programs built on 0.15.1 — a backtest engine, a control loop, a multi-tenant
+workflow runtime, and an interactive simulation engine — turned up two sets of gaps.
+Shipped: `result<T>` handlers on every boundary, deterministic replay of serverlets,
+clients as values and maps of instances by key, shared queues, cadences, measurement,
+in-place changes to shared state, value semantics everywhere, restart limits and
+backoff, landline arrays as one block, multi-file landlines, a by-name landline
+handshake that checks dataclass fields, and guests loaded while the program runs.
+
+Still open, each recorded in [limitations-notes.md](limitations-notes.md):
+- `option<T>` and enums across a process boundary;
+- strings inside structs, arrays of strings or structs, and maps across the sandbox;
+- a restart limit for landlines;
+- `stop_orch()` running `on_stop`;
+- a secret handler calling a top-level `fn` refused by `check` rather than by rustc;
+- workers in deterministic mode;
+- from the second set, deferred by choice: lending arrays to a call instead of copying
+  them, shared-memory transport for large arrays, pure handlers, fixed-size vector types,
+  and per-call boundary accounting split into encode, transit, callee, and decode.
 
 ---
 

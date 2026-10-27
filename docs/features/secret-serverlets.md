@@ -6,7 +6,7 @@
 > lexer/parser (`secret` contextual modifier), codegen (mirror + standalone child
 > program), and driver (child binaries written to `.orch_cache/src/bin/` and copied
 > next to built binaries, in `<binary>.children/` since 0.16). Covered by snapshot +
-> runtime tests. Since v1 the wire carries arrays, structs, enums' payload types, maps,
+> runtime tests. Since v1 the wire carries arrays, structs, maps,
 > and `result<T>`; a dead child is restarted and `on_crash` runs; and a deterministic run
 > replays secret calls.
 
