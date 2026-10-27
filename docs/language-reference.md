@@ -1132,11 +1132,16 @@ orchestrate build <file.orch>
 orchestrate build <file.orch> -o <output-name>
 orchestrate build --lib <file.orch> -o <dir> [--target <triple>] [--rust-version <x.y>]
                   [--dependency '<name> = <spec>'] [--dependencies <file.toml>]
+orchestrate build --guest <file.orch> [-o <file.wasm>]
+orchestrate check [--lib] <file.orch>
+orchestrate check-foreign <file.orch> [--deep]
+orchestrate prom add <name> <path> | prom remove <name> | prom list
+orchestrate --version
 ```
 
 | Command | What it does |
 | :--- | :--- |
-| `run <file>` | Compiles and immediately executes the program |
+| `run <file>` | Compiles and immediately executes the program; on Unix the process becomes the built program, so a signal sent to `run` reaches it |
 | `build <file>` | Compiles to a standalone release binary named after the `.orch` file |
 | `build <file> -o <name>` | Compiles to a release binary with a custom name |
 | `build --lib <file> -o <dir>` | Generates a Rust crate a host application links; see [library-mode.md](library-mode.md) |
@@ -1144,6 +1149,12 @@ orchestrate build --lib <file.orch> -o <dir> [--target <triple>] [--rust-version
 | `build --lib … --rust-version <x.y>` | Declares a different `rust-version` in the generated crate |
 | `build --lib … --dependency '<name> = <spec>'` | Adds a Cargo dependency to the generated crate; repeatable. A relative `path` is resolved against the working directory |
 | `build --lib … --dependencies <file.toml>` | Adds every dependency a TOML fragment declares (a `[dependencies]` header is optional); paths resolve the same way |
+| `build --guest <file> -o <file.wasm>` | Compiles the file's one sandboxed serverlet with handler bodies to a `.wasm` guest, for a program to load with `start X from path` (see §6.8a); the output folder is created |
+| `check <file>` | Parses and type-checks without generating code, under the standalone rules (see below) |
+| `check --lib <file>` | Type-checks under library rules (`host`, `on_tick`, grants), and warns of each struct, field, enum, or variant a Rust host would have to write as a raw identifier (`r#box`) |
+| `check-foreign <file>` | Runs each foreign language's own checker over the program's foreign sources; `--deep` adds mypy and a `cargo check` of the generated Rust |
+| `prom add / remove / list` | Manages the personal module registry (§6.2) |
+| `--version`, `-V`, `version` | Prints the compiler's version and the commit it was built from |
 
 ### What `check` guarantees
 
@@ -2318,7 +2329,10 @@ methods are named `world_record` and return `Result<T, String>`.
 
 `on_fixed_tick(step: float) { ... }` runs on `Scripts::fixed_tick(step)`. A single typed
 hook, `on_tick(dt: float, input: Input) -> Output { ... }`, makes `tick` take an input and
-return an output.
+return an output. `Scripts::handle_events()` runs queued events between ticks,
+`Scripts::stats()` reads what `measure` records, `Scripts::child_processes()` lists the
+instance's child processes, and `StartOptions { deterministic, ignore_budgets, .. }`
+chooses how a run treats time; [library-mode.md](library-mode.md) has each in full.
 
 #### Cadences: how often a hook or a serverlet runs
 
@@ -2424,7 +2438,8 @@ graph LR
 | **Typechecker** | `src/typechecker.rs` | Single-pass type inference and checking over the AST. Runs after all modules are parsed, so module function and serverlet handler signatures are registered before the main file is checked. Catches type mismatches in `let` statements, binary operations, and function calls. Issues warnings for unknown function calls (e.g. unresolved foreign functions). |
 | **Codegen** | `src/codegen/` | Single-pass AST traversal, split into `core.rs`, `stmt.rs`, `expr.rs`, `landline.rs` (landline clients), and `library.rs` (library mode). Outputs a Rust source `String`. Performs three pre-passes before emitting code: `scan_tasks` (discovers async callables), `scan_modules` (records imported namespaces), `scan_events` (discovers all event names and their payload types to generate registries). |
 | **Driver** | `src/driver.rs` | Resolves `use module` imports recursively, handles `load` file merging, coordinates per-module codegen, writes all `.rs` files into `.orch_cache/src/`, and invokes `cargo`. Also generates `build.rs` for `load_foreign`: C/C++ via `cc-rs`, Zig via `zig build-obj`, Swift via `swiftc`, and TypeScript executables via `src/typescript.rs`. |
-| **CLI** | `src/main.rs` | The `orchestrate` command: `run`, `build`, `check`, and `prom`. |
+| **Foreign code** | `src/ffi_parser.rs`, `src/ffi_rust.rs`, `src/typescript.rs`, `src/wasm_ffi.rs`, `src/wasm_module.rs`, `src/foreign_check.rs`, `src/dependencies.rs` | `.orch_ffi` sidecars and their bindings, TypeScript checking and executables, wasm export tables, `check-foreign`, and Cargo dependencies for foreign Rust. |
+| **CLI** | `src/main.rs`, `src/cli.rs`, `src/bin/` | The `orchestrate` command — `run`, `build` (`--lib`, `--guest`), `check`, `check-foreign`, `prom`, `--version` — and the `cargo orch` / `cargo orchestrate` wrappers. `src/prom.rs` is the module registry; `src/lsp_main.rs` the language server. |
 
 ### 7.3 The Token Types
 
@@ -2437,14 +2452,16 @@ match  try  catch  struct  enum
 use  module  load  load_foreign  serverlet  on_start  on_stop  on_crash  true  false
 ```
 
-These words are recognized by the parser in context rather than reserved by the lexer, so
-they can still be used as ordinary identifiers elsewhere:
+`start` and `on` can still be names where they cannot begin a start or a handler. These
+words are recognized by the parser in context rather than reserved by the lexer, so they
+can still be used as ordinary identifiers elsewhere:
 
 ```
 secret  sandbox  via  python  typescript  host  grant  call  on_tick  on_fixed_tick
+shared  queue  map  every  ticks  measure  unmeasured  from  backoff
 ```
 
-Operators: `+  -  *  /  ==  !=  <  >  <=  >=  =  ->  |>`
+Operators: `+  -  *  /  %  ==  !=  <  >  <=  >=  =  ->  |>  !  &&  ||  &  |  ^  <<  >>`
 
 Punctuation: `(  )  {  }  [  ]  :  ,  ;  .`
 
@@ -2469,13 +2486,15 @@ Punctuation: `(  )  {  }  [  ]  :  ,  ;  .`
 | `EnumDef` | `enum Name { Variant, Variant(type), ... }` |
 | `UseModule` | `use module alias: "path"` |
 | `Load` | `load "file.orch"` |
-| `LoadForeign` | `load_foreign "rust|c|cpp|zig|swift|typescript" "./file"` |
-| `Serverlet` | `serverlet Name { let state = v; on handler(...) { ... } }`, with `secret`, `sandbox(...)`, or `via python|typescript(source: "...")` forms |
+| `LoadForeign` | `load_foreign "rust|c|cpp|zig|swift|csharp|wasm|typescript" "./file"` |
+| `SharedQueue` | `shared queue name: T (capacity: N, full: "reject" | "drop_oldest")` |
+| `Measure` | `measure serverlets, hooks, workers` |
+| `Serverlet` | `serverlet Name { let state = v; on handler(...) { ... } }`, with `secret`, `sandbox(...)` (handlers without bodies for a loaded guest), or `via python|typescript(source: "...")` forms |
 | `Host` | `host name { fn f(params) -> type }` — host functions a library-mode host implements |
 | `Return` | `return expr` |
 | `OnStart` | `on_start { ... }` — runs at program startup, before workers launch |
 | `OnStop` | `on_stop { ... }` — runs on Ctrl-C signal before process exits |
-| `OnTick` | `on_tick(dt: float) { ... }` — library mode; optionally takes an input and returns an output |
+| `OnTick` | `on_tick(dt: float) { ... }` — library mode; optionally takes an input and returns an output, and may run `every "100ms"` or `every 5 ticks` |
 | `OnFixedTick` | `on_fixed_tick(step: float) { ... }` — library mode fixed-step tick |
 
 **Expressions (`Expr`)** — things that produce values:
@@ -2490,11 +2509,24 @@ Punctuation: `(  )  {  }  [  ]  :  ,  ;  .`
 | `Block` | `{ stmts... }` |
 | `If` | `if cond { ... } else { ... }` |
 | `ModuleCall` | `alias.fn_name(args)` |
+| `MethodCall` | `receiver.handler(args)` on any expression holding a client, e.g. `books[0].place(1)` |
+| `MapLiteral` | `map { key: value, ... }` |
+| `StartFrom` | `start Name from path` — a loaded guest or a Python landline source named at run time |
 | `AutomaticBlock` | `automatic { ... }` |
 | `TriggeredBlock` | `on event_name(params) { ... }` |
 | `StartServerlet` | `start alias.ServerletName()` |
 | `StartProcess` | `start identifier` |
 | `ArrayLiteral` | `[expr, expr, ...]` |
+| `StructLiteral` | `Name { field: expr, ... }` |
+| `FieldAccess` / `Index` | `expr.field` / `expr[i]`, on an array or a map |
+| `Unary` | `-expr`, `!expr` |
+| `NoneLiteral` / `SomeLiteral` / `OkLiteral` / `ErrLiteral` | `none`, `some(x)`, `ok(x)`, `err(e)` |
+| `Propagate` | `expr?` |
+| `TryCatch` | `try { ... } catch e: Failure { ... }` |
+| `EnumVariantLiteral` | `Enum::Variant` or `Enum::Variant(payload)` |
+| `Match` | `match expr { pattern => expr, ... }` |
+| `Closure` | `fn(x: int) -> int { x * 2 }` |
+| `StringInterp` | `"text {expr} text"` |
 
 ---
 
