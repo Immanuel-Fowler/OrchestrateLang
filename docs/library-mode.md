@@ -266,6 +266,8 @@ runtimes.
   event whose handler is waiting on anything else — a serverlet's reply, a child's answer
   — is awaited in its turn, so it finishes in the same tick on every replay.
 - The orchestrator body runs to completion during startup instead of on its own task.
+- A `take` on an empty `shared queue` gives up its turn and is served, in order, by a
+  later handler's `push`, as a deterministic `sleep` waits on host time.
 - **Serverlet calls replay.** A serverlet's actor is not spawned: it is held, and run only
   by a caller waiting for one of its replies — a hook, a handler, the orchestrator body —
   one call at a time, in call order. That holds for every boundary: in-process, sandboxed,
@@ -398,7 +400,8 @@ The output directory is compiler-owned and marked `.orchestrate-library`.
 Generation refuses to overwrite an existing unmarked directory. Regenerate from
 `.orch` sources rather than editing generated files.
 
-Python sources/SDK files, compiled TypeScript executables, and compiled secret children
+Python sources/SDK files — with the local modules a source imports and anything its
+`files: [...]` names — compiled TypeScript executables, and compiled secret children
 are embedded as library assets. Each instance extracts its own temporary directory, then
 removes it on shutdown. The linked host binary does not depend on the original `.orch`,
 Python, or TypeScript source locations. Python itself and third-party packages remain
@@ -426,7 +429,13 @@ FFI module or landline rejects a different `--target` rather than packaging an i
 executable. Zig and Swift FFI also build for the host target only; their build script fails
 with a clear message when the target differs.
 
+A guest loaded with `start X from path` is not embedded: it is a file the program is
+handed while it runs, read from `path` relative to the host process's working directory,
+and checked against the declaration when it starts. A Python landline started from a
+path runs that source with the embedded SDK. Load them from an event handler or at
+startup rather than on every tick, since a load compiles the guest.
+
 Bound slow landline calls made from `on_tick` with a landline `budget` and `late` policy,
-and batch per-item work by passing arrays; see
+and batch per-item work by passing arrays, which cross as one block copy; see
 [landline-serverlets.md](features/landline-serverlets.md) §5. To measure call latency on
 your machine, see [benchmarks/README.md](../benchmarks/README.md).
