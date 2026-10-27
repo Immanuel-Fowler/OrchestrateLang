@@ -502,6 +502,7 @@ trigger update_orchestrator([])
 | `clock_micros` | `clock_micros() -> int` | Microseconds on a monotonic clock; subtract two readings to measure elapsed time |
 | `clock_nanos` | `clock_nanos() -> int` | Nanoseconds on the same clock, for work shorter than a microsecond. Its resolution is the platform's monotonic clock: nanoseconds on Linux and macOS |
 | `latest` | `latest(p.tick) -> result<T>` | A cadenced serverlet's last answer to the runtime's call, or `err` saying why there is none; library mode (see Cadences) |
+| `stats` | `stats() -> string` | What the program's `measure` line records, as a table (see §4.7) |
 | `to_int` | `to_int(x) -> int` | A `float` rounded toward zero, or an `int` unchanged |
 | `to_float` | `to_float(x) -> float` | An `int` as a `float` |
 | `parse_int` | `parse_int(s: string) -> result<int>` | The number a string spells, or an error saying why not |
@@ -546,6 +547,10 @@ an `int` there usually means a missing conversion.
 | `has` | `has(m, key) -> bool` | Whether `m` has `key` |
 | `keys` | `keys(m) -> K[]` | The keys, in order |
 | `values` | `values(m) -> V[]` | The values, in their keys' order |
+| `push` | `push(q, item) -> bool` | Adds to a `shared queue`; `false` when something was lost — the new item under `full: "reject"`, the oldest under `"drop_oldest"` (see §2.1) |
+| `pop` | `pop(q) -> option<T>` | Takes the oldest item, or `none` |
+| `drain` | `drain(q) -> T[]` | Takes every item, oldest first |
+| `take` | `take(q) -> T` | Waits for an item, without holding the lock; refused where a statement may not wait |
 
 ```orchestrate
 let items = [1, 2, 3]
