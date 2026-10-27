@@ -41,51 +41,70 @@ The first run builds a generated Cargo project and may take longer; later runs r
 | `orchestrate run main.orch` | Compile and run a program |
 | `orchestrate build main.orch -o app` | Build a release binary |
 | `orchestrate check main.orch` | Parse and type-check without building |
+| `orchestrate check --lib main.orch` | Type-check as a library build would, and warn of names a Rust host must write raw |
 | `orchestrate check-foreign main.orch` | Run each foreign language's own checker |
 | `orchestrate check-foreign main.orch --deep` | Also run mypy, and check the generated Rust |
 | `orchestrate build --lib main.orch -o generated/scripts` | Generate an embeddable Rust crate |
+| `orchestrate build --guest model.orch -o model.wasm` | Build a sandboxed serverlet as a guest a program loads while it runs |
 | `orchestrate prom add name ./module` | Register a local module under a short name |
+| `orchestrate --version` | Print the version and the commit the compiler was built from |
 
 `cargo orch` and `cargo orchestrate` accept the same commands and arguments, so the
 compiler is usable from inside a Cargo workflow without leaving it.
 
 Examples live in [examples/](examples/) — `serverlet.orch`, `python_landline.orch`,
-`sandboxed_plugin.orch`, `supervised_process.orch`, thirty-one in all. Foreign examples
+`sandboxed_plugin.orch`, `loaded_guest.orch`, `supervised_process.orch`, thirty-two in
+all. Foreign examples
 need their own toolchain: Python 3.10+, TypeScript 7 and Bun, Zig, Swift, or the .NET SDK.
 
 ## Features
 
-**Types and data.** `int`, `float`, `string`, `bool`, `void`; arrays `T[]`; structs;
-enums with payloads; `option<T>`; `result<T, E>`, whose error side may be any type;
-function types `fn(A) -> B`; generic functions; and `handle`, an opaque native object
-from a foreign module, released through its sidecar's `drop` function when the last owner
-drops it. Annotations are optional and inferred from the value.
+**Types and data.** `int`, `float`, `string`, `bool`, `void`; arrays `T[]`; maps
+`map<K, V>`, keyed by `int`, `string`, or `bool` and kept in key order so iterating one
+replays exactly; structs; enums with payloads; `option<T>`; `result<T, E>`, whose error
+side may be any type; function types `fn(A) -> B`; generic functions, which may show,
+compare, or order their `T`; serverlet clients as values, `S.client`; and `handle`, an
+opaque native object from a foreign module, released through its sidecar's `drop`
+function when the last owner drops it. Values are copied, never moved: a binding passed,
+assigned, or stored keeps its value. Annotations are optional and inferred from the value.
 
 **Control flow.** `if`/`else`, `while`, `for x in xs`, `for i, x in xs`, `range`,
 `break`, `continue`, and `match` with literal and guard patterns and exhaustiveness
 checking. Errors travel through `try`/`catch e: Failure` and `?`. Blocks, conditionals,
 `match`, and `try` are expressions that produce values. There are closures, the
 higher-order builtins `map`, `filter`, `reduce`, `find`, `any`, `all`, the pipeline
-operator `|>`, and string interpolation with `"temperature is {reading}"`.
+operator `|>`, and string interpolation with `"temperature is {reading}"`. Operators
+include `!`, bitwise `&`, `|`, `^`, and shifts; math builtins (`abs`, `min`, `max`, `pow`,
+`sqrt`, `exp`, `ln`, `floor`, `ceil`, `round`, `sin`, `cos`, `tan`, `atan2`) work
+everywhere, including inside a sandboxed guest; `clock_micros()` and `clock_nanos()` read
+a monotonic clock.
 
 **Orchestration.** `orchestrator main(...)` owns startup, shutdown, and the set of
 workers that run. `automatic { ... }` owns recurring work and declares its own restart
-policy — `restart: 3`, `always`, `never` — with an `on_crash e { ... }` handler beside
-it. `on name(args) { ... }` declares a typed event handler and `trigger name(args)`
-multicasts to every handler for that event. `process[a, b]` names the workers an
-orchestrator owns, and `trigger update_orchestrator([...])` replaces that set while the
-program runs. `on_start` and `on_stop` are lifecycle hooks.
+policy — `restart: 3` is a limit, `always`, `never` — its wait before each restart
+(`backoff: "50ms"`), and its rate (`every: "20ms"`, on wall time, without drift), with an
+`on_crash e { ... }` handler beside it. `on name(args) { ... }` declares a typed event
+handler and `trigger name(args)` multicasts to every handler for that event.
+`process[a, b]` names the workers an orchestrator owns, and
+`trigger update_orchestrator([...])` replaces that set while the program runs, from an
+event handler, a worker, or the orchestrator body. `on_start` and `on_stop` are lifecycle
+hooks.
 
 **State, in three rungs.** A `let` at the top level belongs to the instance and only
 hooks reach it, because a spawned worker could run while a tick holds it; a `fn`, `task`,
 or `process` that names one is a compile error saying so. `shared let` puts a binding
 behind one mutex reachable from anywhere, with a one-sentence guarantee: a statement that
 touches shared state is atomic with respect to all shared state. A statement may wait, or
-touch shared state, not both. A serverlet's state is the third rung: owned by the actor,
-touched one call at a time.
+touch shared state, not both; changes made in place (`xs[i] = v`, `append`, a field)
+reach the binding. `shared queue jobs: Job (capacity: 256, full: "reject")` is a bounded
+queue whose `push`, `pop`, `drain`, `length`, and waiting `take` are each atomic, and
+whose `push` says when an item was lost. A serverlet's state is the third rung: owned by
+the actor, touched one call at a time.
 
 **Serverlets: four boundaries, one client.** A serverlet declares handlers and private
-state, and `start X()` returns a typed client. Where the body runs is one word in the
+state, and `start X()` returns a typed client, an `X.client` that can be passed to a
+`task`, kept in a struct, an array, a `shared let`, or a `map<string, X.client>` of
+instances by key, and called through any of them. Where the body runs is one word in the
 declaration and no caller changes:
 
 | Declaration | Body runs | What it gives |
@@ -96,11 +115,26 @@ declaration and no caller changes:
 | `serverlet X via typescript(source: "x.ts")` | A compiled TypeScript executable | The same, for TypeScript, through scriptc or Bun |
 | `serverlet X sandbox(memory_limit: "64mb", timeout: "5s")` | A wasmtime guest | Containment: a memory cap, a per-call timeout, and no import it was not granted |
 
-A landline bounds its own latency with `budget: "2ms"`, and `late: "drop"` or
-`late: "latest"` decides what a caller gets when the budget expires. A landline or a
-sandboxed serverlet reaches the host only through `grant call world.record`, one line per
-function; in a sandbox each grant is exactly one import in the guest's linker, and a
-handler calling anything ungranted is refused when the program is checked.
+A handler declared `-> result<T>` tells its caller when a call failed — a panic, a dead
+child restarted behind it, a crashed or late landline, a sandbox trap, timeout, or memory
+cap — as `err` saying which; any other handler answers with its type's default. A
+landline bounds its own latency with `budget: "2ms"`, and `late: "drop"` or
+`late: "latest"` decides what a caller gets when the budget expires. Its handshake finds
+each declared handler in the foreign source by name, and checks a Python dataclass field
+by field against its struct; its source may import modules beside it, which the build
+stages, and `files: [...]` stages data. Arrays of numbers and booleans cross a landline as
+one block copy. A landline or sandboxed serverlet can run on a cadence of its own
+(`every: "100ms"`), read with `latest(p.tick)`. A landline or a sandboxed serverlet
+reaches the host only through `grant call world.record`, one line per function; in a
+sandbox each grant is exactly one import in the guest's linker, and a handler calling
+anything ungranted is refused when the program is checked.
+
+**Guests loaded while the program runs.** A sandboxed serverlet whose handlers have no
+bodies declares what a plugin must implement, under the program's own limits and grants;
+`start Model from path` loads a `.wasm` built with `orchestrate build --guest`, checks it
+against the declaration, and answers `result<Model.client>`. Loading another file under a
+name replaces the guest behind it. A Python landline takes the same form to run a source
+named at run time.
 
 **Modules.** A directory with a `module.orch` is a module and a consent boundary;
 `use module analytics: "./analytics"` imports it and `load "helpers.orch"` merges a
@@ -122,7 +156,8 @@ its contract in a `.orch_ffi` sidecar:
 
 Numbers, booleans, strings, arrays of numbers, structs, and handles cross the C ABI under
 one ownership rule: what the foreign side returns is copied and freed by the generated
-wrapper, and a parameter is borrowed for the call.
+wrapper, and a parameter is borrowed for the call. A C or C++ sidecar's `[build]` section
+sets the standard, include directories, extra sources, definitions, and libraries to link.
 
 **Library mode.** `orchestrate build --lib` generates a Rust crate instead of a binary.
 The host implements a generated `Host` trait, calls `ready`, `tick(dt)`, and `shutdown`,
@@ -130,9 +165,19 @@ or their `_blocking` forms, or `tick_sync` to run a tick on its own thread. Tick
 typed — `on_tick(dt: float, input: Input) -> Output` — and `on_fixed_tick(step: float)`
 runs at a fixed rate. The host fires events with `Scripts::trigger_<event>(...)`, receives
 `print` output and diagnostics through `Host::log`, and learns which Tokio drivers the
-program needs from `NEEDS_IO_DRIVER`. With `StartOptions { deterministic: true }` the
-clock becomes the sum of the host's `dt` values and a tick and event sequence replays
-identically.
+program needs from `NEEDS_IO_DRIVER`. Tick hooks can run on a cadence of host time,
+`on_tick(dt: float) every "100ms"` or `every 5 ticks`, and a program may have several.
+`handle_events()` runs queued events between ticks, and `child_processes()` lists the
+instance's child processes. With `StartOptions { deterministic: true }` the clock becomes
+the sum of the host's `dt` values and a tick and event sequence replays identically,
+serverlet calls included, on every boundary; `ignore_budgets` lifts landline budgets for
+a replay in a normal run.
+
+**Measurement.** `measure serverlets, hooks, workers` at the top of the entry file keeps,
+for each serverlet handler, tick hook, event handler, and worker, its calls, failures,
+and the p50/p90/p99/max of its duration, start delay, and CPU time; `stats()` returns
+them, and a library host reads `Scripts::stats()`. `unmeasured` leaves one thing out. It is
+compiled in only for what is measured.
 
 **Tooling.** `orchestrate check` type-checks without generating code;
 `orchestrate check-foreign` runs each foreign language's own checker, and `--deep` adds
@@ -438,20 +483,26 @@ example still running.
 The most important limitations are behavioral, not cosmetic:
 
 - A sandboxed serverlet contains its guest's compute, memory, and reach, as well as
-  wasmtime does. It carries what the C ABI carries; an array of strings or structs, or a
-  struct holding one, does not cross it, though the other three boundaries carry them.
-  Its `grant call` lines are the only way it reaches the host, and only in a library
+  wasmtime does. It carries what the C ABI carries; a string inside a struct, an array of
+  strings or structs, and a map do not cross it, though the other three boundaries carry
+  them. Its `grant call` lines are the only way it reaches the host, and only in a library
   build.
 - A separate process provides lifecycle and crash separation, not a security boundary.
-- Python and TypeScript are the supported landline runtimes today.
+- `option<T>`, enums, closures, and handles do not cross a process boundary; a handler
+  returning an enum does so as `result<T>`, in-process only.
+- Python and TypeScript are the supported landline runtimes today, and a landline restarts
+  without a configurable limit.
 - Cross-process serverlet and TypeScript values use an explicit protocol and therefore
   cost more than direct in-process calls.
-- Deterministic library mode covers lifecycle and event hooks, not spawned workers or
-  serverlets.
+- Deterministic library mode covers hooks, events, and serverlets on every boundary; a
+  spawned worker, and `sleep` outside an event handler, are still refused in it.
 - Outside library mode, `on_stop` runs on Ctrl+C; `stop_orch()` exits immediately.
+- There is no file or network I/O in the language itself; foreign code and landlines
+  reach it.
 - Cross-compilation of foreign code depends on each foreign toolchain and is limited.
-- Some diagnostics can still surface from generated Rust. Set `ORCH_SHOW_GENERATED=1`
-  to print the generated source and full Cargo output.
+- Every invalid program in the diagnostics corpus is refused by `check`; one outside it
+  can still surface from generated Rust. Set `ORCH_SHOW_GENERATED=1` to print the
+  generated source and full Cargo output.
 
 Every gap found and not yet closed is collected in
 [docs/limitations-notes.md](docs/limitations-notes.md); release-specific notes are in the
