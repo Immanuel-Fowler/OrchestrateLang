@@ -106,7 +106,10 @@ Host application (Rust, owns its main loop) — e.g. a game engine
 ### Two kinds of line
 
 "Landline" means **no sockets**: no ports, no network stack, nothing to firewall or
-clean up. There are two ways to run a line, and a program can use both.
+clean up. There are two ways to run a line, and a program can use both. A serverlet on
+another machine is a separate boundary, proposed as `via tcp` in the
+[roadmap](../roadmap.md#1c-remote-serverlets-over-tcp-via-tcp--proposed), so a landline
+keeps this promise.
 
 | | `line: "pipe"` (default) | `line: "embedded"` |
 |---|---|---|

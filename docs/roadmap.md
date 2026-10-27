@@ -89,6 +89,55 @@ See `language-reference.md` §6.4 and §6.5 for full documentation.
 
 ---
 
+## 1c. Remote serverlets over TCP (`via tcp`) — **[PROPOSED]**
+
+**Problem it solves:** every serverlet boundary today ends on the same machine: an actor, a
+child process, a Python or TypeScript process on a pipe, a wasm guest. A service that runs
+somewhere else — a scoring service on another host, a shared model server — has no
+boundary at all; a program would have to reach it through a landline that opens its own
+socket, outside everything the language checks.
+
+**How it would work:** a serverlet whose body runs in a server the program connects to
+and owns one connection to, speaking the protocol the other boundaries already speak —
+the same frames, the same handshake that checks each declared handler by name, the same
+wire encoding, and `result<T>` for a call that failed:
+
+```orchestrate
+serverlet Scorer via tcp(address: "scoring.internal:7400", budget: "5ms") {
+    on score(xs: float[]) -> result<float>
+}
+
+let scorer = start Scorer()                       // connects; reconnects with backoff if dropped
+match start Scorer from "10.0.0.9:7400" { ... }   // an address chosen while the program runs
+```
+
+The call site is unchanged, which is the language's claim: one word in the declaration
+moves the body to another machine. The connection lives as long as the client and closes
+when the last copy drops. The server side is a serverlet with bodies built as a server
+(`orchestrate build --serve scorer.orch`), or the Python SDK's
+`landline.serve_tcp(Scorer, port=7400)`.
+
+**Decisions it needs:**
+
+- **The no-sockets principle.** Landlines are defined by having no sockets. `via tcp` is a
+  separate boundary, not a landline, so that promise stands; the language as a whole
+  gains a network boundary on purpose, and `docs/design-philosophy.md` says so in the
+  same change.
+- **Failure.** A dropped connection, a refused one, and a missed budget are each an `err`
+  for a `result` handler and a default otherwise, as on every boundary; reconnection uses
+  the backoff the restart policies already use.
+- **Security.** Plain TCP is not a security boundary and the docs say so as plainly as
+  they do for `secret`. TLS is a later, separate decision.
+- **Determinism.** Excluded from deterministic library mode: an answer from another
+  machine depends on wall time and that machine's state.
+
+**Not part of this:** raw connections in another protocol's framing (an exchange feed,
+Redis), and a program that listens and treats each accepted connection as an instance.
+Both need things the language does not have yet — messages the program did not ask for,
+and a `bytes` type — and are separate proposals.
+
+---
+
 ## 2. Sandboxed Serverlets (Wrap, Don't Build) — **[SHIPPED]**
 
 **Problem it solves:** Running untrusted or semi-trusted code (plugins, user-submitted logic, downloaded modules) safely, without OrchestrateLang needing to invent its own sandboxing/security model.
@@ -217,6 +266,7 @@ A possible overall narrative for the ecosystem:
 - **OPM** — acquire modules by name, from elsewhere (git/releases).
 - **Polyglot serverlets** — compose modules written in other languages (Python, C/C++, Rust).
 - **Sandboxed serverlets** — isolate modules (especially downloaded/untrusted ones) using existing, audited sandbox tech.
+- **Remote serverlets** (proposed) — reach a module running on another machine through the same call site.
 
 Together: *"OrchestrateLang lets you compose modules from anywhere — local, downloaded, or written in other languages — reference them simply, and isolate the ones you don't fully trust."*
 
@@ -238,6 +288,8 @@ Given the combined scope of these four features, recommend picking **one end-to-
    subprocess+JSON sketch.
 5. **OPM (git-based, no hosted index)** — builds on PROM's name→location mapping.
 6. ~~**Sandboxed serverlets (wasmtime)** — largest single feature; benefits from #4's pattern and gives OPM a security story.~~ **[SHIPPED: 0.9.0, grants and `on_crash` after 0.14.0]**
+7. **Remote serverlets over TCP** (1c) — after the protocol it reuses; the first boundary
+   that leaves the machine.
 
 A smaller set of fully-working, well-documented features is a stronger result (and more likely to see real use) than a sprawling set of partially-built ones.
 
