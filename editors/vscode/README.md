@@ -5,7 +5,7 @@ Syntax highlighting, snippets, and bracket matching for [OrchestrateLang](https:
 ## Features
 - Syntax highlighting for OrchestrateLang keywords, types, and operators
 - Bracket matching and auto-closing pairs
-- 14 snippets for common constructs (`auto`, `orch`, `fn`, `task`, `trig`, etc.)
+- 20 snippets for common constructs (`auto`, `orch`, `fn`, `task`, `trig`, serverlets on each boundary, `host`, and more)
 
 ## Example
 
