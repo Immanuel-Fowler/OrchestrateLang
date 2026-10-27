@@ -111,6 +111,15 @@ let scorer = start Scorer()                       // connects; reconnects with b
 match start Scorer from "10.0.0.9:7400" { ... }   // an address chosen while the program runs
 ```
 
+**Why it is a language feature, not a library.** A modern language should be able to talk
+to a service on another machine without a dependency, and in this language a boundary is
+a word in a serverlet's declaration: the compiler builds the typed client, the handshake
+that checks each declared handler, `result<T>` for a failed call, budgets, measurement,
+and `start X from`. A library could only hand a program a socket to talk to by hand,
+outside everything `check` verifies. `via tcp` is the same construct as `secret`,
+`sandbox`, and `via python`, and the most consistent of the possible TCP designs with how
+they work.
+
 The call site is unchanged, which is the language's claim: one word in the declaration
 moves the body to another machine. The connection lives as long as the client and closes
 when the last copy drops. The server side is a serverlet with bodies built as a server
@@ -126,8 +135,9 @@ when the last copy drops. The server side is a serverlet with bodies built as a 
 - **Failure.** A dropped connection, a refused one, and a missed budget are each an `err`
   for a `result` handler and a default otherwise, as on every boundary; reconnection uses
   the backoff the restart policies already use.
-- **Security.** Plain TCP is not a security boundary and the docs say so as plainly as
-  they do for `secret`. TLS is a later, separate decision.
+- **Not a security boundary, by design.** `via tcp` is for reaching a service, not for
+  isolating one, and the docs say so as plainly as they do for `secret`: what isolates
+  code is `sandbox`.
 - **Determinism.** Excluded from deterministic library mode: an answer from another
   machine depends on wall time and that machine's state.
 
