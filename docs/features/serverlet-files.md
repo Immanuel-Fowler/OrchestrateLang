@@ -3,9 +3,12 @@
 > Status: **design ~90% done — partly implemented.** Polyglot serverlets shipped as
 > [landline serverlets](landline-serverlets.md): `serverlet X via python(...)` and
 > `via typescript(...)`, with `grant call` for host functions enforced by the generated
-> dispatcher. That supersedes step 5 below (subprocess+JSON). Still design only: the
-> distributable serverlet file itself, `grant read/write "<path>"`, and loading prebuilt
-> serverlets through the `module.orch` consent boundary. The *model* is settled (consent
+> dispatcher. That supersedes step 5 below (subprocess+JSON). Since 0.16 a prebuilt
+> sandboxed guest can be loaded while a program runs (`start X from path`, a `.wasm` from
+> `orchestrate build --guest`), checked against the program's declaration — the
+> run-time half of distributing a serverlet. Still design only: the distributable
+> serverlet file itself, `grant read/write "<path>"`, and loading prebuilt serverlets
+> through the `module.orch` consent boundary. The *model* is settled (consent
 > boundary, manifest-as-extended-`module.orch`, two polyglot paths, grant enforcement as
 > the load-bearing wall). Lock the serverlet-file syntax last, *after* sandboxed serverlets
 > ship (see `sandboxed-serverlets.md`), so the file format can account for `sandbox(...)`

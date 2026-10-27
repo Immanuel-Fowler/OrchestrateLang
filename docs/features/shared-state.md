@@ -2,7 +2,10 @@
 
 > Status: **shipped in 0.13.0.** The open questions at the end were answered as this
 > document recommended, and §2 records where the built semantics differ from the original
-> proposal.
+> proposal. Since 0.16 changes made in place (`xs[i] = v`, a field, `append`, `remove`)
+> reach the binding, a `shared let` may hold clients, handles, and maps, and
+> `shared queue name: T (capacity: N, full: "reject" | "drop_oldest")` adds a bounded
+> queue with atomic `push`, `pop`, `drain`, `length`, and a waiting `take`.
 
 ## 1. The philosophy: more control for no cost
 

@@ -1,8 +1,13 @@
 # Landline Serverlets — Design & Build Plan
 
-> Status: **🚧 IN PROGRESS — Python and TypeScript pipes, TypeScript FFI, Rust library
-> mode, host callbacks, call budgets, a latency benchmark, and host integration for the
-> first adopter are implemented (§8). Other runtimes remain planned.** The
+> Status: **✅ SHIPPED for Python and TypeScript pipes; other runtimes and embedded lines
+> remain planned.** Implemented (§8): Python and TypeScript pipes, TypeScript FFI, Rust
+> library mode, host callbacks, call budgets and late-result policies, `result<T>`
+> handlers that say why a call failed, restart after a crash and retry after a failed
+> start, a handshake that finds declared handlers by name and checks a dataclass field by
+> field, arrays of numbers crossing as one block copy, sources that import modules beside
+> them plus `files: [...]`, cadenced `tick` calls (`every:`), `start X from path` for a
+> Python source named at run time, deterministic replay, and a latency benchmark. The
 > [Python SDK guide](../../sdk/python/README.md) and [TypeScript SDK guide](../../sdk/typescript/README.md)
 > describe the implemented subsets;
 > the [library guide](../library-mode.md) describes host integration. Embedded runtimes below remain proposals. What *is* settled: a serverlet's handler bodies can be written in
@@ -319,7 +324,7 @@ simulation, a desktop app — owns its own main loop, so:
    and an embedded one shares its memory. Untrusted third-party plugins need sandboxed
    serverlets. Docs must say this as plainly as the secret serverlet docs do.
 
-### Protocol v1 (implemented for secret serverlets; landline extensions proposed)
+### Protocol v1 (implemented for secret serverlets and Python and TypeScript landlines)
 
 Frame: `[u32 length][u8 kind][u32 call_id][payload]`, little-endian. Length
 covers the kind, call ID, and payload (not the length prefix). Implemented kind IDs
@@ -452,7 +457,8 @@ Implemented: Python pipe declarations, typed values, state, signature checking,
 exception replies, process restart after a failed call, portable source/SDK bundles,
 and snapshot/runtime tests. CI installs Python 3.10. The initial restart behavior is
 fixed: invoke `on_crash`, return a default for the failed call without replaying it,
-and restart for subsequent calls. Configurable restart policies remain future work. A
+and restart for subsequent calls. A configurable restart limit (`restart:` in the
+configuration) remains future work. A
 landline whose startup fails — the interpreter missing, the handshake failed or timed
 out — is tried again after a backoff (100 ms, doubling to 5 s) rather than closed for the
 rest of the run; calls in between return their default. A handler declared

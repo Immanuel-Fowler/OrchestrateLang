@@ -9,7 +9,10 @@
 > those, cross as of the branch after 0.14.0, under the C ABI's ownership and layout
 > rules. Step 7, a `grant` as a narrow, mediated host function, shipped after 0.14.0
 > too, along with `on_crash` on the host side of a trap. Since 0.16 a handler declared
-> `-> result<T>` answers `err` when its call traps, rather than its type's default.
+> `-> result<T>` answers `err` when its call traps, rather than its type's default; the
+> timeout is a duration from each call's own start; a deterministic run replays sandboxed
+> calls; a sandbox can run on a cadence (`every:`); and a guest can be loaded while the
+> program runs (step 9).
 
 ---
 
@@ -256,6 +259,16 @@ two sides: the grant declares intent; the wasmtime linker enforces it.
 8. ✅ **Docs. (DONE)** Update `../language-reference.md` with the sandboxed serverlet section
    and the precise, honest security statement from §2. Flip the
    `../roadmap.md` entry to **[SHIPPED]**.
+
+9. ✅ **Guests loaded while the program runs. (0.16)** A sandboxed serverlet whose
+   handlers have no bodies declares an interface; `start X from path` reads a `.wasm`,
+   instantiates it under the declaration's limits and grants, and checks it against the
+   declaration through the guest's `orch_interface` export, answering
+   `result<X.client>`. `orchestrate build --guest` builds a guest on its own. Each call
+   the host makes into a guest — the call, and the allocator before and after it — gets a
+   timeout window of its own. *Tests:* `library_loads_a_guest_while_it_runs` (normal and
+   deterministic), `loaded_guest_diagnostics`, `build_guest_needs_one_guest`,
+   `tests/programs/sandbox_call_after_a_pause.orch`.
 
 ---
 

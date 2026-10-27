@@ -232,6 +232,9 @@ named in `CHANGELOG.md`.
 
 ## Found, not fixed
 
+- **A secret handler that calls a top-level `fn` passes `check` and fails in rustc**
+  (E0425): the child binary does not include the parent's functions. The rule is right;
+  `check` should refuse the call, naming it.
 - **`option<T>` and enums do not cross a process boundary.** A secret or landline handler
   returning `option<int>` is refused by `check`; `result<T>` crosses, and `option` could
   cross the same way, as a flag byte and the value.

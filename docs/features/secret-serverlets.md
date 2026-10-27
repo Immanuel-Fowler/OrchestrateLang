@@ -5,8 +5,10 @@
 > orchestrator talks to a thin **mirror** of it over IPC. Implemented across the
 > lexer/parser (`secret` contextual modifier), codegen (mirror + standalone child
 > program), and driver (child binaries written to `.orch_cache/src/bin/` and copied
-> next to built binaries). Covered by snapshot + runtime tests. Next up: sandboxed
-> serverlets (`sandboxed-serverlets.md`).
+> next to built binaries, in `<binary>.children/` since 0.16). Covered by snapshot +
+> runtime tests. Since v1 the wire carries arrays, structs, enums' payload types, maps,
+> and `result<T>`; a dead child is restarted and `on_crash` runs; and a deterministic run
+> replays secret calls.
 
 ---
 
@@ -266,13 +268,14 @@ syntax lands with serverlet-files.
 
 ### Known v1 limitations (documented, not bugs)
 
-- **Primitives only across the wire.** Handlers using structs (or other non-primitive
-  types) as params/returns produce a clear `compile_error!`. Structs-over-the-wire
-  is future work.
+- **What crosses the wire.** Numbers, booleans, strings, arrays, same-file structs, maps,
+  and `result<T>` cross (the v1 restriction to primitives was lifted in 0.8–0.16).
+  `option<T>`, enums, closures, handles, and clients do not; `check` refuses them.
 - **Self-contained handlers.** A secret serverlet's handlers/state may use builtins
-  (`print` → stderr, `to_string`, arithmetic) and primitives, but cannot call
-  top-level functions or module functions from the parent program — the child is a
-  separate binary and does not include them.
+  (`print` → stderr, `to_string`, arithmetic, math), the file's structs and enums, but
+  cannot call top-level functions or module functions from the parent program — the
+  child is a separate binary and does not include them. `check` does not refuse such a
+  call yet: it reaches rustc as E0425 (see `../limitations-notes.md`).
 - **Unique names.** The child binary is `secret_<name>`; secret serverlet names must
   be unique across the program.
 - **`print` goes to stderr** inside a secret serverlet (stdout is the IPC channel).
