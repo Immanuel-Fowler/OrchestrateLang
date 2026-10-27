@@ -18,7 +18,7 @@ benchmarks. Python 3.10+ is required.
 
 | Script | Table | Output |
 |---|---|---|
-| `benchmarks/landline_latency/run.py` | the boundary ladder: payload, call-rate, concurrent-callers, and state sweeps | `boundary_ladder.{csv,json,md}`, `boundary_ladder_samples.csv` |
+| `benchmarks/landline_latency/run.py` | the boundary ladder: payload, array, call-rate, concurrent-callers, and state sweeps | `boundary_ladder.{csv,json,md}`, `boundary_ladder_samples.csv` |
 | `benchmarks/tick_cost/run.py` | the library-mode tick cost | `tick_cost.{csv,json,md}` |
 | `benchmarks/diagnostics_coverage.py` | how many invalid programs `orchestrate check` rejects | `diagnostics_coverage.{csv,json,md}` |
 
@@ -55,10 +55,14 @@ two rungs below a serverlet call:
 | `python` | A Python landline, over stdin/stdout |
 | `typescript` | A TypeScript landline: a compiled executable over stdin/stdout |
 
-Four sweeps, each with warm-up calls first and the tail reported:
+Five sweeps, each with warm-up calls first and the tail reported:
 
 - **Payload sweep.** An `int`, a 1,024-character `string`, and a 1,000-element `int[]`,
   called back to back: 200 warm-up calls, then 2,000 measured, one caller.
+- **Array sweep.** A `float[]` of 1,000, 10,000, and 50,000 elements echoed back on every
+  boundary, so the array crosses twice per call: 1,100, 330, and 110 calls, the first
+  tenth of each discarded as warm-up. It is the cost of moving a batch, and the row that
+  shows a landline's array codec.
 - **Call-rate sweep.** The `int` payload paced at 100 Hz and 1 kHz, where the caller
   sleeps between calls so the child and the actor really go idle, as they would under a
   host that ticks, and at 10 kHz, where the caller spins, because `sleep` has millisecond
