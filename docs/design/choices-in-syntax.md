@@ -43,8 +43,11 @@ properties config does not:
 | `unmeasured` | One thing left out of `measure` | Nothing |
 | `budget: "2ms"`, `late: "latest"` | A call that cannot hold the tick | A default or a stale result when it is late |
 | `via python(..., files: ["data/"])` | Those files staged beside the source | A copy per build |
-| `automatic(restart: 3) { } on_crash e { }` | A supervised worker | A task |
-| `shared let x = 0` | State any task may touch | One mutex, about 9 ns a statement |
+| `automatic(restart: 3, backoff: "50ms") { } on_crash e { }` | A supervised worker that stops after three restarts | A task |
+| `shared let x = 0` | State any task may touch | One mutex, about 10 ns a statement |
+| `shared queue q: T (capacity: 256, full: "reject")` | A bounded queue any task may push to or take from | One lock per operation, and a stated loss when full |
+| `on h(...) -> result<T>` | A call that says why it failed | A flag byte on the wire |
+| `S.client`, `map<string, S.client>` | Instances passed around and found by key | Nothing; a client is an address |
 | `let x = 0` | Instance state | Nothing; only hooks reach it |
 | `fn` / `task` | Synchronous / asynchronous | A `fn` may not wait, and is told so |
 | `load_foreign "c" "./m.c"` | A linked C function | A build dependency on `cc` |

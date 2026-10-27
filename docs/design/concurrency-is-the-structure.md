@@ -79,8 +79,9 @@ Who may touch a binding is a property of how it is declared, not a convention:
 |---|---|---|
 | `let x = 0` inside a serverlet | That serverlet's handlers, one at a time | A field access |
 | `let x = 0` at the top level | The instance's hooks: `on_start`, `on_tick`, `on_stop`, event handlers | A field access |
-| `shared let x = 0` | Any task, any `fn`, any worker | About 9 ns per statement |
-| A serverlet call | Anything holding the client | 7–25 µs, depending on the boundary |
+| `shared let x = 0` | Any task, any `fn`, any worker | About 10 ns per statement |
+| `shared queue q: T (...)` | Any task, any `fn`, any worker; `take` waits for an item | One lock per operation |
+| A serverlet call | Anything holding the client | 7–50 µs, depending on the boundary |
 
 The middle two rungs exist because they answer different questions. A top-level `let` is
 owned by the instance and a spawned worker can run while a tick holds it, so a `fn`,

@@ -125,7 +125,9 @@ calls are fast, but that a call which is not fast cannot hold the tick.
   driver; the crate exports `NEEDS_IO_DRIVER` and `start` fails with a message naming the
   declarations rather than panicking inside a task.
 - **Deterministic mode is a subset**, and the reason a worker is excluded is the same
-  reason it is useful: it runs whether or not the host ticked.
+  reason it is useful: it runs whether or not the host ticked. Serverlets are inside it
+  since 0.16, on every boundary: their actors run only for a caller waiting on a reply, in
+  call order, inside the tick.
 - **A `try` block that waits generates an async block**, so `?` still works and the
   handler may wait too; one that does not wait generates exactly what it did before.
 - **`stop_orch()` differs by ownership.** Standalone it exits; in library mode it sets an

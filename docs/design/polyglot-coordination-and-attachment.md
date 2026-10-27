@@ -81,16 +81,16 @@ machine are in [benchmarks/README.md](../../benchmarks/README.md):
 
 | Boundary | p50 across payloads |
 |---|---|
-| In-process | 7–14 µs |
-| Sandboxed | 7–13 µs |
-| Secret child | 17–25 µs |
-| Python landline | 24 µs, and 568 µs for a 1,000-element array |
-| TypeScript landline | 45 µs, and 314 µs for a 1,000-element array |
+| In-process | 7–8 µs |
+| Sandboxed | 8–13 µs |
+| Secret child | 19–22 µs |
+| Python landline | 27 µs, and 59 µs for a 1,000-element array |
+| TypeScript landline | 49 µs, and 96 µs for a 1,000-element array |
 
 The sandbox costing about what an in-process actor costs is the useful surprise: the
-wasmtime call is small next to the channel round trip that both pay. The Python array row
-is the honest one: its SDK encodes element by element, and that is the boundary's cost,
-not the format's.
+wasmtime call is small next to the channel round trip that both pay. A landline's array
+row is one block copy each way plus building its language's own values; until 0.16 its
+SDKs encoded element by element, and a 1,000-element array cost 568 µs in Python.
 
 ## Dependencies follow the declaration
 
