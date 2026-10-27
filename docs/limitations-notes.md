@@ -1,7 +1,8 @@
 # Limitations notes
 
-Gaps found while preparing the paper submission, whether or not they were fixed. Each
-entry says where the gap is, how it was found, and what its status is. This file feeds
+Gaps found while preparing the paper submission, and since then by building programs on
+the language, whether or not they were fixed. Each entry says where the gap is, how it
+was found, and what its status is. This file feeds
 the paper's limitations section; `docs/roadmap.md` and the changelog stay the user-facing
 record.
 
@@ -14,8 +15,8 @@ version of the claim.
 | Value | In-process | Secret | Python / TypeScript landline | Sandboxed (WASM) |
 |---|---|---|---|---|
 | `int`, `float`, `bool`, `string` | yes | yes | yes | yes |
-| `int[]`, `float[]`, `bool[]` | yes | yes | yes | yes (since this branch) |
-| struct of numbers and booleans | yes | yes | yes | yes (since this branch) |
+| `int[]`, `float[]`, `bool[]` | yes | yes | yes, as one block copy | yes |
+| struct of numbers and booleans | yes | yes | yes, a dataclass checked field by field | yes |
 | struct with a `string` field | yes | yes | yes | **no** |
 | `string[]`, array of structs, array of arrays | yes | yes | yes | **no** |
 | `result<T>` as a handler's return, of a `T` above | yes | yes | yes: the implementation returns `T`, and raising or throwing is its `err` | yes |
@@ -76,7 +77,7 @@ and `runtime_sandbox_result_says_a_call_failed`.
   instance being replaced), where an in-process `on_crash` can. Refused at compile time
   with the binding named.
 
-## Found and fixed on this branch
+## Found and fixed while preparing the paper (0.13.0–0.15.1)
 
 - **Sandbox string arguments leaked guest memory.** Every string the host wrote into the
   guest stayed allocated. Under an 8mb cap, 20,000 one-kilobyte calls failed four times,
@@ -214,7 +215,37 @@ named in `CHANGELOG.md`.
 - **Names inside a string's `{...}` were reported at their position in the snippet**, line
   1 and a column counted from the brace.
 
+- **A Python dataclass with the struct's fields in another order was accepted** and
+  decoded into the wrong fields, silently: the handshake named a struct and nothing else.
+  It now spells out each struct's fields on both sides and refuses a mismatch.
+- **A landline's arrays crossed an element at a time**, about 300 ns per number in Python,
+  so the boundary recommended for batched work could not carry a batch. They cross as one
+  block copy now, 10–16 times faster on the boundary ladder.
+- **A landline was one file** and could not import a module beside it, and **its
+  declaration had to name every public method, in order.** The build follows a Python
+  source's imports; the handshake finds declared handlers by name.
+- **A sandboxed call made a timeout after the previous one trapped before it started**,
+  while its arguments were copied in under the previous call's deadline.
+- **A struct or enum with a one-letter name was read as a type parameter** in a signature.
+- **Nothing could be loaded while a program ran.** A sandboxed guest now can, with
+  `start X from path`, and a Python landline can run a source named at run time.
+
 ## Found, not fixed
+
+- **`option<T>` and enums do not cross a process boundary.** A secret or landline handler
+  returning `option<int>` is refused by `check`; `result<T>` crosses, and `option` could
+  cross the same way, as a flag byte and the value.
+- **The sandbox does not carry a string inside a struct, an array of strings or structs,
+  or a map.** Each needs an ownership rule of its own in the C ABI.
+- **`stop_orch()` exits without running `on_stop`** in a standalone program; only Ctrl+C
+  runs it.
+- **A landline restarts without a configurable limit**; `restart:` in its configuration
+  is refused.
+- **`start X from path` for a Python landline checks only that the file exists.** Whether
+  it implements the declaration is found in the handshake, so a mismatch fails each call
+  rather than the start.
+- **The landline block codec's big-endian path is untested.** It byte-swaps on a
+  big-endian host; no such host runs the tests.
 
 - **Struct layout across the sandbox assumes a little-endian host.** Struct bytes are
   written field by field in little-endian order on both sides, so a big-endian host would
@@ -230,8 +261,8 @@ named in `CHANGELOG.md`.
   Apple M2) is the real number the ladder needs.
 - **`clock_micros` has microsecond resolution.** The state rungs are batched to get
   nanoseconds; every other row is a single round trip, so a 1 µs quantisation sits under
-  every p50 in the low tens of microseconds. Adding a nanosecond clock would be new
-  language surface, which this work does not add.
+  every p50 in the low tens of microseconds. `clock_nanos()` exists since 0.16; the
+  ladder still uses `clock_micros` so its rows stay comparable with earlier runs.
 - **The first sweep pays for being first.** The in-process `int` row runs first and shows
   a higher median than the same kind's string row; the actor and the allocator are still
   warming even after 200 warm-up calls. Read the payload sweep as rows within a kind
@@ -278,10 +309,9 @@ named in `CHANGELOG.md`.
 
 ## Diagnostics corpus: what still reaches rustc
 
-Nothing. The counts below are 0.15.1's; `benchmarks/results/diagnostics_coverage.md` has
-the current run. 89 invalid programs; all 89 rejected by `orchestrate check`, none by the build,
-none by rustc, none accepted (`benchmarks/results/diagnostics_coverage.md`), and
-`tests/error_cases/diagnostics/KNOWN_LEAKS.txt` is empty.
+Nothing. 121 invalid programs; all 121 rejected by `orchestrate check`, none by the
+build, none by rustc, none accepted (`benchmarks/results/diagnostics_coverage.md`, run at
+e85d785), and `tests/error_cases/diagnostics/KNOWN_LEAKS.txt` is empty.
 
 For 0.15.1, six mistakes that used to pass `check` and be caught by the driver or the
 generator became `check` errors: a `load_foreign` language the compiler does not know,
