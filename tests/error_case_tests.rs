@@ -132,7 +132,7 @@ fn test_error_cases() {
     assert_check_fails("diagnostics/print_a_struct.orch", "to_string shows an int, a float, a string, or a bool, and this is Point");
     assert_check_fails("diagnostics/interpolate_an_array.orch", "a string's {...} shows an int, a float, a string, or a bool, and this is int[]");
     assert_check_fails("diagnostics/compare_clients.orch", "Book.client values cannot be compared with `==`");
-    assert_check_fails("diagnostics/map_float_key.orch", "a map's key is an int, a string, or a bool, and this one is float");
+    assert_check_fails("diagnostics/map_float_key.orch", "a map's key is an int, a string, a bool, or an entity, and this one is float");
     assert_check_fails("diagnostics/for_over_a_map.orch", "loop over keys(m) or values(m)");
     assert_check_fails("diagnostics/method_on_a_non_client.orch", "only a serverlet client has handlers");
     assert_check_fails("diagnostics/client_to_a_secret_handler.orch", "means nothing in another");
