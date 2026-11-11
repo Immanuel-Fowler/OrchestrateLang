@@ -337,3 +337,102 @@ fn main() {
         "11|[orchestrate] wasm call 'Guest::spin' failed: the guest used up its fuel|0|11"
     );
 }
+
+const BURN: &str = r#"
+host world { fn note(value: int) }
+serverlet Burner sandbox(memory_limit: "8mb", fuel: 3000) {
+    on burn(n: int) -> int {
+        let i = 0
+        let acc = 0
+        while i < n {
+            acc = acc + i * 3 % 7
+            i = i + 1
+        }
+        return acc
+    }
+}
+let burner = start Burner()
+on_tick(dt: float) {
+    let n = 0
+    while n <= 2000 {
+        world.note(burner.burn(n))
+        n = n + 25
+    }
+}
+orchestrator main() {}
+"#;
+
+/// The same guest, the same budget, two engines: wasmtime natively and wasmi in a
+/// WebAssembly engine stop it at the same instruction, because both run the same metered
+/// bytecode. A replay across a native peer and a browser peer depends on exactly this.
+#[test]
+fn metered_fuel_stops_a_guest_at_the_same_point_on_every_engine() {
+    if Command::new("bun").arg("--version").output().is_err() {
+        eprintln!("skipping: `bun` is not on PATH");
+        return;
+    }
+    let root = root("cross_engine");
+    fs::write(root.join("main.orch"), BURN).unwrap();
+    succeeded(&orchestrate(&["build", "--lib", "main.orch", "-o", "native"], &root));
+    succeeded(&orchestrate(&["build", "--lib", "--web", "main.orch", "-o", "web"], &root));
+
+    // Natively, on wasmtime.
+    fs::create_dir_all(root.join("native_host/src")).unwrap();
+    fs::write(root.join("native_host/Cargo.toml"), "[package]\nname=\"native_host\"\nversion=\"0.1.0\"\nedition=\"2021\"\n[dependencies]\nnative={path=\"../native\"}\ntokio={version=\"1.35\",features=[\"full\"]}\n[workspace]\n").unwrap();
+    fs::write(root.join("native_host/src/main.rs"), r#"
+use std::sync::{Arc, Mutex};
+struct Host(Arc<Mutex<Vec<String>>>);
+impl native::Host for Host {
+    fn log(&self, _: native::LogLevel, message: &str) { self.0.lock().unwrap().push(message.to_string()); }
+    fn world_note(&self, value: i64) -> Result<(), String> { self.0.lock().unwrap().push(value.to_string()); Ok(()) }
+}
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut scripts = native::start(runtime.handle(), Host(log.clone())).unwrap();
+    scripts.tick_blocking(&runtime, 0.1).unwrap();
+    scripts.shutdown_blocking(&runtime).unwrap();
+    println!("{}", log.lock().unwrap().join("\n"));
+}
+"#).unwrap();
+    let native = String::from_utf8(cargo(&["run", "--quiet"], &root.join("native_host")).stdout).unwrap();
+
+    // In a WebAssembly engine, on wasmi.
+    fs::create_dir_all(root.join("web_host/src")).unwrap();
+    fs::write(root.join("web_host/Cargo.toml"), "[package]\nname=\"web_host\"\nversion=\"0.1.0\"\nedition=\"2024\"\n[lib]\ncrate-type=[\"cdylib\"]\n[dependencies]\nweb={path=\"../web\"}\ntokio={version=\"1.35\",default-features=false,features=[\"rt\"]}\n[workspace]\n").unwrap();
+    fs::write(root.join("web_host/src/lib.rs"), r#"
+use std::sync::Mutex;
+static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
+struct Host;
+impl web::Host for Host {
+    fn log(&self, _: web::LogLevel, message: &str) { LOG.lock().unwrap().push(message.to_string()); }
+    fn world_note(&self, value: i64) -> Result<(), String> { LOG.lock().unwrap().push(value.to_string()); Ok(()) }
+}
+static mut OUT: Vec<u8> = Vec::new();
+#[unsafe(no_mangle)]
+pub extern "C" fn run() -> u64 {
+    let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    let mut scripts = web::start(runtime.handle(), Host).unwrap();
+    scripts.tick_sync(&runtime, 0.1).unwrap();
+    scripts.shutdown_blocking(&runtime).unwrap();
+    unsafe {
+        OUT = LOG.lock().unwrap().join("\n").into_bytes();
+        let out = &raw const OUT;
+        (((*out).as_ptr() as u64) << 32) | (*out).len() as u64
+    }
+}
+"#).unwrap();
+    cargo(&["build", "--quiet", "--release", "--target", "wasm32-unknown-unknown"], &root.join("web_host"));
+    fs::write(root.join("run.js"), RUNNER).unwrap();
+    let output = Command::new("bun").arg(root.join("run.js")).arg(root.join("web_host/target/wasm32-unknown-unknown/release/web_host.wasm")).output().unwrap();
+    succeeded(&output);
+    let web = String::from_utf8(output.stdout).unwrap();
+
+    let native: Vec<&str> = native.lines().collect();
+    let web: Vec<&str> = web.lines().collect();
+    assert_eq!(native, web, "the two engines disagree");
+    // Some calls finish and later ones run out, so the budget really bites, at one place.
+    let first_out = native.iter().position(|line| line.contains("used up its fuel")).expect("a call ran out of fuel");
+    assert!(first_out > 5, "{native:?}");
+    assert!(native[..first_out].iter().all(|line| line.parse::<i64>().is_ok()));
+}

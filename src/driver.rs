@@ -103,12 +103,6 @@ fn foreign_lib_name(language: &str, index: usize, path: &Path) -> String {
     format!("orch_{}_{}_{}", language, index, stem)
 }
 
-/// Whether any sandboxed serverlet here declares `fuel`, which turns fuel counting on in
-/// the wasmtime engine.
-fn has_fueled_sandbox(stmts: &[ast::Stmt]) -> bool {
-    stmts.iter().any(|s| matches!(&s.node, ast::StmtNode::Serverlet { sandbox: Some(config), .. } if config.fuel.is_some()))
-}
-
 /// Whether any serverlet here is sandboxed, which puts the wasmtime host in the
 /// generated crate and makes the build compile a guest for each one.
 fn has_sandbox_serverlets(stmts: &[ast::Stmt]) -> bool {
@@ -404,7 +398,6 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
     resolve_landline_sources(&mut ast, input_path.parent().unwrap_or(Path::new(".")))?;
 
     let mut uses_sandbox = has_sandbox_serverlets(&ast);
-    let mut uses_fuel = has_fueled_sandbox(&ast);
 
     let mut type_checker = typechecker::TypeChecker::new();
 
@@ -437,7 +430,6 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
             
             let module_stmts = compile_module(&module_path)?;
             uses_sandbox |= has_sandbox_serverlets(&module_stmts);
-            uses_fuel |= has_fueled_sandbox(&module_stmts);
 
             for m_stmt in &module_stmts {
                 if let ast::StmtNode::TaskDecl { name, .. } = &m_stmt.node {
@@ -598,7 +590,6 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
         generator.measure = codegen::core::Measure::of(&ast);
         generator.library = library.is_some();
         generator.web = web;
-        generator.wasm_fuel = uses_fuel;
         generator.serverlet_state_types = lowered_state(&type_checker.serverlet_state);
         generator.host_functions = host_functions.clone();
         generator.program_structs = program_structs.clone();
@@ -712,7 +703,6 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
     generator.generic_bounds = type_checker.generic_bounds.clone();
     generator.library = library.is_some();
     generator.web = web;
-    generator.wasm_fuel = uses_fuel;
     generator.serverlet_state_types = lowered_state(&type_checker.serverlet_state);
     generator.host_functions = host_functions;
     generator.event_signatures = event_signatures;
@@ -760,7 +750,11 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
     if uses_wasm {
         crate::dependencies::merge(
             &mut extra_dependencies,
-            vec![if web { crate::dependencies::builtin_wasmi() } else { crate::dependencies::builtin_wasmtime() }],
+            vec![
+                if web { crate::dependencies::builtin_wasmi() } else { crate::dependencies::builtin_wasmtime() },
+                crate::dependencies::builtin_wasmparser(),
+                crate::dependencies::builtin_wasm_encoder(),
+            ],
             "a wasm module or sandboxed serverlet",
         )?;
     }

@@ -203,15 +203,16 @@ pub fn bindings(signatures: &[CSignature], asset: &str, label: &str) -> String {
             Type::Void => "        Ok(())".to_string(),
             Type::Bool => "        Ok(__value != 0)".to_string(),
             Type::Str => "        __guest.read_string(__value)".to_string(),
+            // A NaN leaves the guest as the one canonical NaN, whatever bits it carried,
+            // so a result cannot differ between engines or machines.
+            Type::Float => "        Ok(if __value.is_nan() { f64::NAN } else { __value })".to_string(),
             _ => "        Ok(__value)".to_string(),
         };
 
         code.push_str(&format!(
             "pub fn {ident}({params}){returns} {{\n    \
                  {asset}().call({name:?}, |__guest| {{\n\
-             {setup}        let __function = __guest.instance.get_typed_func::<{tuple}, {results}>(&mut __guest.store, {name:?}).map_err(|e| format!(\"wasm call '{{}}': {{}}\", {name:?}, e))?;\n        \
-                 let __called = __function.call(&mut __guest.store, ({arguments}));\n        \
-                 let __value = __called.map_err(|e| __guest.failed({name:?}, &e))?;\n\
+             {setup}        let __value = __guest.call::<{tuple}, {results}>({name:?}, ({arguments})).map_err(|e| format!(\"wasm call '{{}}': {{}}\", {name:?}, e))??;\n\
              {convert}\n    \
                  }})\n\
              }}\n",

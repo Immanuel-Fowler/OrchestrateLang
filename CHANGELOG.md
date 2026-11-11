@@ -21,10 +21,14 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   engine's list. Tests: `web_library_runs_in_a_webassembly_engine` (a web library run in
   Bun's WebAssembly engine), `web_rules_refuse_what_a_browser_cannot_carry`.
 - **`fuel`: a sandbox bound on work rather than time.** `sandbox(memory_limit: "8mb",
-  fuel: 1000000)` stops a call once it has done that much work, at the same point on
-  every run, so a deterministic run enforces it where it does not enforce `timeout`. A
-  sandbox declares `timeout`, `fuel`, or both; a web build takes `fuel` only. Tests:
+  fuel: 1000000)` stops a call once it has executed that many WebAssembly instructions.
+  The guest counts them itself: a metering pass rewrites it when it loads, so a call runs
+  out at the same instruction on wasmtime and on wasmi, natively and in a browser, and a
+  deterministic run enforces it where it does not enforce `timeout`. A fueled guest may not
+  use relaxed SIMD or threads, and a `float` leaving any guest as a NaN is canonicalized.
+  A sandbox declares `timeout`, `fuel`, or both; a web build takes `fuel` only. Tests:
   `native_sandbox_fuel_stops_a_runaway_call_in_live_and_replayed_runs`,
+  `metered_fuel_stops_a_guest_at_the_same_point_on_every_engine`,
   `sandbox_config_needs_a_bound_on_each_call`.
 - **The `entity` type.** A library that scripts an ECS receives its host's entities as
   `entity` values: compared with `==` and `!=`, used as map keys, carried in arrays,

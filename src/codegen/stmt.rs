@@ -1352,6 +1352,8 @@ impl Codegen {
             };
             let mut convert = match answered {
                 Type::Bool => "                    let __value = __value != 0;\n".to_string(),
+                // A NaN leaves the guest as the one canonical NaN, whatever bits it carried.
+                Type::Float => "                    let __value = if __value.is_nan() { f64::NAN } else { __value };\n".to_string(),
                 Type::Str => format!("                    let __value = match __guest.read_string(__value) {{ Ok(__text) => __text, Err(__error) => {bail} }};\n"),
                 Type::Array(inner, _) => format!(
                     "                    let __value = match __guest.read_array::<{}>(__value) {{ Ok(__items) => __items, Err(__error) => {bail} }};\n",
@@ -1365,17 +1367,14 @@ impl Codegen {
             };
             // A `result` handler that answered `err` said so before returning.
             if answers_failure(h) {
-                convert.push_str("                    let __value = match __guest.store.data_mut().answered_err.take() { Some(__why) => Err(__why), None => Ok(__value) };\n");
+                convert.push_str("                    let __value = match __guest.take_answered_err() { Some(__why) => Err(__why), None => Ok(__value) };\n");
             }
 
             arms.push(format!(
                 "                {name}Msg::{variant} {{ {bindings} }} => {{\n                    \
                      {started}{setup}                    __guest.begin();\n                    \
-                     let __outcome = match __guest.instance.get_typed_func::<{tuple_type}, {results}>(&mut __guest.store, {handler:?}) {{\n                        \
-                         Ok(__function) => {{\n                            \
-                             let __called = __function.call(&mut __guest.store, ({tuple_args}));\n                            \
-                             __called.map_err(|__error| __guest.failed({handler:?}, &__error))\n                        \
-                         }}\n                        \
+                     let __outcome = match __guest.call::<{tuple_type}, {results}>({handler:?}, ({tuple_args})) {{\n                        \
+                         Ok(__called) => __called,\n                        \
                          Err(__error) => Err(format!(\"sandboxed serverlet '{name}' exports no '{handler}': {{}}\", __error)),\n                    \
                      }};\n                    \
                      let __value = match __outcome {{\n                        \
@@ -1430,14 +1429,12 @@ impl Codegen {
                 let args = handler.params.iter().map(|p| rust_ident(&p.name)).collect::<Vec<_>>().join(", ");
                 let encode = if handler.return_type == Type::Void { "Vec::new()" } else { "__wire_to_bytes(&__value)" };
                 definitions.push(format!(
-                    "    linker.func_wrap(\"orch_host\", {import:?}, |mut __caller: crate::__OrchCaller<'_>, __pointer: i32, __length: i32| -> i64 {{\n        \
-                         crate::__orch_grant_call(&mut __caller, __pointer, __length, |__payload| -> Result<Vec<u8>, String> {{\n            \
+                    "        ({import:?}, |__payload: &[u8]| -> Result<Vec<u8>, String> {{\n            \
                              let mut __pos = 0;\n{decode}            \
                              if __pos != __payload.len() {{ return Err(\"trailing host arguments\".into()); }}\n            \
                              let __value = crate::__orch_context().host.{method}({args})?;\n            \
                              Ok({encode})\n        \
-                         }})\n    \
-                     }})?;",
+                         }}),",
                     import = format!("{}_{}", group, handler.name),
                     decode = decode,
                     method = Self::host_method(&group, &handler.name),
@@ -1447,8 +1444,10 @@ impl Codegen {
             }
             (
                 format!(
-                    "/// The host functions serverlet '{name}' was granted, one import each.\n\
-                     #[allow(non_snake_case)]\nfn __orch_grants_{name}(linker: &mut crate::__OrchLinker) -> Result<(), crate::__OrchWasmError> {{\n{}\n    Ok(())\n}}\n",
+                    "/// The host functions serverlet '{name}' was granted, one import each, as the\n\
+                     /// import's name and what it does with the guest's argument bytes. Each engine\n\
+                     /// wires them into its own linker.\n\
+                     #[allow(non_snake_case)]\nfn __orch_grants_{name}() -> Vec<(&'static str, crate::__OrchGrantBody)> {{\n    vec![\n{}\n    ]\n}}\n",
                     definitions.join("\n")
                 ),
                 format!("Some(__orch_grants_{name})"),
@@ -1464,7 +1463,7 @@ impl Codegen {
                 "{codecs}{grants_fn}#[allow(non_snake_case)]\npub fn start_{name}_from(path: String) -> Result<{name}Client, String> {{\n    \
                      let (tx, mut rx) = tokio::sync::mpsc::channel::<{name}Msg>(100);\n    \
                      let __bytes = {read_guest}.map_err(|__error| format!(\"sandboxed serverlet '{name}': cannot read '{{}}': {{}}\", path, __error))?;\n    \
-                     let mut __guest = crate::__OrchGuest::new({name:?}, &__bytes, Some({memory}), {timeout}.filter(|_| !__orch_deterministic()), {fuel}, {grants_arg})?;\n    \
+                     let mut __guest = crate::__OrchGuest::new_loaded({name:?}, &__bytes, Some({memory}), {timeout}.filter(|_| !__orch_deterministic()), {fuel}, {grants_arg})?;\n    \
                      __guest.check_interface(&[{expected}])?;\n    \
                      let actor = __OrchActor::spawn(true, async move {{\n        \
                          let mut __guest = __guest;\n        \
@@ -2129,7 +2128,7 @@ pub(crate) fn sandbox_struct_codecs(structs: &StructDefs) -> String {
             } }).collect::<Vec<_>>().join("\n");
             let reads = fields.iter().map(|(f, field_ty)| { let f = rust_ident(f); match field_ty {
                 Type::Int => format!("        {f}: i64::from_le_bytes(bytes[std::mem::offset_of!({ty}, {f})..][..8].try_into().unwrap()),"),
-                Type::Float => format!("        {f}: f64::from_le_bytes(bytes[std::mem::offset_of!({ty}, {f})..][..8].try_into().unwrap()),"),
+                Type::Float => format!("        {f}: {{ let __x = f64::from_le_bytes(bytes[std::mem::offset_of!({ty}, {f})..][..8].try_into().unwrap()); if __x.is_nan() {{ f64::NAN }} else {{ __x }} }},"),
                 Type::Bool => format!("        {f}: bytes[std::mem::offset_of!({ty}, {f})] != 0,"),
                 Type::Named(inner) => format!("        {f}: __orch_sandbox_read_{inner}(&bytes[std::mem::offset_of!({ty}, {f})..][..std::mem::size_of::<{}>()]),", rust_ident(inner)),
                 _ => String::new(),

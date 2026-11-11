@@ -558,7 +558,8 @@ impl __OrchWasmPod for i64 {
 impl __OrchWasmPod for f64 {
     const SIZE: usize = 8;
     fn to_bytes(self, out: &mut Vec<u8>) { out.extend_from_slice(&self.to_le_bytes()); }
-    fn from_bytes(bytes: &[u8]) -> Self { f64::from_le_bytes(bytes[..8].try_into().unwrap()) }
+    // A NaN leaves the guest as the one canonical NaN, whatever bits it carried.
+    fn from_bytes(bytes: &[u8]) -> Self { let x = f64::from_le_bytes(bytes[..8].try_into().unwrap()); if x.is_nan() { f64::NAN } else { x } }
 }
 impl __OrchWasmPod for bool {
     const SIZE: usize = 1;
@@ -887,8 +888,6 @@ pub struct Codegen {
     /// A web build: the library targets `wasm32-unknown-unknown`, runs on host time only,
     /// and hosts its wasm guests on wasmi rather than wasmtime.
     pub web: bool,
-    /// Some sandboxed serverlet declares `fuel`, so the wasmtime engine counts it.
-    pub wasm_fuel: bool,
     /// Each serverlet's state and its types, from the typechecker. A sandboxed
     /// serverlet's state becomes fields of a struct inside its guest.
     pub serverlet_state_types: std::collections::BTreeMap<String, Vec<(String, Type)>>,
@@ -984,7 +983,6 @@ impl Codegen {
             needs_wasm: false,
             web: false,
             event_signatures: Default::default(),
-            wasm_fuel: false,
             serverlet_state_types: std::collections::BTreeMap::new(),
             emit_handle_type: false,
             foreign_handle_params: std::collections::HashMap::new(),
@@ -1885,8 +1883,9 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
             if self.web {
                 code.push_str(include_str!("wasm_host_wasmi.rs.txt"));
             } else {
-                code.push_str(&include_str!("wasm_host.rs.txt").replace("@WASM_FUEL@", if self.wasm_fuel { "true" } else { "false" }));
+                code.push_str(include_str!("wasm_host.rs.txt"));
             }
+            code.push_str(include_str!("wasm_meter.rs.txt"));
             code.push_str(WASM_POD);
         }
         if is_main {

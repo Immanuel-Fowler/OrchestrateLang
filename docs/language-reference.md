@@ -2028,13 +2028,19 @@ handling; only the engine differs, and a guest built once runs on either.
   milliseconds early, and a call of a few milliseconds under a 10 ms timeout was killed
   whenever a tick landed inside it.)
 - **Work** — `fuel: 1000000` bounds a single call by the work it does rather than by wall
-  time: the engine counts fuel as the guest runs, and a call that uses up its budget is
-  stopped, at the same point every time. A sandbox declares `timeout`, `fuel`, or both. A
-  deterministic run enforces fuel, where it does not enforce `timeout`, and a web build
-  (`build --lib --web`) takes `fuel` only, since a browser gives a running call no clock.
-  Each call, and each copy the host makes into or out of the guest, gets a fresh budget.
-  How much work a unit of fuel is depends on the engine: roughly one WebAssembly
-  instruction on both, but set a budget by measuring a real call rather than by counting.
+  time. Before a guest with a fuel budget is instantiated, it is rewritten so that each
+  straight-line run of its instructions first subtracts its own length from a counter and
+  traps when the counter goes below zero: one unit of fuel is one WebAssembly instruction
+  the guest executes. The engine is not asked to count, so a call runs out at the same
+  instruction on wasmtime and on wasmi, natively and in a browser, on every machine. A
+  sandbox declares `timeout`, `fuel`, or both; a deterministic run enforces fuel, where it
+  does not enforce `timeout`, and a web build (`build --lib --web`) takes `fuel` only. Each
+  call, and each copy the host makes into or out of the guest, starts with the whole budget;
+  a guest's start function runs under it too.
+- **Same answers everywhere** — a guest with a fuel budget must not use relaxed SIMD, whose
+  results may differ between machines, or threads; it is refused when it loads if it does.
+  A `float` that leaves any guest as a NaN leaves as the one canonical NaN, whatever bits it
+  carried. Together these make a fueled guest's answers depend only on its inputs.
 - **Reach** — the guest gets no imports beyond two diagnostic ones (below). No files, no
   network, no clock, no environment, no host functions. Anything else it imports traps
   when called.

@@ -272,12 +272,19 @@ two sides: the grant declares intent; the wasmtime linker enforces it.
    `tests/programs/sandbox_call_after_a_pause.orch`.
 
 10. ✅ **Fuel: a bound on work, not time. (Unreleased)** `sandbox(memory_limit: "8mb",
-    fuel: 1000000)` bounds each call by the fuel the engine counts as the guest runs. A
-    sandbox declares `timeout`, `fuel`, or both. Fuel stops a call at the same point on
-    every run, so a deterministic run enforces it, where it does not enforce `timeout`.
-    On wasmtime, fuel counting is turned on only in a program where some guest declares
-    it. Each call, and each allocator call the host makes around it, gets a fresh budget.
-    *Test:* `native_sandbox_fuel_stops_a_runaway_call_in_live_and_replayed_runs`.
+    fuel: 1000000)` bounds each call by the instructions the guest executes. A sandbox
+    declares `timeout`, `fuel`, or both. The fuel is counted by the guest itself: when it
+    loads, a metering pass (`wasm_meter.rs.txt`, on `wasmparser` and `wasm-encoder`) adds an
+    exported `i64` global and, before each straight-line run of instructions (cut after
+    every branch, call, and block boundary), code that subtracts the run's length and traps
+    below zero. The host sets the global before each call and reads it after a trap to say
+    the guest ran out. Engine fuel is not used: the same metered bytecode runs on wasmtime
+    and wasmi, so a call stops at the same instruction on both, and a deterministic run
+    enforces it. The pass validates the guest first without relaxed SIMD or threads, and a
+    `float` leaving any guest is canonicalized if it is a NaN. *Tests:*
+    `native_sandbox_fuel_stops_a_runaway_call_in_live_and_replayed_runs`,
+    `metered_fuel_stops_a_guest_at_the_same_point_on_every_engine` (one program built for
+    wasmtime and for wasmi, run natively and in a WebAssembly engine, identical traces).
 
 11. ✅ **A second engine for the browser. (Unreleased)** wasmtime compiles WebAssembly to
     machine code and cannot itself run inside WebAssembly, so a web build
@@ -288,7 +295,8 @@ two sides: the grant declares intent; the wasmtime linker enforces it.
     `validate` (every module is validated before it runs) and `portable-dispatch` (loop
     dispatch; its tail-call dispatch overflows a wasm32 host's stack). A browser has no
     clock to stop a call by, so a web build takes `fuel` and refuses `timeout`. Ungranted
-    imports trap, as on wasmtime. *Test:* `web_library_runs_in_a_webassembly_engine`, which
+    imports trap, as on wasmtime. Fuel comes from the metering pass of step 10, so it
+    counts the same as on wasmtime. *Test:* `web_library_runs_in_a_webassembly_engine`, which
     runs a web library in Bun's WebAssembly engine with a granted host call, a
     fuel-stopped guest, and a guest the host supplies through `Host::load_guest`.
 

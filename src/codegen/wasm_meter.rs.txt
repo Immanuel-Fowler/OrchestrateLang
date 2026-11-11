@@ -1,0 +1,215 @@
+/// The exported global the metering pass adds: the fuel a call has left.
+const __ORCH_FUEL_EXPORT: &str = "__orch_fuel";
+
+/// What a guest may use, for a result to be the same on every engine and machine: the
+/// standard features, without relaxed SIMD (whose answers are allowed to differ between
+/// machines) and without threads (shared memory makes timing part of the answer).
+fn __orch_guest_features() -> wasmparser::WasmFeatures {
+    let mut features = wasmparser::WasmFeatures::default();
+    features.remove(wasmparser::WasmFeatures::RELAXED_SIMD);
+    features.remove(wasmparser::WasmFeatures::THREADS);
+    features.remove(wasmparser::WasmFeatures::SHARED_EVERYTHING_THREADS);
+    features
+}
+
+/// Rewrites a guest so it counts its own work: every straight-line run of instructions
+/// first takes its length from a fuel global, and traps when the fuel goes below zero.
+/// Runs are cut after each instruction that can branch or call, so the count is the number
+/// of original instructions executed — the same number on any engine that runs it. The
+/// module is validated first, against the features a deterministic guest may use. The
+/// counter starts at `fuel`, so a start function runs under the same budget a call does.
+fn __orch_meter(wasm: &[u8], fuel: i64) -> Result<Vec<u8>, String> {
+    let mut validator = wasmparser::Validator::new_with_features(__orch_guest_features());
+    validator.validate_all(wasm).map_err(|e| format!("the module is not a guest this runtime runs: {e}"))?;
+
+    // The counter goes after every global the module already has, so no index moves.
+    let mut globals = 0u32;
+    let mut has_globals = false;
+    let mut has_exports = false;
+    for payload in wasmparser::Parser::new(0).parse_all(wasm) {
+        match payload.map_err(|e| e.to_string())? {
+            wasmparser::Payload::ImportSection(imports) => {
+                for import in imports.into_imports() {
+                    if matches!(import.map_err(|e| e.to_string())?.ty, wasmparser::TypeRef::Global(_)) {
+                        globals += 1;
+                    }
+                }
+            }
+            wasmparser::Payload::GlobalSection(section) => {
+                globals += section.count();
+                has_globals = true;
+            }
+            wasmparser::Payload::ExportSection(section) => {
+                has_exports = true;
+                for export in section {
+                    if export.map_err(|e| e.to_string())?.name == __ORCH_FUEL_EXPORT {
+                        return Err(format!("the module already exports `{__ORCH_FUEL_EXPORT}`"));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut meter = __OrchMeter { fuel: globals, initial: fuel, has_globals, has_exports, added_globals: false, added_exports: false };
+    let mut module = wasm_encoder::Module::new();
+    wasm_encoder::reencode::Reencode::parse_core_module(&mut meter, &mut module, wasmparser::Parser::new(0), wasm)
+        .map_err(|e| format!("the module could not be metered: {e}"))?;
+    Ok(module.finish())
+}
+
+struct __OrchMeter {
+    fuel: u32,
+    initial: i64,
+    has_globals: bool,
+    has_exports: bool,
+    added_globals: bool,
+    added_exports: bool,
+}
+
+impl __OrchMeter {
+    fn fuel_global(&self) -> (wasm_encoder::GlobalType, wasm_encoder::ConstExpr) {
+        (wasm_encoder::GlobalType { val_type: wasm_encoder::ValType::I64, mutable: true, shared: false }, wasm_encoder::ConstExpr::i64_const(self.initial))
+    }
+
+    /// Takes `cost` from the counter, and traps if it went below zero.
+    fn charge(&self, function: &mut wasm_encoder::Function, cost: i64) {
+        use wasm_encoder::Instruction as I;
+        function.instruction(&I::GlobalGet(self.fuel));
+        function.instruction(&I::I64Const(cost));
+        function.instruction(&I::I64Sub);
+        function.instruction(&I::GlobalSet(self.fuel));
+        function.instruction(&I::GlobalGet(self.fuel));
+        function.instruction(&I::I64Const(0));
+        function.instruction(&I::I64LtS);
+        function.instruction(&I::If(wasm_encoder::BlockType::Empty));
+        function.instruction(&I::Unreachable);
+        function.instruction(&I::End);
+    }
+
+    /// Whether a run of straight-line code ends after this instruction.
+    fn ends_run(op: &wasmparser::Operator) -> bool {
+        use wasmparser::Operator as O;
+        matches!(
+            op,
+            O::Block { .. } | O::Loop { .. } | O::If { .. } | O::Else | O::End
+                | O::Br { .. } | O::BrIf { .. } | O::BrTable { .. } | O::BrOnNull { .. } | O::BrOnNonNull { .. }
+                | O::BrOnCast { .. } | O::BrOnCastFail { .. }
+                | O::Return | O::Unreachable
+                | O::Call { .. } | O::CallIndirect { .. } | O::CallRef { .. }
+                | O::ReturnCall { .. } | O::ReturnCallIndirect { .. } | O::ReturnCallRef { .. }
+                | O::Throw { .. } | O::ThrowRef | O::TryTable { .. } | O::Rethrow { .. } | O::Delegate { .. }
+                | O::Try { .. } | O::Catch { .. } | O::CatchAll
+        )
+    }
+}
+
+impl wasm_encoder::reencode::Reencode for __OrchMeter {
+    type Error = std::convert::Infallible;
+
+    fn parse_function_body(
+        &mut self,
+        code: &mut wasm_encoder::CodeSection,
+        body: wasmparser::FunctionBody<'_>,
+    ) -> Result<(), wasm_encoder::reencode::Error<Self::Error>> {
+        let mut function = self.new_function_with_parsed_locals(&body)?;
+        let mut reader = body.get_operators_reader()?;
+        let mut operators = Vec::new();
+        while !reader.eof() {
+            operators.push(reader.read()?);
+        }
+        // The length of each run, by the index of its first instruction.
+        let mut runs = std::collections::BTreeMap::new();
+        let mut start = 0;
+        for (index, op) in operators.iter().enumerate() {
+            if Self::ends_run(op) {
+                runs.insert(start, (index + 1 - start) as i64);
+                start = index + 1;
+            }
+        }
+        if start < operators.len() {
+            runs.insert(start, (operators.len() - start) as i64);
+        }
+        for (index, op) in operators.into_iter().enumerate() {
+            // The charge leaves the stack as it found it, so it is valid before any
+            // instruction, including a function's final `end`.
+            if let Some(cost) = runs.get(&index) {
+                self.charge(&mut function, *cost);
+            }
+            function.instruction(&self.instruction(op)?);
+        }
+        code.function(&function);
+        Ok(())
+    }
+
+    fn parse_global_section(
+        &mut self,
+        globals: &mut wasm_encoder::GlobalSection,
+        section: wasmparser::GlobalSectionReader<'_>,
+    ) -> Result<(), wasm_encoder::reencode::Error<Self::Error>> {
+        wasm_encoder::reencode::utils::parse_global_section(self, globals, section)?;
+        let (ty, init) = self.fuel_global();
+        globals.global(ty, &init);
+        self.added_globals = true;
+        Ok(())
+    }
+
+    fn parse_export_section(
+        &mut self,
+        exports: &mut wasm_encoder::ExportSection,
+        section: wasmparser::ExportSectionReader<'_>,
+    ) -> Result<(), wasm_encoder::reencode::Error<Self::Error>> {
+        wasm_encoder::reencode::utils::parse_export_section(self, exports, section)?;
+        exports.export(__ORCH_FUEL_EXPORT, wasm_encoder::ExportKind::Global, self.fuel);
+        self.added_exports = true;
+        Ok(())
+    }
+
+    /// A module with no global or export section gets one, in its proper place.
+    fn intersperse_section_hook(
+        &mut self,
+        module: &mut wasm_encoder::Module,
+        _after: Option<wasm_encoder::SectionId>,
+        before: Option<wasm_encoder::SectionId>,
+    ) -> Result<(), wasm_encoder::reencode::Error<Self::Error>> {
+        use wasm_encoder::SectionId as S;
+        let past = |section: S| match before {
+            None => true,
+            Some(next) => (next as u8) != (section as u8) && section_order(next) > section_order(section),
+        };
+        if !self.has_globals && !self.added_globals && past(S::Global) {
+            let mut globals = wasm_encoder::GlobalSection::new();
+            let (ty, init) = self.fuel_global();
+            globals.global(ty, &init);
+            module.section(&globals);
+            self.added_globals = true;
+        }
+        if !self.has_exports && !self.added_exports && self.added_globals && past(S::Export) {
+            let mut exports = wasm_encoder::ExportSection::new();
+            exports.export(__ORCH_FUEL_EXPORT, wasm_encoder::ExportKind::Global, self.fuel);
+            module.section(&exports);
+            self.added_exports = true;
+        }
+        Ok(())
+    }
+}
+
+/// Where a section goes in a module, in the binary format's order.
+fn section_order(section: wasm_encoder::SectionId) -> u8 {
+    use wasm_encoder::SectionId as S;
+    match section {
+        S::Custom => 0,
+        S::Type => 1,
+        S::Import => 2,
+        S::Function => 3,
+        S::Table => 4,
+        S::Memory => 5,
+        S::Tag => 6,
+        S::Global => 7,
+        S::Export => 8,
+        S::Start => 9,
+        S::Element => 10,
+        S::DataCount => 11,
+        S::Code => 12,
+        S::Data => 13,
+    }
+}

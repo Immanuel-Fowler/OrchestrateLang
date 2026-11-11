@@ -74,6 +74,23 @@ pub fn builtin_wasmi() -> Dependency {
     }
 }
 
+/// The parser the metering pass reads guests with, and validates them against the
+/// features a deterministic guest may use.
+pub fn builtin_wasmparser() -> Dependency {
+    Dependency { name: "wasmparser".into(), spec: BTreeMap::from([("version".to_string(), Value::Str("0.263".into()))]) }
+}
+
+/// The encoder the metering pass writes the counting guest back out with.
+pub fn builtin_wasm_encoder() -> Dependency {
+    Dependency {
+        name: "wasm-encoder".into(),
+        spec: BTreeMap::from([
+            ("version".to_string(), Value::Str("0.263".into())),
+            ("features".to_string(), Value::Array(vec![Value::Str("wasmparser".into())])),
+        ]),
+    }
+}
+
 /// Separates a sidecar's `[dependencies]` section from its signatures. The section's lines
 /// are blanked rather than removed, so signature diagnostics keep their line numbers.
 pub fn split_sidecar(text: &str) -> (String, Option<String>) {

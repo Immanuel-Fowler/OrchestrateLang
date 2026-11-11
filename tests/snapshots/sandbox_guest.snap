@@ -136,7 +136,8 @@ impl __OrchWasmPod for i64 {
 impl __OrchWasmPod for f64 {
     const SIZE: usize = 8;
     fn to_bytes(self, out: &mut Vec<u8>) { out.extend_from_slice(&self.to_le_bytes()); }
-    fn from_bytes(bytes: &[u8]) -> Self { f64::from_le_bytes(bytes[..8].try_into().unwrap()) }
+    // A NaN leaves the guest as the one canonical NaN, whatever bits it carried.
+    fn from_bytes(bytes: &[u8]) -> Self { let x = f64::from_le_bytes(bytes[..8].try_into().unwrap()); if x.is_nan() { f64::NAN } else { x } }
 }
 impl __OrchWasmPod for bool {
     const SIZE: usize = 1;

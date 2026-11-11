@@ -176,7 +176,8 @@ processes, so a web build differs in four ways:
   `clock_micros` and `clock_nanos`, `automatic` workers, and a sandbox `timeout`.
 - **Sandboxes run on wasmi.** Sandboxed serverlets and `load_foreign "wasm"` modules run on
   wasmi, a WebAssembly interpreter in Rust, instead of wasmtime. Each call is bounded by
-  `fuel`, the work it may do, rather than `timeout`. Grants, memory limits, `orch_interface`
+  `fuel`, the instructions it may execute, rather than `timeout`; fuel is counted by the
+  guest's own metered bytecode, so it runs out at the same instruction as on wasmtime. Grants, memory limits, `orch_interface`
   checks, and the replace-after-trap rule are the same, and a guest built with
   `build --guest` runs on either engine.
 - **Guests come from the host.** `start X from path` asks the host for the bytes through
