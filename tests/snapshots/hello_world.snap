@@ -83,6 +83,16 @@ fn clock_nanos() -> i64 {
     __orch_clock_start().elapsed().as_nanos() as i64
 }
 
+/// `entity_index(e)`: the slot an entity occupies, the low 32 bits of its handle.
+fn entity_index(entity: i64) -> i64 {
+    entity & 0xffff_ffff
+}
+
+/// `entity_generation(e)`: how many times its slot has been reused, the high 32 bits.
+fn entity_generation(entity: i64) -> i64 {
+    ((entity as u64) >> 32) as i64
+}
+
 /// `pow`: an int to an int power, or a float to a float power.
 trait __OrchPow { fn orch_pow(self, exponent: Self) -> Self; }
 impl __OrchPow for i64 { fn orch_pow(self, exponent: i64) -> i64 { self.pow(exponent as u32) } }

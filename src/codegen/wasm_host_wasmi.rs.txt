@@ -1,0 +1,529 @@
+/// One wasmi engine per process, shared by every wasm module and sandboxed serverlet. This
+/// is the web build's engine: wasmi interprets WebAssembly in pure Rust, so it runs inside a
+/// browser tab where wasmtime cannot. A browser gives a running call no clock to be stopped
+/// by, so a web build bounds each call by fuel, which wasmi counts as the guest runs.
+fn __orch_wasm_engine() -> &'static wasmi::Engine {
+    static ENGINE: std::sync::OnceLock<wasmi::Engine> = std::sync::OnceLock::new();
+    ENGINE.get_or_init(|| {
+        let mut config = wasmi::Config::default();
+        config.consume_fuel(true);
+        wasmi::Engine::new(&config)
+    })
+}
+
+
+/// The names generated grant code uses, so it reads the same over either wasm engine.
+type __OrchLinker = wasmi::Linker<__OrchGuestLimits>;
+type __OrchCaller<'a> = wasmi::Caller<'a, __OrchGuestLimits>;
+type __OrchWasmError = wasmi::Error;
+
+struct __OrchGuestLimits {
+    limits: wasmi::StoreLimits,
+    /// Bytes the guest has written but not finished a line with. A guest writes its
+    /// diagnostics in whatever pieces it likes, so they are joined before being logged.
+    partial_line: Vec<u8>,
+    /// The `err` a `result` handler answered the current call with, if it did.
+    answered_err: Option<String>,
+}
+
+/// The host functions every guest gets, and none is a capability: one carries the guest's
+/// own diagnostics out, one lets it stop itself, and one lets a `result` handler answer
+/// `err` for the call it is running. The environment calls answer with nothing.
+///
+/// A guest compiled from Rust writes its panic and abort messages to stderr and then calls
+/// `proc_exit`. With nothing answering those, a guest that panics or runs out of memory
+/// dies against an ungranted import and the reason dies with it. Answering them turns that
+/// into a message saying what actually happened. `fd_write` reads only the bytes the guest
+/// hands over and writes back how many were taken; it opens no file and reaches nothing.
+fn __orch_wasm_diagnostics(linker: &mut wasmi::Linker<__OrchGuestLimits>) -> Result<(), wasmi::Error> {
+    linker.func_wrap(
+        "wasi_snapshot_preview1",
+        "fd_write",
+        |mut caller: wasmi::Caller<'_, __OrchGuestLimits>, _fd: i32, iovs: i32, iovs_len: i32, written_out: i32| -> i32 {
+            const BADF: i32 = 8;
+            const FAULT: i32 = 21;
+            let Some(memory) = caller.get_export("memory").and_then(|export| export.into_memory()) else {
+                return BADF;
+            };
+            // Everything below arrives from inside the sandbox, so every offset is
+            // range-checked in arithmetic that cannot overflow, and the total is capped:
+            // a guest may name the same bytes as many times as it likes, and the host is
+            // not going to allocate for each mention.
+            const LIMIT: usize = 1 << 20;
+            let mut text: Vec<u8> = Vec::new();
+            // What the guest offered, which is what it is told was written, whatever the
+            // cap above actually kept.
+            let mut offered: u32 = 0;
+            {
+                let data = memory.data(&caller);
+                let size = data.len() as u64;
+                for index in 0..(iovs_len.max(0) as u64) {
+                    // Each iovec is a pointer and a length, four bytes each, little-endian.
+                    let Some(entry) = (iovs as u32 as u64).checked_add(index * 8) else { return FAULT };
+                    let Some(entry_end) = entry.checked_add(8) else { return FAULT };
+                    if entry_end > size {
+                        return FAULT;
+                    }
+                    let header = &data[entry as usize..entry_end as usize];
+                    let pointer = u32::from_le_bytes(header[0..4].try_into().unwrap()) as u64;
+                    let length = u32::from_le_bytes(header[4..8].try_into().unwrap()) as u64;
+                    let Some(end) = pointer.checked_add(length) else { return FAULT };
+                    if end > size {
+                        return FAULT;
+                    }
+                    offered = offered.saturating_add(length as u32);
+                    let room = LIMIT.saturating_sub(text.len());
+                    let take = (length as usize).min(room);
+                    text.extend_from_slice(&data[pointer as usize..pointer as usize + take]);
+                }
+            }
+            if memory.write(&mut caller, written_out as usize, &offered.to_le_bytes()).is_err() {
+                return FAULT;
+            }
+            let buffered = &mut caller.data_mut().partial_line;
+            buffered.extend_from_slice(&text);
+            while let Some(end) = buffered.iter().position(|byte| *byte == b'\n') {
+                let line = buffered.drain(..=end).collect::<Vec<_>>();
+                let line = String::from_utf8_lossy(&line);
+                if !line.trim().is_empty() {
+                    eprintln!("[orchestrate] sandbox guest: {}", line.trim_end());
+                }
+            }
+            // A guest that dies mid-line still gets its last words out.
+            if buffered.len() > 4096 {
+                let rest = std::mem::take(buffered);
+                eprintln!("[orchestrate] sandbox guest: {}", String::from_utf8_lossy(&rest).trim_end());
+            }
+            0
+        },
+    )?;
+    linker.func_wrap(
+        "wasi_snapshot_preview1",
+        "proc_exit",
+        |mut caller: wasmi::Caller<'_, __OrchGuestLimits>, code: i32| -> Result<(), wasmi::Error> {
+            let rest = std::mem::take(&mut caller.data_mut().partial_line);
+            if !rest.trim_ascii().is_empty() {
+                eprintln!("[orchestrate] sandbox guest: {}", String::from_utf8_lossy(&rest).trim_end());
+            }
+            // Returning an error traps the guest, which is what stopping it means here:
+            // the host's own process is never exited by something inside a sandbox.
+            Err(wasmi::Error::new(format!("the guest stopped itself (exit status {})", code)))
+        },
+    )?;
+    // An empty environment, rather than the host's. A guest that asks gets nothing, which
+    // is both the truth and what it would be granted anyway; answering lets a guest that
+    // is on its way to reporting a failure finish reporting it.
+    linker.func_wrap(
+        "wasi_snapshot_preview1",
+        "environ_sizes_get",
+        |mut caller: wasmi::Caller<'_, __OrchGuestLimits>, count_out: i32, size_out: i32| -> i32 {
+            let Some(memory) = caller.get_export("memory").and_then(|export| export.into_memory()) else {
+                return 8;
+            };
+            let zero = 0u32.to_le_bytes();
+            if memory.write(&mut caller, count_out as usize, &zero).is_err()
+                || memory.write(&mut caller, size_out as usize, &zero).is_err()
+            {
+                return 21;
+            }
+            0
+        },
+    )?;
+    linker.func_wrap(
+        "wasi_snapshot_preview1",
+        "environ_get",
+        |_caller: wasmi::Caller<'_, __OrchGuestLimits>, _environ: i32, _buffer: i32| -> i32 { 0 },
+    )?;
+    // The bytes are the guest's, so they are range-checked and capped like `fd_write`'s;
+    // an `err` the host cannot read is still an `err`, saying so.
+    linker.func_wrap(
+        "orch_guest",
+        "answer_err",
+        |mut caller: wasmi::Caller<'_, __OrchGuestLimits>, pointer: i32, length: i32| {
+            const LIMIT: usize = 1 << 16;
+            let text = caller
+                .get_export("memory")
+                .and_then(|export| export.into_memory())
+                .and_then(|memory| {
+                    let data = memory.data(&caller);
+                    let start = pointer as u32 as usize;
+                    let end = start.checked_add((length as u32 as usize).min(LIMIT))?;
+                    data.get(start..end).map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+                })
+                .unwrap_or_else(|| "the guest answered err with a message outside its memory".to_string());
+            caller.data_mut().answered_err = Some(text);
+        },
+    )?;
+    Ok(())
+}
+
+/// The host functions a sandboxed serverlet was granted, as one linker definition each:
+/// `grant call world.record` becomes exactly one import the guest can reach, and an
+/// ungranted host function is not defined at all, so a guest that names it traps.
+type __OrchGrants = fn(&mut __OrchLinker) -> Result<(), __OrchWasmError>;
+
+/// One granted host call, from inside the guest: the arguments arrive as bytes the guest
+/// wrote into its own memory, `body` decodes them and runs the host method, and the reply
+/// — a flag byte, then the value or the error text — is written back into guest memory
+/// through the guest's allocator and returned packed as (pointer << 32) | length. A reply
+/// of 0 means the call could not be made at all; the guest treats it as a failed call.
+/// A panic in the host method is caught here, so it fails this call and nothing else.
+fn __orch_grant_call(
+    caller: &mut wasmi::Caller<'_, __OrchGuestLimits>,
+    pointer: i32,
+    length: i32,
+    body: impl FnOnce(&[u8]) -> Result<Vec<u8>, String>,
+) -> i64 {
+    let Some(memory) = caller.get_export("memory").and_then(|export| export.into_memory()) else { return 0 };
+    let mut payload = vec![0u8; length.max(0) as usize];
+    if length > 0 && memory.read(&*caller, pointer as usize, &mut payload).is_err() {
+        return 0;
+    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&payload)))
+        .unwrap_or_else(|_| Err("host function panicked".to_string()));
+    let mut reply = Vec::new();
+    match result {
+        Ok(value) => { reply.push(1); reply.extend(value); }
+        Err(error) => {
+            reply.push(0);
+            reply.extend_from_slice(&(error.len() as u32).to_le_bytes());
+            reply.extend_from_slice(error.as_bytes());
+        }
+    }
+    let Some(alloc) = caller.get_export("orch_alloc").and_then(|export| export.into_func()) else { return 0 };
+    let Ok(alloc) = alloc.typed::<i32, i32>(&*caller) else { return 0 };
+    let Ok(reply_pointer) = alloc.call(&mut *caller, reply.len() as i32) else { return 0 };
+    if reply_pointer == 0 || memory.write(&mut *caller, reply_pointer as usize, &reply).is_err() {
+        return 0;
+    }
+    ((reply_pointer as i64) << 32) | reply.len() as i64
+}
+
+/// A fresh store and instance for a module: its own linear memory, its own memory cap, and
+/// no import it was not granted.
+fn __orch_wasm_instantiate(
+    name: &str,
+    module: &wasmi::Module,
+    memory_bytes: Option<usize>,
+    _timeout: Option<std::time::Duration>,
+    fuel: Option<u64>,
+    grants: Option<__OrchGrants>,
+) -> Result<(wasmi::Store<__OrchGuestLimits>, wasmi::Instance), String> {
+    let engine = __orch_wasm_engine();
+    let mut builder = wasmi::StoreLimitsBuilder::new();
+    if let Some(bytes) = memory_bytes {
+        builder = builder.memory_size(bytes);
+    }
+    let mut store = wasmi::Store::new(engine, __OrchGuestLimits { limits: builder.build(), partial_line: Vec::new(), answered_err: None });
+    store.limiter(|state| &mut state.limits);
+    // A start function runs under the same budget a call gets.
+    store.set_fuel(fuel.unwrap_or(u64::MAX)).map_err(|e| format!("wasm module '{}': {}", name, e))?;
+    let mut linker: wasmi::Linker<__OrchGuestLimits> = wasmi::Linker::new(engine);
+    __orch_wasm_diagnostics(&mut linker).map_err(|e| format!("wasm module '{}': {}", name, e))?;
+    if let Some(grants) = grants {
+        grants(&mut linker).map_err(|e| format!("wasm module '{}': {}", name, e))?;
+    }
+    // Default-deny: every other function the guest imports is defined as a trap, so a
+    // guest that reaches for the host stops instead of reaching it.
+    // The linker refuses to redefine a name, so a function granted above keeps its
+    // definition and the attempt to replace it is the one that fails.
+    for import in module.imports() {
+        let wasmi::ExternType::Func(ty) = import.ty() else { continue };
+        let what = format!("unknown import: `{}::{}` has not been defined", import.module(), import.name());
+        let _ = linker.func_new(import.module(), import.name(), ty.clone(), move |_, _, _| Err(wasmi::Error::new(what.clone())));
+    }
+    let instance = linker
+        .instantiate_and_start(&mut store, module)
+        .map_err(|e| format!("wasm module '{}' failed to start: {}", name, __orch_wasm_reason(&e)))?;
+    Ok((store, instance))
+}
+
+/// A loaded wasm guest: its own linear memory, its own state between calls, and its own
+/// limits. Nothing the guest did not import is reachable from inside it, and anything it
+/// imports that was not granted traps rather than resolving.
+struct __OrchGuest {
+    name: &'static str,
+    /// Compiled once and kept, so a guest that has to be replaced is only instantiated
+    /// again rather than compiled again.
+    module: wasmi::Module,
+    memory_bytes: Option<usize>,
+    store: wasmi::Store<__OrchGuestLimits>,
+    instance: wasmi::Instance,
+    /// Kept for the shared constructor's signature: a web build bounds calls by fuel.
+    timeout: Option<std::time::Duration>,
+    /// How much work one call may do, or `None` for no fuel budget.
+    fuel: Option<u64>,
+    /// The host functions this guest was granted, applied again when it is replaced.
+    grants: Option<__OrchGrants>,
+}
+
+impl __OrchGuest {
+    fn new(
+        name: &'static str,
+        wasm: &[u8],
+        memory_bytes: Option<usize>,
+        timeout_ms: Option<u64>,
+        fuel: Option<u64>,
+        grants: Option<__OrchGrants>,
+    ) -> Result<__OrchGuest, String> {
+        let module = wasmi::Module::new(__orch_wasm_engine(), wasm)
+            .map_err(|e| format!("wasm module '{}' failed to load: {}", name, e))?;
+        let timeout = timeout_ms.map(std::time::Duration::from_millis);
+        let (store, instance) = __orch_wasm_instantiate(name, &module, memory_bytes, timeout, fuel, grants)?;
+        Ok(__OrchGuest { name, module, memory_bytes, store, instance, timeout, fuel, grants })
+    }
+
+    /// A guest loaded from a file says what it implements: its `orch_interface` export
+    /// returns its protocol and then its handlers' signatures, one a line. Each handler
+    /// the program declared is found there by name and must match; the guest may
+    /// implement more, which the program cannot call.
+    fn check_interface(&mut self, expected: &[&str]) -> Result<(), String> {
+        let function = self.instance.get_typed_func::<(), i64>(&mut self.store, "orch_interface")
+            .map_err(|_| format!("wasm module '{}' exports no `orch_interface`, so it cannot say what it implements; build a guest with `orchestrate build --guest`", self.name))?;
+        self.begin();
+        let packed = function.call(&mut self.store, ()).map_err(|e| self.failed("orch_interface", &e))?;
+        let text = self.read_string(packed)?;
+        let mut lines = text.lines();
+        let (protocol, handlers) = expected.split_first().expect("a protocol line");
+        match lines.next() {
+            Some(line) if line == *protocol => {}
+            got => return Err(format!("wasm module '{}' follows {}, and this program expects {}", self.name, got.unwrap_or("no protocol"), protocol)),
+        }
+        let got: Vec<&str> = lines.collect();
+        for want in handlers {
+            let name = want.split('(').next().unwrap_or(want);
+            match got.iter().find(|line| line.split('(').next() == Some(name)) {
+                Some(line) if line == want => {}
+                Some(line) => return Err(format!("wasm module '{}': interface mismatch: handler '{}' is declared as {} but the guest defines {}", self.name, name, want, line)),
+                None => return Err(format!(
+                    "wasm module '{}': interface mismatch: handler '{}' is declared as {} but the guest defines no handler '{}'; it defines {}",
+                    self.name, name, want, name, if got.is_empty() { "none".to_string() } else { got.join(", ") }
+                )),
+            }
+        }
+        Ok(())
+    }
+
+    /// Called just before the guest function runs — after its arguments are written into
+    /// the guest — so each call gets its whole fuel budget.
+    fn begin(&mut self) {
+        self.window();
+        self.store.data_mut().answered_err = None;
+    }
+
+    /// A fresh fuel budget for one call into the guest. The host's own calls — to the
+    /// allocator, before a call's arguments go in and after its results come out — each get
+    /// one too, so copying never spends what the call itself was given.
+    fn window(&mut self) {
+        // A fresh budget for each call.
+        let _ = self.store.set_fuel(self.fuel.unwrap_or(u64::MAX));
+    }
+
+    /// Replace the instance after a call trapped.
+    ///
+    /// A trap abandons the guest's frames where they stand: it does not unwind, so
+    /// whatever the guest was part-way through stays part-way through — a borrow it had
+    /// taken is never released, and a value it was rewriting is left half-written. Calling
+    /// into that again would fail forever, and reading it would be worse. So a trapped
+    /// guest is thrown away and a fresh one takes its place, which means a call that traps
+    /// also resets the guest's state. Containment costs what it costs.
+    fn reset(&mut self) {
+        match __orch_wasm_instantiate(self.name, &self.module, self.memory_bytes, self.timeout, self.fuel, self.grants) {
+            Ok((store, instance)) => {
+                self.store = store;
+                self.instance = instance;
+            }
+            Err(error) => eprintln!("[orchestrate] wasm module '{}' could not be restarted: {}", self.name, error),
+        }
+    }
+
+    fn memory(&mut self) -> Result<wasmi::Memory, String> {
+        self.instance
+            .get_memory(&mut self.store, "memory")
+            .ok_or_else(|| format!("wasm module '{}' exports no memory, so it cannot pass strings", self.name))
+    }
+
+    /// Copy bytes into the guest through its own allocator and return (pointer, length).
+    /// What the host writes for a call, the host frees after it, through `free`: the
+    /// allocation is borrowed by the guest for the call, the way a C-ABI array parameter
+    /// is borrowed by the foreign function and released by its owner.
+    fn write_bytes(&mut self, bytes: &[u8]) -> Result<(i32, i32), String> {
+        if bytes.is_empty() {
+            return Ok((0, 0));
+        }
+        let alloc = self
+            .instance
+            .get_typed_func::<i32, i32>(&mut self.store, "orch_alloc")
+            .map_err(|_| __orch_wasm_missing_allocator(self.name))?;
+        let memory = self.memory()?;
+        self.window();
+        let pointer = alloc
+            .call(&mut self.store, bytes.len() as i32)
+            .map_err(|e| self.failed("orch_alloc", &e))?;
+        if pointer == 0 {
+            return Err(format!("wasm module '{}' could not allocate {} bytes", self.name, bytes.len()));
+        }
+        memory
+            .write(&mut self.store, pointer as usize, bytes)
+            .map_err(|e| format!("wasm module '{}': writing into the guest failed: {}", self.name, e))?;
+        Ok((pointer, bytes.len() as i32))
+    }
+
+    /// Copy a string into the guest and return (pointer, length).
+    fn write_string(&mut self, text: &str) -> Result<(i32, i32), String> {
+        self.write_bytes(text.as_bytes())
+    }
+
+    /// Copy an array into the guest as its elements' bytes and return
+    /// (pointer, count, length in bytes): the guest reads pointer and count, the host
+    /// frees pointer and length.
+    fn write_array<T: __OrchWasmPod>(&mut self, items: &[T]) -> Result<(i32, i32, i32), String> {
+        let mut bytes = Vec::with_capacity(items.len() * T::SIZE);
+        for item in items {
+            item.to_bytes(&mut bytes);
+        }
+        let (pointer, length) = self.write_bytes(&bytes)?;
+        Ok((pointer, items.len() as i32, length))
+    }
+
+    /// Copy a struct into the guest as its `#[repr(C)]` bytes, written field by field by
+    /// the generated `encode` with padding left zero, and return (pointer, length).
+    fn write_struct(&mut self, size: usize, encode: impl FnOnce(&mut [u8])) -> Result<(i32, i32), String> {
+        let mut bytes = vec![0u8; size];
+        encode(&mut bytes);
+        self.write_bytes(&bytes)
+    }
+
+    /// Hand an allocation back to the guest: everything the host wrote for a call, once
+    /// the call has returned. A guest that trapped is replaced instead, allocations and all.
+    fn free(&mut self, pointer: i32, length: i32) {
+        if pointer == 0 || length <= 0 {
+            return;
+        }
+        if let Ok(free) = self.instance.get_typed_func::<(i32, i32), ()>(&mut self.store, "orch_free") {
+            self.window();
+            let _ = free.call(&mut self.store, (pointer, length));
+        }
+    }
+
+    /// Read `length` bytes the guest allocated at `pointer`, then free them: what the
+    /// guest returns, the host copies and releases, as the C-ABI wrapper does with a
+    /// `malloc`'d return.
+    fn take_bytes(&mut self, pointer: i32, length: i32, what: &str) -> Result<Vec<u8>, String> {
+        if pointer == 0 || length <= 0 {
+            return Ok(Vec::new());
+        }
+        let memory = self.memory()?;
+        let mut bytes = vec![0u8; length as usize];
+        memory
+            .read(&self.store, pointer as usize, &mut bytes)
+            .map_err(|e| format!("wasm module '{}': reading {} failed: {}", self.name, what, e))?;
+        self.free(pointer, length);
+        Ok(bytes)
+    }
+
+    /// Read a string the guest returned as a packed (pointer << 32) | length.
+    fn read_string(&mut self, packed: i64) -> Result<String, String> {
+        let bytes = self.take_bytes((packed >> 32) as i32, (packed & 0xffff_ffff) as i32, "a string")?;
+        String::from_utf8(bytes)
+            .map_err(|_| format!("wasm module '{}' returned a string that is not UTF-8", self.name))
+    }
+
+    /// Read an array the guest returned as a packed (pointer << 32) | count.
+    fn read_array<T: __OrchWasmPod>(&mut self, packed: i64) -> Result<Vec<T>, String> {
+        let count = (packed & 0xffff_ffff) as i32;
+        let length = count
+            .checked_mul(T::SIZE as i32)
+            .ok_or_else(|| format!("wasm module '{}' returned an array too large to read", self.name))?;
+        let bytes = self.take_bytes((packed >> 32) as i32, length, "an array")?;
+        Ok(bytes.chunks_exact(T::SIZE).map(T::from_bytes).collect())
+    }
+
+    /// Read a struct the guest returned as a packed (pointer << 32) | size, decoded field
+    /// by field by the generated `decode`. The size is checked against the host's own
+    /// layout, so the two sides cannot quietly disagree about a struct.
+    fn read_struct<T>(&mut self, packed: i64, size: usize, decode: impl FnOnce(&[u8]) -> T) -> Result<T, String> {
+        let length = (packed & 0xffff_ffff) as i32;
+        if length < 0 || length as usize != size {
+            return Err(format!(
+                "wasm module '{}' returned a struct of {} bytes where the host expects {}",
+                self.name, length, size
+            ));
+        }
+        let bytes = self.take_bytes((packed >> 32) as i32, length, "a struct")?;
+        Ok(decode(&bytes))
+    }
+
+    fn failed(&self, function: &str, error: &__OrchWasmError) -> String {
+        format!("wasm call '{}::{}' failed: {}", self.name, function, __orch_wasm_reason(error))
+    }
+}
+
+fn __orch_wasm_missing_allocator(name: &str) -> String {
+    format!(
+        "wasm module '{}' passes a string but exports no `orch_alloc(i32) -> i32`; a module that carries strings must export `orch_alloc` and `orch_free(i32, i32)`",
+        name
+    )
+}
+
+/// The useful line of a wasmtime error. The error itself only says that something failed
+/// while executing and then carries a backtrace; what happened is underneath it, so the
+/// cause at the bottom of the chain is the one worth reporting.
+fn __orch_wasm_reason(error: &wasmi::Error) -> String {
+    match error.as_trap_code() {
+        Some(wasmi::TrapCode::OutOfFuel) => return "the guest used up its fuel".to_string(),
+        Some(wasmi::TrapCode::UnreachableCodeReached) => return "the guest stopped itself (it panicked or ran out of memory)".to_string(),
+        Some(trap) => return trap.to_string(),
+        None => {}
+    }
+    let text = error.to_string();
+    let first = text.lines().next().unwrap_or("").trim().to_string();
+    if first.starts_with("unknown import") {
+        return format!("{} — a sandboxed guest is granted nothing", first);
+    }
+    if first.is_empty() { "unknown error".to_string() } else { first }
+}
+
+/// A guest shared by every caller of one wasm module. Guest memory is state, and one
+/// instance holds it, so calls take the lock in turn.
+struct __OrchWasmModule {
+    name: &'static str,
+    /// `None` when the module could not be loaded at all. The signatures were checked
+    /// against this module when the program was built, so that is close to impossible —
+    /// but a library-mode host should not be brought down by it, so every call reports
+    /// and answers with a default instead.
+    guest: std::sync::Mutex<Option<__OrchGuest>>,
+}
+
+impl __OrchWasmModule {
+    fn load(name: &'static str, wasm: &[u8]) -> __OrchWasmModule {
+        let guest = match __OrchGuest::new(name, wasm, None, None, None, None) {
+            Ok(guest) => Some(guest),
+            Err(error) => {
+                eprintln!("[orchestrate] {}", error);
+                None
+            }
+        };
+        __OrchWasmModule { name, guest: std::sync::Mutex::new(guest) }
+    }
+
+    /// Run one call against the module. A trap is reported and the call yields the return
+    /// type's default, the way a failed host call does.
+    fn call<T: Default>(&self, function: &str, body: impl FnOnce(&mut __OrchGuest) -> Result<T, String>) -> T {
+        let mut slot = self.guest.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(guest) = slot.as_mut() else {
+            eprintln!("[orchestrate] wasm call '{}::{}' skipped: the module did not load", self.name, function);
+            return T::default();
+        };
+        guest.begin();
+        match body(guest) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!("[orchestrate] {}", error);
+                // The guest was abandoned mid-call, so it is replaced before the next one.
+                guest.reset();
+                T::default()
+            }
+        }
+    }
+}

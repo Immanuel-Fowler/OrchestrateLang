@@ -14,6 +14,9 @@ independently of the compiler. Format: [Keep a Changelog](https://keepachangelog
   (`map`, `filter`, `reduce`, `find`, `any`, `all`, `range`, `to_int`, `to_float`,
   `parse_int`, `parse_float`).
 
+- Highlighting for the `entity` and `handle` types and the `entity_index` and
+  `entity_generation` built-ins.
+
 ### Changed
 - Renamed to OrchestrateLang and moved to `editors/vscode/`.
 - String interpolation highlights `{expr}` (the language's syntax) instead of `${expr}`.

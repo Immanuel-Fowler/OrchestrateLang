@@ -12,11 +12,13 @@ fn print_help(invocation: &str) {
     println!("  build <file.orch> -o <out>   Specify the output binary name");
     println!("  build --lib <file.orch> -o <dir>   Generate a host-linkable Rust crate");
     println!("  build --guest <file.orch> -o <file.wasm>   Compile the file's sandboxed serverlet to a guest loaded with `start X from path`");
+    println!("  build --lib --web <file.orch> -o <dir>   Generate a crate for the browser (wasm32-unknown-unknown)");
     println!("  build --lib --rust-version <x.y>   Set the generated crate's rust-version");
     println!("  build --lib --dependency '<name> = <spec>'   Add a Cargo dependency to the generated crate (repeatable)");
     println!("  build --lib --dependencies <file.toml>       Add the dependencies a TOML fragment declares");
     println!("  check <file.orch>            Type-check only — no compilation (fast)");
     println!("  check --lib <file.orch>      Type-check as build --lib would: host blocks, ticks, grants");
+    println!("  check --lib --web <file.orch>   Also apply the web build's rules");
     println!("  check-foreign <file.orch>    Check foreign sources with their own language's checker");
     println!("  check-foreign --deep         Also run mypy on Python and cargo check on Rust (slower)");
     println!();
@@ -103,6 +105,7 @@ pub fn run(invocation: &str, args: &[String]) {
             let mut out = None;
             let mut library = false;
             let mut guest = false;
+            let mut web = false;
             let mut target = None;
             let mut rust_version = None;
             let mut dependency_args: Vec<(&str, &str)> = Vec::new();
@@ -111,6 +114,7 @@ pub fn run(invocation: &str, args: &[String]) {
                 match arg.as_str() {
                     "--lib" => library = true,
                     "--guest" => guest = true,
+                    "--web" => web = true,
                     "--target" => target = options.next().map(String::as_str),
                     "--rust-version" => rust_version = options.next().map(String::as_str),
                     "--dependency" | "--dependencies" => match options.next() {
@@ -123,11 +127,12 @@ pub fn run(invocation: &str, args: &[String]) {
                 }
             }
             let result = match input {
+                Some(_) if web && !library => Err("--web applies to build --lib".into()),
                 Some(_) if guest && (library || target.is_some() || rust_version.is_some() || !dependency_args.is_empty()) =>
                     Err("build --guest takes a file and -o, and nothing else".into()),
                 Some(input) if guest => driver::run_build_guest(input, out),
                 Some(input) if library => parse_dependency_args(&dependency_args)
-                    .and_then(|dependencies| driver::run_build_library_for_target(input, out, target, rust_version, &dependencies)),
+                    .and_then(|dependencies| driver::run_build_library_for_target(input, out, target, rust_version, &dependencies, web)),
                 Some(_) if rust_version.is_some() => Err("--rust-version applies to build --lib".into()),
                 Some(_) if !dependency_args.is_empty() => Err("--dependency and --dependencies apply to build --lib".into()),
                 Some(input) => driver::run_build(input, out),
@@ -139,9 +144,11 @@ pub fn run(invocation: &str, args: &[String]) {
         "check" => {
             let mut input = None;
             let mut library = false;
+            let mut web = false;
             for arg in &args[2..] {
                 match arg.as_str() {
                     "--lib" => library = true,
+                    "--web" => web = true,
                     value if !value.starts_with('-') && input.is_none() => input = Some(value),
                     _ => {
                         eprintln!("Unknown check argument: {}", arg);
@@ -150,10 +157,10 @@ pub fn run(invocation: &str, args: &[String]) {
                 }
             }
             let Some(input) = input else {
-                eprintln!("Usage: {} check [--lib] <file.orch>", invocation);
+                eprintln!("Usage: {} check [--lib [--web]] <file.orch>", invocation);
                 std::process::exit(1);
             };
-            if let Err(e) = driver::run_check(input, library) {
+            if let Err(e) = driver::run_check(input, library, web) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }

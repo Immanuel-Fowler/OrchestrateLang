@@ -583,8 +583,9 @@ impl Parser {
         self.consume(TokenKind::LParen, "Expected '(' after 'sandbox'")?;
         let mut memory_limit = String::new();
         let mut timeout = String::new();
+        let mut fuel = None;
         let mut every_micros = None;
-        // Parse comma-separated `key: "value"` pairs.
+        // Parse comma-separated `key: "value"` pairs; `fuel` takes a number.
         while self.peek().kind != TokenKind::RParen && self.peek().kind != TokenKind::EOF {
             let key_tok = self.advance().clone();
             let key = match &key_tok.kind {
@@ -593,6 +594,17 @@ impl Parser {
             };
             self.consume(TokenKind::Colon, "Expected ':' after sandbox config key")?;
             let val_tok = self.advance().clone();
+            if key == "fuel" {
+                fuel = match &val_tok.kind {
+                    TokenKind::Int(n) if *n >= 1 => Some(*n as u64),
+                    _ => return Err(format!(
+                        "Invalid sandbox fuel at line {}, col {} (expected a whole number of at least 1, such as `fuel: 1000000`)",
+                        val_tok.line, val_tok.col
+                    )),
+                };
+                let _ = self.match_token(TokenKind::Comma);
+                continue;
+            }
             let val = match &val_tok.kind {
                 TokenKind::Str(s) => s.clone(),
                 _ => return Err(format!("Expected string value for sandbox config '{}' at line {}, col {}", key, val_tok.line, val_tok.col)),
@@ -603,15 +615,15 @@ impl Parser {
                 "every" => every_micros = Some(crate::ast::duration_micros(&val).ok_or_else(|| format!(
                     "Invalid sandbox every '{}' at line {}, col {} (expected a duration of host time such as \"100ms\" or \"0.5s\")", val, val_tok.line, val_tok.col
                 ))?),
-                _ => return Err(format!("Unknown sandbox config key '{}' at line {}, col {} (expected 'memory_limit', 'timeout', or 'every')", key, key_tok.line, key_tok.col)),
+                _ => return Err(format!("Unknown sandbox config key '{}' at line {}, col {} (expected 'memory_limit', 'timeout', 'fuel', or 'every')", key, key_tok.line, key_tok.col)),
             }
             let _ = self.match_token(TokenKind::Comma);
         }
         self.consume(TokenKind::RParen, "Expected ')' to close sandbox config")?;
-        if memory_limit.is_empty() || timeout.is_empty() {
-            return Err("sandbox(...) needs both 'memory_limit' and 'timeout'".into());
+        if memory_limit.is_empty() || (timeout.is_empty() && fuel.is_none()) {
+            return Err("sandbox(...) needs 'memory_limit' and a bound on each call: 'timeout', 'fuel', or both".into());
         }
-        let config = crate::ast::SandboxConfig { memory_limit, timeout, every_micros, loaded: false };
+        let config = crate::ast::SandboxConfig { memory_limit, timeout, fuel, every_micros, loaded: false };
         // Checked here so a typo is a parse error, not a limit that silently misses.
         if config.memory_bytes().is_none() {
             return Err(format!(
@@ -619,7 +631,7 @@ impl Parser {
                 config.memory_limit
             ));
         }
-        if config.timeout_ms().is_none() {
+        if !config.timeout.is_empty() && config.timeout_ms().is_none() {
             return Err(format!(
                 "Invalid sandbox timeout '{}' (expected a duration such as \"5s\" or \"250ms\")",
                 config.timeout
@@ -957,15 +969,16 @@ impl Parser {
                 "bool" => Ok(Type::Bool),
                 "void" => Ok(Type::Void),
                 "handle" => Ok(Type::Handle),
+                "entity" => Ok(Type::Entity),
                 "map" if self.peek().kind == TokenKind::Lt => {
                     self.advance();
                     let key = self.parse_type()?;
                     self.consume(TokenKind::Comma, "Expected ',' between a map's key and value types, as in map<string, int>")?;
                     let value = self.parse_type()?;
                     self.consume_closing_angle("Expected '>' after map value type")?;
-                    if !matches!(key, Type::Int | Type::Str | Type::Bool) {
+                    if !matches!(key, Type::Int | Type::Str | Type::Bool | Type::Entity) {
                         return Err(format!(
-                            "line {}, col {}: a map's key is an int, a string, or a bool, and this one is {}",
+                            "line {}, col {}: a map's key is an int, a string, a bool, or an entity, and this one is {}",
                             tok.line, tok.col, key.display_name()
                         ));
                     }
@@ -1467,7 +1480,7 @@ impl Parser {
                                     TokenKind::Str(text) => text.clone(),
                                     _ => return Err(format!("Expected a duration such as \"50ms\" after 'backoff:' at line {}", value_tok.line)),
                                 };
-                                let config = SandboxConfig { memory_limit: String::new(), timeout: text.clone(), every_micros: None, loaded: false };
+                                let config = SandboxConfig { memory_limit: String::new(), timeout: text.clone(), fuel: None, every_micros: None, loaded: false };
                                 backoff_ms = Some(config.timeout_ms().ok_or_else(|| format!(
                                     "Invalid backoff \"{}\" at line {}: write a duration of at least 1ms, such as \"50ms\" or \"2s\"", text, value_tok.line
                                 ))?);

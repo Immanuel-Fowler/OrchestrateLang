@@ -1430,7 +1430,7 @@ impl Codegen {
                 let args = handler.params.iter().map(|p| rust_ident(&p.name)).collect::<Vec<_>>().join(", ");
                 let encode = if handler.return_type == Type::Void { "Vec::new()" } else { "__wire_to_bytes(&__value)" };
                 definitions.push(format!(
-                    "    linker.func_wrap(\"orch_host\", {import:?}, |mut __caller: wasmtime::Caller<'_, crate::__OrchGuestLimits>, __pointer: i32, __length: i32| -> i64 {{\n        \
+                    "    linker.func_wrap(\"orch_host\", {import:?}, |mut __caller: crate::__OrchCaller<'_>, __pointer: i32, __length: i32| -> i64 {{\n        \
                          crate::__orch_grant_call(&mut __caller, __pointer, __length, |__payload| -> Result<Vec<u8>, String> {{\n            \
                              let mut __pos = 0;\n{decode}            \
                              if __pos != __payload.len() {{ return Err(\"trailing host arguments\".into()); }}\n            \
@@ -1448,7 +1448,7 @@ impl Codegen {
             (
                 format!(
                     "/// The host functions serverlet '{name}' was granted, one import each.\n\
-                     #[allow(non_snake_case)]\nfn __orch_grants_{name}(linker: &mut wasmtime::Linker<crate::__OrchGuestLimits>) -> Result<(), wasmtime::Error> {{\n{}\n    Ok(())\n}}\n",
+                     #[allow(non_snake_case)]\nfn __orch_grants_{name}(linker: &mut crate::__OrchLinker) -> Result<(), crate::__OrchWasmError> {{\n{}\n    Ok(())\n}}\n",
                     definitions.join("\n")
                 ),
                 format!("Some(__orch_grants_{name})"),
@@ -1463,8 +1463,8 @@ impl Codegen {
             return format!(
                 "{codecs}{grants_fn}#[allow(non_snake_case)]\npub fn start_{name}_from(path: String) -> Result<{name}Client, String> {{\n    \
                      let (tx, mut rx) = tokio::sync::mpsc::channel::<{name}Msg>(100);\n    \
-                     let __bytes = std::fs::read(&path).map_err(|__error| format!(\"sandboxed serverlet '{name}': cannot read '{{}}': {{}}\", path, __error))?;\n    \
-                     let mut __guest = crate::__OrchGuest::new({name:?}, &__bytes, Some({memory}), Some({timeout}).filter(|_| !__orch_deterministic()), {grants_arg})?;\n    \
+                     let __bytes = {read_guest}.map_err(|__error| format!(\"sandboxed serverlet '{name}': cannot read '{{}}': {{}}\", path, __error))?;\n    \
+                     let mut __guest = crate::__OrchGuest::new({name:?}, &__bytes, Some({memory}), {timeout}.filter(|_| !__orch_deterministic()), {fuel}, {grants_arg})?;\n    \
                      __guest.check_interface(&[{expected}])?;\n    \
                      let actor = __OrchActor::spawn(true, async move {{\n        \
                          let mut __guest = __guest;\n        \
@@ -1477,9 +1477,11 @@ impl Codegen {
                 grants_arg = grants_arg,
                 name = name,
                 memory = config.memory_bytes().unwrap_or(64 * 1024 * 1024),
-                timeout = config.timeout_ms().unwrap_or(5_000),
+                timeout = match config.timeout_ms() { Some(ms) => format!("Some({ms}u64)"), None => "None::<u64>".to_string() },
+                fuel = match config.fuel { Some(fuel) => format!("Some({fuel}u64)"), None => "None::<u64>".to_string() },
                 expected = expected,
                 arms = arms.join("\n"),
+                read_guest = if self.library { "crate::__orch_context().host.load_guest(&path)" } else { "std::fs::read(&path).map_err(|__error| __error.to_string())" },
             );
         }
 
@@ -1487,8 +1489,8 @@ impl Codegen {
             "{codecs}{grants_fn}#[allow(non_snake_case)]\npub fn start_{name}() -> {name}Client {{\n    \
                  let (tx, mut rx) = tokio::sync::mpsc::channel::<{name}Msg>(100);\n    \
                  let actor = __OrchActor::spawn(true, async move {{\n        \
-                     // A deterministic run does not enforce the timeout: it measures wall time.\n        \
-                     let mut __guest = match crate::__OrchGuest::new({name:?}, include_bytes!(\"sandbox_{name}.wasm\"), Some({memory}), Some({timeout}).filter(|_| !__orch_deterministic()), {grants_arg}) {{\n            \
+                     // A deterministic run does not enforce the timeout, which measures wall time; fuel it does.\n        \
+                     let mut __guest = match crate::__OrchGuest::new({name:?}, include_bytes!(\"sandbox_{name}.wasm\"), Some({memory}), {timeout}.filter(|_| !__orch_deterministic()), {fuel}, {grants_arg}) {{\n            \
                          Ok(__guest) => __guest,\n            \
                          Err(__error) => {{ eprintln!(\"[orchestrate] {{}}\", __error); return; }}\n        \
                      }};\n        \
@@ -1501,7 +1503,8 @@ impl Codegen {
             grants_arg = grants_arg,
             name = name,
             memory = config.memory_bytes().unwrap_or(64 * 1024 * 1024),
-            timeout = config.timeout_ms().unwrap_or(5_000),
+            timeout = match config.timeout_ms() { Some(ms) => format!("Some({ms}u64)"), None => "None::<u64>".to_string() },
+                fuel = match config.fuel { Some(fuel) => format!("Some({fuel}u64)"), None => "None::<u64>".to_string() },
             arms = arms.join("\n"),
         )
     }
@@ -1928,7 +1931,7 @@ pub(crate) fn answered_type(ty: &Type) -> &Type {
 pub(crate) fn has_default(ty: &Type, structs: &StructDefs) -> bool {
     fn go(ty: &Type, structs: &StructDefs, depth: usize) -> bool {
         match ty {
-            Type::Int | Type::Float | Type::Str | Type::Bool | Type::Void | Type::Array(_, _) | Type::Option(_) | Type::Map(_, _) => true,
+            Type::Int | Type::Entity | Type::Float | Type::Str | Type::Bool | Type::Void | Type::Array(_, _) | Type::Option(_) | Type::Map(_, _) => true,
             Type::Named(name) if depth <= 32 => structs.iter()
                 .find(|(n, _)| n == name)
                 .is_some_and(|(_, fields)| fields.iter().all(|(_, field)| go(field, structs, depth + 1))),
@@ -1946,7 +1949,7 @@ pub(crate) fn has_default(ty: &Type, structs: &StructDefs) -> bool {
 pub(crate) fn has_equality(ty: &Type, structs: &StructDefs, enums: &StructDefs) -> bool {
     fn go(ty: &Type, structs: &StructDefs, enums: &StructDefs, depth: usize) -> bool {
         match ty {
-            Type::Int | Type::Float | Type::Str | Type::Bool | Type::Void | Type::TypeParam(_) => true,
+            Type::Int | Type::Entity | Type::Float | Type::Str | Type::Bool | Type::Void | Type::TypeParam(_) => true,
             Type::Array(inner, _) | Type::Option(inner) => go(inner, structs, enums, depth + 1),
             Type::Result(ok, error) | Type::Map(ok, error) => go(ok, structs, enums, depth + 1) && go(error, structs, enums, depth + 1),
             Type::Named(name) if depth <= 32 => structs.iter().chain(enums.iter())
@@ -1978,7 +1981,7 @@ pub(crate) const SHAREABLE: &str = "A shared binding holds data — int, float, 
 /// one statement at a time. The one rule `check` and the build both apply.
 pub(crate) fn shareable(ty: &Type) -> bool {
     match ty {
-        Type::Int | Type::Float | Type::Bool | Type::Str | Type::Named(_) | Type::Handle | Type::Client(_) => true,
+        Type::Int | Type::Entity | Type::Float | Type::Bool | Type::Str | Type::Named(_) | Type::Handle | Type::Client(_) => true,
         Type::Array(inner, _) | Type::Option(inner) => shareable(inner),
         Type::Map(_, value) => shareable(value),
         _ => false,
@@ -1995,7 +1998,7 @@ pub(crate) fn has_display(ty: &Type) -> bool {
 fn stands_alone(ty: &Type, structs: &StructDefs, enums: &StructDefs) -> bool {
     fn go(ty: &Type, structs: &StructDefs, enums: &StructDefs, depth: usize) -> bool {
         match ty {
-            Type::Int | Type::Float | Type::Str | Type::Bool | Type::Void => true,
+            Type::Int | Type::Entity | Type::Float | Type::Str | Type::Bool | Type::Void => true,
             Type::Array(inner, _) | Type::Option(inner) => go(inner, structs, enums, depth + 1),
             Type::Result(a, b) | Type::Map(a, b) => go(a, structs, enums, depth + 1) && go(b, structs, enums, depth + 1),
             Type::Named(name) if depth <= 32 => structs.iter().chain(enums.iter())
@@ -2033,9 +2036,9 @@ fn wire_supported(ty: &Type, structs: &StructDefs, depth: usize) -> bool {
         return false; // recursive struct definitions can't be encoded
     }
     match ty {
-        Type::Int | Type::Float | Type::Str | Type::Bool => true,
+        Type::Int | Type::Entity | Type::Float | Type::Str | Type::Bool => true,
         Type::Array(inner, _) => wire_supported(inner, structs, depth + 1),
-        Type::Map(key, value) => matches!(**key, Type::Int | Type::Str | Type::Bool) && wire_supported(value, structs, depth + 1),
+        Type::Map(key, value) => matches!(**key, Type::Int | Type::Entity | Type::Str | Type::Bool) && wire_supported(value, structs, depth + 1),
         Type::Named(name) => structs.iter()
             .find(|(n, _)| n == name)
             .map_or(false, |(_, fields)| fields.iter().all(|(_, fty)| wire_supported(fty, structs, depth + 1))),
@@ -2086,8 +2089,8 @@ pub(crate) fn sandbox_unsupported_reason(name: &str, handlers: &[Handler], struc
 
 fn sandbox_type_supported(ty: &Type, structs: &StructDefs) -> bool {
     match ty {
-        Type::Int | Type::Float | Type::Bool | Type::Str => true,
-        Type::Array(inner, _) => matches!(**inner, Type::Int | Type::Float | Type::Bool),
+        Type::Int | Type::Entity | Type::Float | Type::Bool | Type::Str => true,
+        Type::Array(inner, _) => matches!(**inner, Type::Int | Type::Entity | Type::Float | Type::Bool),
         Type::Named(name) => sandbox_struct_supported(name, structs, 0),
         _ => false,
     }

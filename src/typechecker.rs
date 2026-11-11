@@ -116,7 +116,7 @@ impl TypeChecker {
 
         let builtins = vec![
             "print", "to_string", "to_int", "to_float", "parse_int", "parse_float",
-            "sleep", "stop_orch", "clock_micros", "clock_nanos",
+            "sleep", "stop_orch", "clock_micros", "clock_nanos", "entity_index", "entity_generation",
             "length", "append", "remove",
             "map", "filter", "reduce", "find", "any", "all", "range",
         ];
@@ -540,6 +540,7 @@ impl TypeChecker {
             Type::Map(_, _) => "show its length, or what it holds for a key",
             Type::Option(_) | Type::Result(_, _) => "match on it and show what it holds",
             Type::Named(_) => "show its fields, or match on it",
+            Type::Entity => "show entity_index(e) and entity_generation(e)",
             _ => "show something it holds",
         };
         Err(format!(
@@ -1308,7 +1309,7 @@ impl TypeChecker {
                 let iter_ty = self.infer_expr(iter)?;
                 let elem_ty = match &iter_ty {
                     Type::Array(inner, _) => *inner.clone(),
-                    Type::Int | Type::Float | Type::Bool | Type::Str => {
+                    Type::Int | Type::Float | Type::Bool | Type::Str | Type::Entity => {
                         return Err(format!(
                             "line {}, col {}: for loops over an array, got {}; use range(n) to count",
                             stmt.span.line, stmt.span.col, iter_ty.display_name()
@@ -1858,6 +1859,16 @@ impl TypeChecker {
                     "clock_micros" | "clock_nanos" if args.is_empty() => {
                         return Ok(Type::Int);
                     }
+                    "entity_index" | "entity_generation" => {
+                        if arg_types.len() != 1 || arg_types[0] != Type::Entity {
+                            return Err(format!(
+                                "line {}, col {}: {}(e) takes one entity, got ({})",
+                                expr.span.line, expr.span.col, callee,
+                                arg_types.iter().map(|t| t.display_name()).collect::<Vec<_>>().join(", ")
+                            ));
+                        }
+                        return Ok(Type::Int);
+                    }
                     "to_int" if args.len() == 1 => {
                         return Ok(Type::Int);
                     }
@@ -2303,9 +2314,9 @@ impl TypeChecker {
                     }
                 }
                 if let Some(key) = &key_ty {
-                    if !matches!(key, Type::Int | Type::Str | Type::Bool) {
+                    if !matches!(key, Type::Int | Type::Str | Type::Bool | Type::Entity) {
                         return Err(format!(
-                            "line {}, col {}: a map's key is an int, a string, or a bool, and this one is {}",
+                            "line {}, col {}: a map's key is an int, a string, a bool, or an entity, and this one is {}",
                             expr.span.line, expr.span.col, key.display_name()
                         ));
                     }

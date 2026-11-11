@@ -495,6 +495,16 @@ fn clock_nanos() -> i64 {{
     __orch_clock_start().elapsed().as_nanos() as i64
 }}
 
+/// `entity_index(e)`: the slot an entity occupies, the low 32 bits of its handle.
+fn entity_index(entity: i64) -> i64 {{
+    entity & 0xffff_ffff
+}}
+
+/// `entity_generation(e)`: how many times its slot has been reused, the high 32 bits.
+fn entity_generation(entity: i64) -> i64 {{
+    ((entity as u64) >> 32) as i64
+}}
+
 /// `pow`: an int to an int power, or a float to a float power.
 trait __OrchPow {{ fn orch_pow(self, exponent: Self) -> Self; }}
 impl __OrchPow for i64 {{ fn orch_pow(self, exponent: i64) -> i64 {{ self.pow(exponent as u32) }} }}
@@ -834,6 +844,9 @@ pub struct Codegen {
     pub is_main: bool,
     pub library: bool,
     pub host_functions: Vec<(String, crate::ast::Handler)>,
+    /// Each event's parameters by name, with entities still entities: what the generated
+    /// `EVENTS` table and `trigger_by_name` describe and accept.
+    pub event_signatures: std::collections::BTreeMap<String, Vec<(String, Type)>>,
     pub events: std::collections::HashMap<String, Vec<Type>>,
     pub local_stmts: Vec<Stmt>,
     pub secret_programs: Vec<(String, String)>,
@@ -871,6 +884,11 @@ pub struct Codegen {
     /// The program loads a wasm module or sandboxes a serverlet, so the entry file
     /// carries the wasmtime host: the engine, the guest wrapper, and the limits.
     pub needs_wasm: bool,
+    /// A web build: the library targets `wasm32-unknown-unknown`, runs on host time only,
+    /// and hosts its wasm guests on wasmi rather than wasmtime.
+    pub web: bool,
+    /// Some sandboxed serverlet declares `fuel`, so the wasmtime engine counts it.
+    pub wasm_fuel: bool,
     /// Each serverlet's state and its types, from the typechecker. A sandboxed
     /// serverlet's state becomes fields of a struct inside its guest.
     pub serverlet_state_types: std::collections::BTreeMap<String, Vec<(String, Type)>>,
@@ -964,6 +982,9 @@ impl Codegen {
             awaits: 0,
             errors: Vec::new(),
             needs_wasm: false,
+            web: false,
+            event_signatures: Default::default(),
+            wasm_fuel: false,
             serverlet_state_types: std::collections::BTreeMap::new(),
             emit_handle_type: false,
             foreign_handle_params: std::collections::HashMap::new(),
@@ -1303,6 +1324,7 @@ impl Codegen {
         self.tasks.contains(name)
             || matches!(name, "print" | "to_string" | "to_int" | "to_float" | "parse_int" | "parse_float"
                             | "length" | "append" | "remove" | "sleep" | "stop_orch" | "clock_micros" | "clock_nanos"
+                            | "entity_index" | "entity_generation"
                             | "range" | "map" | "filter" | "reduce" | "find" | "any" | "all" | "latest"
                             | "get" | "has" | "keys" | "values" | "stats")
     }
@@ -1860,7 +1882,11 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
             code.push_str(HANDLE_TYPE);
         }
         if is_main && self.needs_wasm {
-            code.push_str(include_str!("wasm_host.rs.txt"));
+            if self.web {
+                code.push_str(include_str!("wasm_host_wasmi.rs.txt"));
+            } else {
+                code.push_str(&include_str!("wasm_host.rs.txt").replace("@WASM_FUEL@", if self.wasm_fuel { "true" } else { "false" }));
+            }
             code.push_str(WASM_POD);
         }
         if is_main {
@@ -2056,7 +2082,8 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
 
     pub fn compile_type(&self, ty: &Type) -> String {
         match ty {
-            Type::Int => "i64".to_string(),
+            // An entity is lowered to its bits before codegen; this is the same answer.
+            Type::Int | Type::Entity => "i64".to_string(),
             Type::Float => "f64".to_string(),
             Type::Str => "String".to_string(),
             Type::Bool => "bool".to_string(),

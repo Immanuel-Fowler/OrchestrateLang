@@ -55,6 +55,12 @@ pub enum Type {
     Process,
     /// An opaque native object owned by a C-ABI foreign module.
     Handle,
+    /// An ECS entity the host hands to the program: a generational handle, compared with
+    /// `==` and `!=` and used as a map key, never added to or built from a number. It is
+    /// a type for the checker only; before code is generated it becomes its 64 bits, an
+    /// `int` (generation in the high 32, index in the low 32), so it crosses every
+    /// boundary an `int` does. See `lower_entities`.
+    Entity,
     Array(Box<Type>, Vec<String>),
     Named(String),
     Option(Box<Type>),
@@ -79,6 +85,7 @@ impl Type {
             Type::Void => "void".to_string(),
             Type::Process => "process".to_string(),
             Type::Handle => "handle".to_string(),
+            Type::Entity => "entity".to_string(),
             Type::Array(inner, _) => format!("{}[]", inner.display_name()),
             Type::Named(name) => name.clone(),
             Type::Option(inner) => format!("option<{}>", inner.display_name()),
@@ -116,7 +123,14 @@ pub struct Param {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SandboxConfig {
     pub memory_limit: String,
+    /// Wall time one call may run, such as "5s". Empty when the guest is bounded by
+    /// `fuel` alone, which a web build requires, since a browser has no clock to stop
+    /// a call by.
     pub timeout: String,
+    /// `fuel: 1000000`: how many units of work one call may do before it is stopped.
+    /// Counted by the wasm engine as the guest runs, so the same call stops at the same
+    /// point every time; a deterministic run enforces it, unlike `timeout`.
+    pub fuel: Option<u64>,
     /// `every: "100ms"`: how often, in host time, the runtime calls the serverlet's `tick`.
     pub every_micros: Option<u64>,
     /// Its handlers have no bodies: the guest is a `.wasm` file the program is handed while
@@ -599,4 +613,146 @@ fn walk_stmt_inner<'a>(stmt: &'a Stmt, visit: &mut dyn FnMut(Node<'a>), deferred
         StmtNode::Return(None) | StmtNode::UseModule { .. } | StmtNode::Load { .. } | StmtNode::LoadForeign { .. }
         | StmtNode::Host { .. } | StmtNode::Break | StmtNode::Continue | StmtNode::StructDef { .. } | StmtNode::EnumDef { .. } => {}
     }
+}
+
+
+/// Calls `f` on every type written anywhere in `stmts`: annotations, signatures, struct
+/// fields, enum payloads, handler and host declarations, and those inside expressions.
+pub fn visit_types_mut(stmts: &mut [Stmt], f: &mut dyn FnMut(&mut Type)) {
+    for stmt in stmts {
+        visit_stmt_types(stmt, f);
+    }
+}
+
+fn visit_params(params: &mut [Param], f: &mut dyn FnMut(&mut Type)) {
+    for param in params {
+        f(&mut param.ty);
+    }
+}
+
+fn visit_handler(handler: &mut Handler, f: &mut dyn FnMut(&mut Type)) {
+    visit_params(&mut handler.params, f);
+    f(&mut handler.return_type);
+    visit_expr_types(&mut handler.body, f);
+}
+
+fn visit_stmt_types(stmt: &mut Stmt, f: &mut dyn FnMut(&mut Type)) {
+    match &mut stmt.node {
+        StmtNode::SharedQueue { ty, .. } => f(ty),
+        StmtNode::Let { ty, value, .. } => {
+            if let Some(ty) = ty { f(ty); }
+            visit_expr_types(value, f);
+        }
+        StmtNode::Expr(value) | StmtNode::Return(Some(value)) | StmtNode::OnStart(value) | StmtNode::OnStop(value) => visit_expr_types(value, f),
+        StmtNode::Return(None) => {}
+        StmtNode::FnDecl { params, return_type, body, .. }
+        | StmtNode::TaskDecl { params, return_type, body, .. }
+        | StmtNode::ProcessDecl { params, return_type, body, .. }
+        | StmtNode::OrchestratorDecl { params, return_type, body, .. } => {
+            visit_params(params, f);
+            f(return_type);
+            visit_expr_types(body, f);
+        }
+        StmtNode::Trigger { args, .. } => for arg in args { visit_expr_types(arg, f); },
+        StmtNode::Parallel(stmts) => visit_types_mut(stmts, f),
+        StmtNode::While { cond, body } | StmtNode::ForIn { iter: cond, body, .. } => {
+            visit_expr_types(cond, f);
+            visit_expr_types(body, f);
+        }
+        StmtNode::UseModule { .. } | StmtNode::Load { .. } | StmtNode::LoadForeign { .. } | StmtNode::Measure { .. }
+        | StmtNode::Break | StmtNode::Continue => {}
+        StmtNode::Serverlet { state, handlers, crash_handler, .. } => {
+            visit_types_mut(state, f);
+            for handler in handlers { visit_handler(handler, f); }
+            if let Some((_, handler)) = crash_handler { visit_expr_types(handler, f); }
+        }
+        StmtNode::Host { functions, .. } => for handler in functions { visit_handler(handler, f); },
+        StmtNode::OnTick { input, return_type, body, .. } => {
+            if let Some(input) = input { f(&mut input.ty); }
+            f(return_type);
+            visit_expr_types(body, f);
+        }
+        StmtNode::OnFixedTick { body, .. } => visit_expr_types(body, f),
+        StmtNode::StructDef { fields, .. } => for (_, ty) in fields { f(ty); },
+        StmtNode::EnumDef { variants, .. } => for variant in variants {
+            if let Some(payload) = &mut variant.payload { f(payload); }
+        },
+    }
+}
+
+fn visit_expr_types(expr: &mut Expr, f: &mut dyn FnMut(&mut Type)) {
+    match &mut expr.node {
+        ExprNode::Literal(_) | ExprNode::Identifier(_) | ExprNode::NoneLiteral => {}
+        ExprNode::Unary { operand, .. } => visit_expr_types(operand, f),
+        ExprNode::Binary { lhs, rhs, .. } => { visit_expr_types(lhs, f); visit_expr_types(rhs, f); }
+        ExprNode::Call { args, .. } | ExprNode::ModuleCall { args, .. } | ExprNode::StartServerlet { args, .. }
+        | ExprNode::ArrayLiteral(args) => for arg in args { visit_expr_types(arg, f); },
+        ExprNode::MethodCall { receiver, args, .. } => {
+            visit_expr_types(receiver, f);
+            for arg in args { visit_expr_types(arg, f); }
+        }
+        ExprNode::Pipeline { value, function } => { visit_expr_types(value, f); visit_expr_types(function, f); }
+        ExprNode::Block(stmts) => visit_types_mut(stmts, f),
+        ExprNode::If { cond, then_branch, else_branch } => {
+            visit_expr_types(cond, f);
+            visit_expr_types(then_branch, f);
+            if let Some(branch) = else_branch { visit_expr_types(branch, f); }
+        }
+        ExprNode::StartFrom { source, .. } => visit_expr_types(source, f),
+        ExprNode::AutomaticBlock { body, crash_handler, .. } => {
+            visit_expr_types(body, f);
+            if let Some((_, handler)) = crash_handler { visit_expr_types(handler, f); }
+        }
+        ExprNode::TriggeredBlock { params, body, .. } => {
+            visit_params(params, f);
+            visit_expr_types(body, f);
+        }
+        ExprNode::StartProcess { target } => visit_expr_types(target, f),
+        ExprNode::StructLiteral { fields, .. } => for (_, value) in fields { visit_expr_types(value, f); },
+        ExprNode::FieldAccess { object, .. } => visit_expr_types(object, f),
+        ExprNode::Index { object, index, .. } => { visit_expr_types(object, f); visit_expr_types(index, f); }
+        ExprNode::MapLiteral(entries) => for (key, value) in entries { visit_expr_types(key, f); visit_expr_types(value, f); },
+        ExprNode::SomeLiteral(inner) | ExprNode::OkLiteral(inner) | ExprNode::ErrLiteral(inner) | ExprNode::Propagate(inner) => {
+            visit_expr_types(inner, f)
+        }
+        ExprNode::TryCatch { body, err_type, handler, .. } => {
+            visit_expr_types(body, f);
+            if let Some(ty) = err_type { f(ty); }
+            visit_expr_types(handler, f);
+        }
+        ExprNode::EnumVariantLiteral { payload, .. } => if let Some(payload) = payload { visit_expr_types(payload, f); },
+        ExprNode::Match { value, arms } => {
+            visit_expr_types(value, f);
+            for arm in arms {
+                if let MatchPattern::Guard { condition, .. } = &mut arm.pattern { visit_expr_types(condition, f); }
+                visit_expr_types(&mut arm.body, f);
+            }
+        }
+        ExprNode::Closure { params, return_type, body } => {
+            visit_params(params, f);
+            if let Some(ty) = return_type { f(ty); }
+            visit_expr_types(body, f);
+        }
+        ExprNode::StringInterp { parts } => for part in parts {
+            if let StringPart::Expr(inner) = part { visit_expr_types(inner, f); }
+        },
+    }
+}
+
+/// `entity` as its 64 bits, an `int`, wherever it is written inside `ty`.
+pub fn lower_entity(ty: &mut Type) {
+    match ty {
+        Type::Entity => *ty = Type::Int,
+        Type::Array(inner, _) | Type::Option(inner) => lower_entity(inner),
+        Type::Result(ok, err) | Type::Map(ok, err) => { lower_entity(ok); lower_entity(err); }
+        Type::Fn(params, ret) => { for p in params { lower_entity(p); } lower_entity(ret); }
+        _ => {}
+    }
+}
+
+/// After type checking, every `entity` in `stmts` becomes `int`: the checker has already
+/// kept entities apart from numbers, and from here on an entity is the 64 bits it crosses
+/// boundaries as.
+pub fn lower_entities(stmts: &mut [Stmt]) {
+    visit_types_mut(stmts, &mut lower_entity);
 }

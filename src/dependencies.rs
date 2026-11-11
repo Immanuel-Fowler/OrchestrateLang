@@ -56,6 +56,24 @@ pub fn builtin_wasmtime() -> Dependency {
     }
 }
 
+/// The web build's WebAssembly runtime: wasmi, a WebAssembly interpreter in pure Rust,
+/// which builds for `wasm32-unknown-unknown` and so runs inside a browser tab, where
+/// wasmtime's compiler cannot. Default features are off, then two back on: `validate`, since
+/// a guest may come from anyone and every module is validated before it runs, and
+/// `portable-dispatch`, the interpreter's loop dispatch — without it wasmi dispatches by tail
+/// calls, which a wasm32 host does not guarantee, and deep guest code overflows the stack.
+/// The host needs neither the text format nor 64-bit memories.
+pub fn builtin_wasmi() -> Dependency {
+    Dependency {
+        name: "wasmi".into(),
+        spec: BTreeMap::from([
+            ("version".to_string(), Value::Str("2".into())),
+            ("default-features".to_string(), Value::Bool(false)),
+            ("features".to_string(), Value::Array(vec![Value::Str("std".into()), Value::Str("validate".into()), Value::Str("portable-dispatch".into())])),
+        ]),
+    }
+}
+
 /// Separates a sidecar's `[dependencies]` section from its signatures. The section's lines
 /// are blanked rather than removed, so signature diagnostics keep their line numbers.
 pub fn split_sidecar(text: &str) -> (String, Option<String>) {

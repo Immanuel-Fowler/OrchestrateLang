@@ -103,6 +103,12 @@ fn foreign_lib_name(language: &str, index: usize, path: &Path) -> String {
     format!("orch_{}_{}_{}", language, index, stem)
 }
 
+/// Whether any sandboxed serverlet here declares `fuel`, which turns fuel counting on in
+/// the wasmtime engine.
+fn has_fueled_sandbox(stmts: &[ast::Stmt]) -> bool {
+    stmts.iter().any(|s| matches!(&s.node, ast::StmtNode::Serverlet { sandbox: Some(config), .. } if config.fuel.is_some()))
+}
+
 /// Whether any serverlet here is sandboxed, which puts the wasmtime host in the
 /// generated crate and makes the build compile a guest for each one.
 fn has_sandbox_serverlets(stmts: &[ast::Stmt]) -> bool {
@@ -190,12 +196,13 @@ pub fn run_build_guest(input_file: &str, output: Option<&str>) -> Result<(), Str
     let source = fs::read_to_string(input_path)
         .map_err(|e| format!("Failed to read source file '{}': {}", input_file, e))?;
     let tokens = lexer::Lexer::new(&source).tokenize()?;
-    let ast = parser::Parser::new(tokens).parse()?;
+    let mut ast = parser::Parser::new(tokens).parse()?;
     if ast.iter().any(|s| matches!(s.node, ast::StmtNode::UseModule { .. })) {
         return Err(format!("{}: a guest is one file: it cannot use a module, since nothing but its grants reaches it", input_file));
     }
     let mut type_checker = typechecker::TypeChecker::new();
     type_checker.type_check(&ast).map_err(|e| type_error_in(input_file, &e))?;
+    ast::lower_entities(&mut ast);
     let guests: Vec<&String> = ast.iter().filter_map(|s| match &s.node {
         ast::StmtNode::Serverlet { name, sandbox: Some(config), .. } if !config.loaded => Some(name),
         _ => None,
@@ -209,7 +216,7 @@ pub fn run_build_guest(input_file: &str, output: Option<&str>) -> Result<(), Str
         )),
     };
     let mut generator = codegen::Codegen::new(std::collections::HashSet::new());
-    generator.serverlet_state_types = type_checker.serverlet_state.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    generator.serverlet_state_types = lowered_state(&type_checker.serverlet_state);
     // A guest's grants name the file's `host` functions, which it imports by name; the
     // program that loads it grants them in its own declaration.
     generator.host_functions = ast.iter().flat_map(|s| match &s.node {
@@ -377,11 +384,11 @@ fn library_rust_version(requested: Option<&str>) -> Result<String, String> {
 }
 
 pub fn compile_main_file_and_modules(input_file: &str, cache_dir: &Path) -> Result<String, String> {
-    compile_with_mode(input_file, cache_dir, None, &[])
+    compile_with_mode(input_file, cache_dir, None, false, &[])
 }
 
 /// `library` carries the `rust-version` the generated crate declares; `None` builds a binary.
-fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, cli_dependencies: &[crate::dependencies::Dependency]) -> Result<String, String> {
+fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, web: bool, cli_dependencies: &[crate::dependencies::Dependency]) -> Result<String, String> {
     let input_path = Path::new(input_file);
     let source = fs::read_to_string(input_path)
         .map_err(|e| format!("Failed to read source file '{}': {}", input_file, e))?;
@@ -397,6 +404,7 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
     resolve_landline_sources(&mut ast, input_path.parent().unwrap_or(Path::new(".")))?;
 
     let mut uses_sandbox = has_sandbox_serverlets(&ast);
+    let mut uses_fuel = has_fueled_sandbox(&ast);
 
     let mut type_checker = typechecker::TypeChecker::new();
 
@@ -429,6 +437,7 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
             
             let module_stmts = compile_module(&module_path)?;
             uses_sandbox |= has_sandbox_serverlets(&module_stmts);
+            uses_fuel |= has_fueled_sandbox(&module_stmts);
 
             for m_stmt in &module_stmts {
                 if let ast::StmtNode::TaskDecl { name, .. } = &m_stmt.node {
@@ -453,6 +462,9 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
     }).collect::<Vec<_>>();
     let module_stmts: Vec<&[ast::Stmt]> = modules_data.iter().map(|(_, stmts, _)| stmts.as_slice()).collect();
     library_rules(input_file, &ast, &module_stmts, library.is_some())?;
+    if web {
+        web_rules(input_file, &ast, &module_stmts)?;
+    }
     let mut all_foreign_sources = Vec::new();
     // Crates the generated crate must depend on, by name, with where each was declared.
     let mut extra_dependencies: std::collections::BTreeMap<String, (crate::dependencies::Dependency, String)> = std::collections::BTreeMap::new();
@@ -550,6 +562,22 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
         format!("Type Error: {}", lines.join("\n"))
     })?;
 
+    // What a host can fire by name, with each parameter's kind, read while an entity is
+    // still an entity; then every entity becomes the 64 bits it crosses boundaries as.
+    let mut event_signatures = event_signatures(&ast);
+    for (_, stmts, _) in &modules_data {
+        event_signatures.extend(event_signatures_of(stmts));
+    }
+    ast::lower_entities(&mut ast);
+    for (_, stmts, _) in modules_data.iter_mut() {
+        ast::lower_entities(stmts);
+    }
+    let mut host_functions = host_functions;
+    for (_, handler) in host_functions.iter_mut() {
+        for param in handler.params.iter_mut() { ast::lower_entity(&mut param.ty); }
+        ast::lower_entity(&mut handler.return_type);
+    }
+
     let bundle_dir = cache_dir.join("landlines");
     if bundle_dir.exists() { fs::remove_dir_all(&bundle_dir).map_err(|e| e.to_string())?; }
     stage_landlines(&ast, &bundle_dir)?;
@@ -569,7 +597,9 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
         generator.generic_bounds = bounds;
         generator.measure = codegen::core::Measure::of(&ast);
         generator.library = library.is_some();
-        generator.serverlet_state_types = type_checker.serverlet_state.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        generator.web = web;
+        generator.wasm_fuel = uses_fuel;
+        generator.serverlet_state_types = lowered_state(&type_checker.serverlet_state);
         generator.host_functions = host_functions.clone();
         generator.program_structs = program_structs.clone();
         // The module's own code calls its foreign functions by bare name.
@@ -681,14 +711,17 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
     let mut generator = codegen::Codegen::new(all_tasks);
     generator.generic_bounds = type_checker.generic_bounds.clone();
     generator.library = library.is_some();
-    generator.serverlet_state_types = type_checker.serverlet_state.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    generator.web = web;
+    generator.wasm_fuel = uses_fuel;
+    generator.serverlet_state_types = lowered_state(&type_checker.serverlet_state);
     generator.host_functions = host_functions;
+    generator.event_signatures = event_signatures;
     generator.io_driver_users = io_driver_users;
     generator.foreign_handle_params = handle_params;
     generator.emit_handle_type = uses_handles;
     generator.needs_wasm = uses_wasm;
     generator.state_types = ast.iter().filter_map(|stmt| match &stmt.node {
-        ast::StmtNode::Let { name, .. } => type_checker.global_var_type(name).map(|ty| (name.clone(), ty)),
+        ast::StmtNode::Let { name, .. } => type_checker.global_var_type(name).map(|mut ty| { ast::lower_entity(&mut ty); (name.clone(), ty) }),
         _ => None,
     }).collect();
     if library.is_some() { generator.scan_events(&module_event_stmts); }
@@ -727,12 +760,16 @@ fn compile_with_mode(input_file: &str, cache_dir: &Path, library: Option<&str>, 
     if uses_wasm {
         crate::dependencies::merge(
             &mut extra_dependencies,
-            vec![crate::dependencies::builtin_wasmtime()],
+            vec![if web { crate::dependencies::builtin_wasmi() } else { crate::dependencies::builtin_wasmtime() }],
             "a wasm module or sandboxed serverlet",
         )?;
     }
+    // A web build takes only the Tokio features that build for wasm32-unknown-unknown: no
+    // process, net, fs, or signal, and no multithreaded scheduler.
+    let tokio_features = if web { "[\"rt\", \"sync\", \"macros\", \"time\", \"io-util\"]" } else { "[\"full\"]" };
     let mut cargo_toml_content = format!(
-        "[package]\nname = \"orch_generated\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ntokio = {{ version = \"1.35\", features = [\"full\"] }}\n{}",
+        "[package]\nname = \"orch_generated\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ntokio = {{ version = \"1.35\", features = {} }}\n{}",
+        tokio_features,
         crate::dependencies::emit(extra_dependencies.values().map(|(dependency, _)| dependency))
     );
 
@@ -1024,6 +1061,82 @@ pub fn run_run(input_file: &str) -> Result<(), String> {
 /// declarations and on whether it builds a library. `build` and `check` both call this,
 /// so `check` refuses what `build` would for them, and `check --lib` means what
 /// `build --lib` does.
+/// The checker's serverlet state, with every entity lowered to its bits, as codegen reads it.
+fn lowered_state<'a>(state: impl IntoIterator<Item = (&'a String, &'a Vec<(String, ast::Type)>)>) -> std::collections::BTreeMap<String, Vec<(String, ast::Type)>> {
+    state.into_iter().map(|(name, fields)| {
+        let fields = fields.iter().map(|(field, ty)| {
+            let mut ty = ty.clone();
+            ast::lower_entity(&mut ty);
+            (field.clone(), ty)
+        }).collect();
+        (name.clone(), fields)
+    }).collect()
+}
+
+/// Each `on <event>(...)` the entry file declares, with its parameters' names and types.
+fn event_signatures(stmts: &[ast::Stmt]) -> std::collections::BTreeMap<String, Vec<(String, ast::Type)>> {
+    event_signatures_of(stmts)
+}
+
+fn event_signatures_of(stmts: &[ast::Stmt]) -> std::collections::BTreeMap<String, Vec<(String, ast::Type)>> {
+    let mut found = std::collections::BTreeMap::new();
+    for stmt in stmts {
+        ast::walk_stmt(stmt, &mut |node| {
+            if let ast::Node::Expr(ast::Expr { node: ast::ExprNode::TriggeredBlock { event_name, params, .. }, .. }) = node {
+                found.insert(event_name.clone(), params.iter().map(|p| (p.name.clone(), p.ty.clone())).collect());
+            }
+        });
+    }
+    found
+}
+
+/// What a web build (`build --lib --web`, for `wasm32-unknown-unknown`) cannot carry. A
+/// browser tab has no child processes, no file system, no threads, and no clock the
+/// runtime can use, so everything that needs one is refused here, by name, rather than
+/// failing inside the browser where a panic aborts the whole page.
+fn web_rules(input_file: &str, ast: &[ast::Stmt], modules: &[&[ast::Stmt]]) -> Result<(), String> {
+    let located = ast.iter().map(|stmt| (input_file, stmt))
+        .chain(modules.iter().flat_map(|stmts| stmts.iter().map(|stmt| ("an imported module", stmt))));
+    let refuse = |file: &str, stmt: &ast::Stmt, what: String| -> Result<(), String> {
+        Err(format!("{}:line {}, col {}: {} — a web build cannot carry it", file, stmt.span.line, stmt.span.col, what))
+    };
+    for (file, stmt) in located {
+        match &stmt.node {
+            ast::StmtNode::Serverlet { name, landline: Some(config), .. } => return refuse(file, stmt, format!(
+                "serverlet '{}' is a {} landline, which runs as a child process, and a browser has none", name, config.runtime
+            )),
+            ast::StmtNode::Serverlet { name, secret: true, .. } => return refuse(file, stmt, format!(
+                "serverlet '{}' is secret, which runs as a child process, and a browser has none", name
+            )),
+            ast::StmtNode::Serverlet { name, sandbox: Some(config), .. } if !config.timeout.is_empty() => return refuse(file, stmt, format!(
+                "sandboxed serverlet '{}' declares `timeout`, which measures wall time, and a browser gives a running call no clock to stop it by; bound each call with `fuel: <amount>` instead", name
+            )),
+            ast::StmtNode::LoadForeign { language, .. } if language != "rust" && language != "wasm" => return refuse(file, stmt, format!(
+                "load_foreign \"{}\" compiles native code for the machine building it; a web build takes Rust and wasm foreign modules", language
+            )),
+            ast::StmtNode::Measure { .. } => return refuse(file, stmt, "`measure` times calls on the wall clock".to_string()),
+            _ => {}
+        }
+        let mut found: Option<String> = None;
+        ast::walk_stmt(stmt, &mut |node| {
+            if found.is_some() { return; }
+            match node {
+                ast::Node::Expr(ast::Expr { node: ast::ExprNode::AutomaticBlock { .. }, .. }) => found = Some(
+                    "an `automatic` worker runs beside the ticks, on its own; a web build runs only inside the host's ticks".to_string()
+                ),
+                ast::Node::Expr(ast::Expr { node: ast::ExprNode::Call { callee, .. }, .. }) if callee == "clock_micros" || callee == "clock_nanos" => found = Some(
+                    format!("`{}` reads the wall clock; use the tick's dt, which is host time", callee)
+                ),
+                _ => {}
+            }
+        });
+        if let Some(what) = found {
+            return refuse(file, stmt, what);
+        }
+    }
+    Ok(())
+}
+
 fn library_rules(input_file: &str, ast: &[ast::Stmt], modules: &[&[ast::Stmt]], library: bool) -> Result<(), String> {
     let host_functions = ast.iter().flat_map(|s| match &s.node {
         ast::StmtNode::Host { name, functions } => functions.iter().map(|h| (name.clone(), h.clone())).collect(),
@@ -1141,7 +1254,10 @@ fn library_rules(input_file: &str, ast: &[ast::Stmt], modules: &[&[ast::Stmt]], 
     Ok(())
 }
 
-pub fn run_check(input_file: &str, library: bool) -> Result<(), String> {
+pub fn run_check(input_file: &str, library: bool, web: bool) -> Result<(), String> {
+    if web && !library {
+        return Err("--web applies to check --lib".into());
+    }
     let input_path = Path::new(input_file);
     let source = fs::read_to_string(input_path)
         .map_err(|e| format!("Failed to read source file '{}': {}", input_file, e))?;
@@ -1185,6 +1301,9 @@ pub fn run_check(input_file: &str, library: bool) -> Result<(), String> {
 
     let module_stmts: Vec<&[ast::Stmt]> = modules.iter().map(|(_, stmts)| stmts.as_slice()).collect();
     library_rules(input_file, &ast, &module_stmts, library)?;
+    if web {
+        web_rules(input_file, &ast, &module_stmts)?;
+    }
     if library {
         let files = std::iter::once((input_file.to_string(), ast.as_slice()))
             .chain(modules.iter().map(|(path, stmts)| (path.join("module.orch").display().to_string(), stmts.as_slice())));
@@ -1735,10 +1854,19 @@ fn copy_landlines(source: &Path, destination: &Path) -> Result<(), String> {
 
 /// Generate a standalone Cargo library crate; do not overwrite unrelated directories.
 pub fn run_build_library(input: &str, output: Option<&str>) -> Result<(), String> {
-    run_build_library_for_target(input, output, None, None, &[])
+    run_build_library_for_target(input, output, None, None, &[], false)
 }
-pub fn run_build_library_for_target(input: &str, output: Option<&str>, target: Option<&str>, rust_version: Option<&str>, dependencies: &[crate::dependencies::Dependency]) -> Result<(), String> {
+/// The target a web build compiles for.
+pub const WEB_TARGET: &str = "wasm32-unknown-unknown";
+pub fn run_build_library_for_target(input: &str, output: Option<&str>, target: Option<&str>, rust_version: Option<&str>, dependencies: &[crate::dependencies::Dependency], web: bool) -> Result<(), String> {
     let rust_version = library_rust_version(rust_version)?;
+    // `--web` means the browser target, and the browser target means a web build.
+    let web = web || target == Some(WEB_TARGET);
+    let target = match target {
+        Some(other) if web && other != WEB_TARGET => return Err(format!("--web builds for {WEB_TARGET}, not {other}")),
+        None if web => Some(WEB_TARGET),
+        target => target,
+    };
     let destination = PathBuf::from(output.ok_or("build --lib requires -o <crate directory>")?);
     let marker = destination.join(".orchestrate-library");
     if destination.exists() && !marker.is_file() {
@@ -1746,7 +1874,7 @@ pub fn run_build_library_for_target(input: &str, output: Option<&str>, target: O
     }
     let cache = prepare_cache_dir(Path::new(input))?.join("library");
     fs::create_dir_all(cache.join("src")).map_err(|e| e.to_string())?;
-    let source = compile_with_mode(input, &cache, Some(&rust_version), dependencies)?;
+    let source = compile_with_mode(input, &cache, Some(&rust_version), web, dependencies)?;
     if let Some(target) = target {
         let has_typescript = fs::read_dir(cache.join("landlines")).ok().into_iter().flatten().filter_map(Result::ok).any(|entry| entry.path().join("backend.txt").exists());
         if has_typescript {
@@ -1803,7 +1931,13 @@ pub fn run_build_library_for_target(input: &str, output: Option<&str>, target: O
     command.args(["check", "--lib", "--quiet"]);
     if let Some(target) = target { command.args(["--target", target]); }
     let result = command.current_dir(&cache).output().map_err(|e| e.to_string())?;
-    if !result.status.success() { return Err(String::from_utf8_lossy(&result.stderr).into_owned()); }
+    if !result.status.success() {
+        let stderr = String::from_utf8_lossy(&result.stderr).into_owned();
+        if web && stderr.contains("target may not be installed") {
+            return Err(format!("{stderr}\nA web build needs the browser target: run `rustup target add {WEB_TARGET}`"));
+        }
+        return Err(stderr);
+    }
     fs::create_dir_all(&destination).map_err(|e| e.to_string())?;
     copy_landlines(&cache.join("src"), &destination.join("src"))?;
     copy_landlines(&assets, &destination.join("assets"))?;

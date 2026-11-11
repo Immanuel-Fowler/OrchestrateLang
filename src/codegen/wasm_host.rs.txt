@@ -6,6 +6,9 @@ fn __orch_wasm_engine() -> &'static wasmtime::Engine {
     ENGINE.get_or_init(|| {
         let mut config = wasmtime::Config::new();
         config.epoch_interruption(true);
+        // Counting fuel costs every guest a little, so it is on only in a program where
+        // some guest declares a `fuel` budget.
+        config.consume_fuel(__ORCH_WASM_FUEL);
         let engine = wasmtime::Engine::new(&config).expect("wasmtime engine");
         let ticker = engine.clone();
         std::thread::Builder::new()
@@ -26,6 +29,14 @@ const __ORCH_WASM_TICK_MS: u64 = 10;
 /// deadline to the current epoch, so this is far away rather than `u64::MAX`, which would
 /// overflow. At one tick per 10ms it is some hundreds of thousands of years out.
 const __ORCH_WASM_NO_DEADLINE: u64 = 1 << 40;
+
+/// Whether some guest in this program declares `fuel`, which turns fuel counting on.
+const __ORCH_WASM_FUEL: bool = @WASM_FUEL@;
+
+/// The names generated grant code uses, so it reads the same over either wasm engine.
+type __OrchLinker = wasmtime::Linker<__OrchGuestLimits>;
+type __OrchCaller<'a> = wasmtime::Caller<'a, __OrchGuestLimits>;
+type __OrchWasmError = wasmtime::Error;
 
 struct __OrchGuestLimits {
     limits: wasmtime::StoreLimits,
@@ -175,7 +186,7 @@ fn __orch_wasm_diagnostics(linker: &mut wasmtime::Linker<__OrchGuestLimits>) -> 
 /// The host functions a sandboxed serverlet was granted, as one linker definition each:
 /// `grant call world.record` becomes exactly one import the guest can reach, and an
 /// ungranted host function is not defined at all, so a guest that names it traps.
-type __OrchGrants = fn(&mut wasmtime::Linker<__OrchGuestLimits>) -> Result<(), wasmtime::Error>;
+type __OrchGrants = fn(&mut __OrchLinker) -> Result<(), __OrchWasmError>;
 
 /// One granted host call, from inside the guest: the arguments arrive as bytes the guest
 /// wrote into its own memory, `body` decodes them and runs the host method, and the reply
@@ -221,6 +232,7 @@ fn __orch_wasm_instantiate(
     module: &wasmtime::Module,
     memory_bytes: Option<usize>,
     timeout: Option<std::time::Duration>,
+    fuel: Option<u64>,
     grants: Option<__OrchGrants>,
 ) -> Result<(wasmtime::Store<__OrchGuestLimits>, wasmtime::Instance), String> {
     let engine = __orch_wasm_engine();
@@ -253,6 +265,10 @@ fn __orch_wasm_instantiate(
         .define_unknown_imports_as_traps(module)
         .map_err(|e| format!("wasm module '{}': {}", name, e))?;
     store.set_epoch_deadline(if timeout.is_some() { 1 } else { __ORCH_WASM_NO_DEADLINE });
+    if __ORCH_WASM_FUEL {
+        // A start function runs under the same budget a call gets.
+        store.set_fuel(fuel.unwrap_or(u64::MAX)).map_err(|e| format!("wasm module '{}': {}", name, e))?;
+    }
     let instance = linker
         .instantiate(&mut store, module)
         .map_err(|e| format!("wasm module '{}' failed to start: {}", name, __orch_wasm_reason(&e)))?;
@@ -272,6 +288,8 @@ struct __OrchGuest {
     instance: wasmtime::Instance,
     /// How long one call may run, or `None` for a guest that was given no timeout.
     timeout: Option<std::time::Duration>,
+    /// How much work one call may do, or `None` for no fuel budget.
+    fuel: Option<u64>,
     /// The host functions this guest was granted, applied again when it is replaced.
     grants: Option<__OrchGrants>,
 }
@@ -282,13 +300,14 @@ impl __OrchGuest {
         wasm: &[u8],
         memory_bytes: Option<usize>,
         timeout_ms: Option<u64>,
+        fuel: Option<u64>,
         grants: Option<__OrchGrants>,
     ) -> Result<__OrchGuest, String> {
         let module = wasmtime::Module::new(__orch_wasm_engine(), wasm)
             .map_err(|e| format!("wasm module '{}' failed to load: {}", name, e))?;
         let timeout = timeout_ms.map(std::time::Duration::from_millis);
-        let (store, instance) = __orch_wasm_instantiate(name, &module, memory_bytes, timeout, grants)?;
-        Ok(__OrchGuest { name, module, memory_bytes, store, instance, timeout, grants })
+        let (store, instance) = __orch_wasm_instantiate(name, &module, memory_bytes, timeout, fuel, grants)?;
+        Ok(__OrchGuest { name, module, memory_bytes, store, instance, timeout, fuel, grants })
     }
 
     /// A guest loaded from a file says what it implements: its `orch_interface` export
@@ -337,6 +356,10 @@ impl __OrchGuest {
     fn window(&mut self) {
         self.store.data_mut().started = std::time::Instant::now();
         self.store.set_epoch_deadline(if self.timeout.is_some() { 1 } else { __ORCH_WASM_NO_DEADLINE });
+        if __ORCH_WASM_FUEL {
+            // A fresh budget for each call, as the timeout is fresh for each call.
+            let _ = self.store.set_fuel(self.fuel.unwrap_or(u64::MAX));
+        }
     }
 
     /// Replace the instance after a call trapped.
@@ -348,7 +371,7 @@ impl __OrchGuest {
     /// guest is thrown away and a fresh one takes its place, which means a call that traps
     /// also resets the guest's state. Containment costs what it costs.
     fn reset(&mut self) {
-        match __orch_wasm_instantiate(self.name, &self.module, self.memory_bytes, self.timeout, self.grants) {
+        match __orch_wasm_instantiate(self.name, &self.module, self.memory_bytes, self.timeout, self.fuel, self.grants) {
             Ok((store, instance)) => {
                 self.store = store;
                 self.instance = instance;
@@ -474,7 +497,7 @@ impl __OrchGuest {
         Ok(decode(&bytes))
     }
 
-    fn failed(&self, function: &str, error: &wasmtime::Error) -> String {
+    fn failed(&self, function: &str, error: &__OrchWasmError) -> String {
         format!("wasm call '{}::{}' failed: {}", self.name, function, __orch_wasm_reason(error))
     }
 }
@@ -493,6 +516,7 @@ fn __orch_wasm_reason(error: &wasmtime::Error) -> String {
     if let Some(trap) = error.root_cause().downcast_ref::<wasmtime::Trap>() {
         return match trap {
             wasmtime::Trap::Interrupt => "the guest ran past its timeout".to_string(),
+            wasmtime::Trap::OutOfFuel => "the guest used up its fuel".to_string(),
             wasmtime::Trap::UnreachableCodeReached => "the guest stopped itself (it panicked or ran out of memory)".to_string(),
             other => other.to_string(),
         };
@@ -521,7 +545,7 @@ struct __OrchWasmModule {
 
 impl __OrchWasmModule {
     fn load(name: &'static str, wasm: &[u8]) -> __OrchWasmModule {
-        let guest = match __OrchGuest::new(name, wasm, None, None, None) {
+        let guest = match __OrchGuest::new(name, wasm, None, None, None, None) {
             Ok(guest) => Some(guest),
             Err(error) => {
                 eprintln!("[orchestrate] {}", error);

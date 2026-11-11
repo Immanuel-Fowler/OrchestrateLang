@@ -22,6 +22,85 @@ impl Codegen {
         }
     }
 
+    /// The events a host can fire by name, for hosts that wire events from data — a table
+    /// that names which event to fire — rather than from Rust code: `EVENTS`, describing each
+    /// event whose parameters are all ints, floats, bools, strings, or entities, and
+    /// `trigger_by_name`, which checks the arguments against that description and fires it.
+    /// An event with a struct, array, or other parameter keeps only its typed method.
+    fn events_by_name(&self) -> String {
+        let kind = |ty: &Type| match ty {
+            Type::Int => Some(("Int", "EventValue::Int(value) => *value")),
+            Type::Float => Some(("Float", "EventValue::Float(value) => *value")),
+            Type::Bool => Some(("Bool", "EventValue::Bool(value) => *value")),
+            Type::Str => Some(("Str", "EventValue::Str(value) => value.clone()")),
+            Type::Entity => Some(("Entity", "EventValue::Entity(value) => *value as i64")),
+            _ => None,
+        };
+        let mut table = Vec::new();
+        let mut arms = Vec::new();
+        for (name, params) in &self.event_signatures {
+            if name == "update_orchestrator" { continue; }
+            let Some(kinds) = params.iter().map(|(_, ty)| kind(ty)).collect::<Option<Vec<_>>>() else { continue };
+            table.push(format!(
+                "    EventSignature {{ name: {name:?}, params: &[{}] }},",
+                params.iter().zip(&kinds).map(|((param, _), (k, _))| format!("({param:?}, EventKind::{k})")).collect::<Vec<_>>().join(", ")
+            ));
+            let converts = kinds.iter().enumerate().map(|(i, (_, pattern))| format!(
+                "let arg{i} = match &args[{i}] {{ {pattern}, _ => return Err(__orch_event_mismatch({name:?}, args)) }};"
+            )).collect::<Vec<_>>().join(" ");
+            let call_args = (0..kinds.len()).map(|i| format!("arg{i}")).collect::<Vec<_>>().join(", ");
+            arms.push(format!(
+                "            {name:?} => {{ if args.len() != {count} {{ return Err(__orch_event_mismatch({name:?}, args)); }} {converts} self.trigger_{name}({call_args}) }}",
+                count = kinds.len()
+            ));
+        }
+        format!(
+            r#"
+/// A value passed to an event by name. An entity is its 64 bits: generation in the high 32,
+/// index in the low 32.
+#[derive(Clone, Debug, PartialEq)]
+pub enum EventValue {{ Int(i64), Float(f64), Bool(bool), Str(String), Entity(u64) }}
+impl EventValue {{
+    pub fn kind(&self) -> EventKind {{
+        match self {{ EventValue::Int(_) => EventKind::Int, EventValue::Float(_) => EventKind::Float, EventValue::Bool(_) => EventKind::Bool, EventValue::Str(_) => EventKind::Str, EventValue::Entity(_) => EventKind::Entity }}
+    }}
+}}
+/// The kind of an event parameter, as `EVENTS` describes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EventKind {{ Int, Float, Bool, Str, Entity }}
+/// One event a host can fire by name, and its parameters in order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EventSignature {{ pub name: &'static str, pub params: &'static [(&'static str, EventKind)] }}
+/// Every event `trigger_by_name` accepts, in name order: for checking data that names
+/// events and their arguments when it is loaded rather than when it fires.
+pub const EVENTS: &[EventSignature] = &[
+{table}
+];
+/// The event named `name`, if a host can fire it by name.
+pub fn event_signature(name: &str) -> Option<&'static EventSignature> {{
+    EVENTS.iter().find(|event| event.name == name)
+}}
+fn __orch_event_mismatch(name: &str, args: &[EventValue]) -> String {{
+    let expected = event_signature(name).map(|event| event.params.iter().map(|(param, kind)| format!("{{param}}: {{kind:?}}")).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+    let got = args.iter().map(|arg| format!("{{:?}}", arg.kind())).collect::<Vec<_>>().join(", ");
+    format!("event '{{name}}' takes ({{expected}}), got ({{got}})")
+}}
+impl Scripts {{
+    /// Fire the event named `name` with `args`, as its `trigger_<name>` method would. An
+    /// unknown name, or arguments of the wrong number or kind, is an error and fires nothing.
+    pub fn trigger_by_name(&self, name: &str, args: &[EventValue]) -> Result<(), String> {{
+        match name {{
+{arms}
+            _ => Err(format!("no event named '{{name}}' can be fired by name")),
+        }}
+    }}
+}}
+"#,
+            table = table.join("\n"),
+            arms = arms.join("\n"),
+        )
+    }
+
     pub fn host_method(group: &str, handler: &str) -> String {
         format!("{}_{}", group, handler)
     }
@@ -251,6 +330,7 @@ impl Codegen {
             .replace("@SHARED_METHOD@", &shared_method)
             .replace("@SHARED_INIT@", &shared_init)
             .replace("@NEEDS_IO_DRIVER@", if self.io_driver_users.is_empty() { "false" } else { "true" })
+            .replace("@WEB@", if self.web { "true" } else { "false" })
             .replace("@IO_DRIVER_USERS@", &format!("{:?}", self.io_driver_users.join(", ")))
             .replace("@HOST_METHODS@", &methods)
             .replace("@EVENT_FIELDS@", &fields)
@@ -258,6 +338,7 @@ impl Codegen {
             .replace("@TICK_PARAM@", &input_param).replace("@TICK_ARG@", input_arg)
             .replace("@TICK_FIELD@", &input_field).replace("@TICK_OUTPUT@", &output);
         runtime.push_str(&format!("\nimpl Scripts {{ {} }}\n", triggers));
+        runtime.push_str(&self.events_by_name());
         runtime.push_str(super::core::MEASURE_RUNTIME);
         if self.host_functions.is_empty() {
             runtime.push_str("\nimpl Host for () {}\n");
