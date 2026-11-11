@@ -129,6 +129,9 @@ cargo test
   `rm -rf "$TMPDIR"/orch_*`.
 - Zig and Swift FFI tests need `zig` (0.16+) and `swiftc` (5.10+) on `PATH`; without them
   those tests print `skipping` and pass.
+- Web build tests need the `wasm32-unknown-unknown` target (`rustup target add
+  wasm32-unknown-unknown`) and run the built module in Bun; without Bun the runtime test
+  prints `skipping` and passes.
 - TypeScript integration tests need Bun and TypeScript 7. Install project tools with
   `bun add --dev typescript scriptc @types/bun`; without them those tests print `skipping`
   and pass. Set `ORCH_SCRIPTC` when `scriptc` is not on `PATH`.

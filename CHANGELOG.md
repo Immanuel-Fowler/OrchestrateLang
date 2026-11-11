@@ -10,6 +10,37 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
 ## [Unreleased]
 
 ### Added
+- **Web builds.** `build --lib --web` (or `--target wasm32-unknown-unknown`) generates a
+  library a Rust web host links into its own WebAssembly module: Tokio's wasm-compatible
+  features only, host time only (deterministic by default, on a runtime with no drivers),
+  no threads, no temp-directory assets. `check --lib --web` and the build refuse, by
+  name, what a browser cannot carry: landlines, secret serverlets, native foreign code,
+  `measure`, `clock_micros`/`clock_nanos`, `automatic` workers, and a sandbox `timeout`.
+  Sandboxed serverlets and wasm modules run on wasmi, a WebAssembly interpreter in Rust,
+  with the same limits, grants, and failure handling. This was task 15 of the host
+  engine's list. Tests: `web_library_runs_in_a_webassembly_engine` (a web library run in
+  Bun's WebAssembly engine), `web_rules_refuse_what_a_browser_cannot_carry`.
+- **`fuel`: a sandbox bound on work rather than time.** `sandbox(memory_limit: "8mb",
+  fuel: 1000000)` stops a call once it has done that much work, at the same point on
+  every run, so a deterministic run enforces it where it does not enforce `timeout`. A
+  sandbox declares `timeout`, `fuel`, or both; a web build takes `fuel` only. Tests:
+  `native_sandbox_fuel_stops_a_runaway_call_in_live_and_replayed_runs`,
+  `sandbox_config_needs_a_bound_on_each_call`.
+- **The `entity` type.** A library that scripts an ECS receives its host's entities as
+  `entity` values: compared with `==` and `!=`, used as map keys, carried in arrays,
+  options, structs, events, host functions, typed ticks, landlines, and sandboxed calls,
+  and never added to or made from a number. The host sees its 64 bits as an `i64`,
+  generation high and index low; `entity_index(e)` and `entity_generation(e)` read the
+  two halves. Tests: `entities_cross_hosts_events_ticks_and_sandboxes_and_events_fire_by_name`,
+  `entities_are_handles_not_numbers`.
+- **Events by name.** A generated library lists the events a host can fire from data —
+  those whose parameters are ints, floats, bools, strings, or entities — in `EVENTS`, with
+  `event_signature(name)` to check a name and its parameter kinds when the data is
+  loaded, and `Scripts::trigger_by_name(name, &[EventValue])` to fire one, which refuses
+  arguments of the wrong number or kind.
+- **`Host::load_guest(path)`.** `start X from path` in a library reads the guest through
+  this host method, whose default reads the file, so a host can supply guests from
+  memory, a pack, or a web page's fetch.
 - **A sandboxed guest can be loaded while the program runs.** Every boundary was resolved
   when the program was built, so a program that runs plugins it was never compiled with
   had to reach them through a Python landline. A sandboxed serverlet whose handlers have

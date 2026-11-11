@@ -12,7 +12,8 @@
 > `-> result<T>` answers `err` when its call traps, rather than its type's default; the
 > timeout is a duration from each call's own start; a deterministic run replays sandboxed
 > calls; a sandbox can run on a cadence (`every:`); and a guest can be loaded while the
-> program runs (step 9).
+> program runs (step 9). A call can be bounded by work as well as time (`fuel:`, step 10),
+> and a web build runs the same guests on wasmi inside a browser tab (step 11).
 
 ---
 
@@ -269,6 +270,27 @@ two sides: the grant declares intent; the wasmtime linker enforces it.
    timeout window of its own. *Tests:* `library_loads_a_guest_while_it_runs` (normal and
    deterministic), `loaded_guest_diagnostics`, `build_guest_needs_one_guest`,
    `tests/programs/sandbox_call_after_a_pause.orch`.
+
+10. ✅ **Fuel: a bound on work, not time. (Unreleased)** `sandbox(memory_limit: "8mb",
+    fuel: 1000000)` bounds each call by the fuel the engine counts as the guest runs. A
+    sandbox declares `timeout`, `fuel`, or both. Fuel stops a call at the same point on
+    every run, so a deterministic run enforces it, where it does not enforce `timeout`.
+    On wasmtime, fuel counting is turned on only in a program where some guest declares
+    it. Each call, and each allocator call the host makes around it, gets a fresh budget.
+    *Test:* `native_sandbox_fuel_stops_a_runaway_call_in_live_and_replayed_runs`.
+
+11. ✅ **A second engine for the browser. (Unreleased)** wasmtime compiles WebAssembly to
+    machine code and cannot itself run inside WebAssembly, so a web build
+    (`build --lib --web`, for `wasm32-unknown-unknown`) hosts its guests on
+    [wasmi](https://github.com/wasmi-labs/wasmi), an interpreter in Rust, through a second
+    host template with the same surface: `__OrchGuest`, `__OrchWasmModule`, and the
+    `__OrchLinker`/`__OrchCaller` names generated grant code uses. wasmi is built with
+    `validate` (every module is validated before it runs) and `portable-dispatch` (loop
+    dispatch; its tail-call dispatch overflows a wasm32 host's stack). A browser has no
+    clock to stop a call by, so a web build takes `fuel` and refuses `timeout`. Ungranted
+    imports trap, as on wasmtime. *Test:* `web_library_runs_in_a_webassembly_engine`, which
+    runs a web library in Bun's WebAssembly engine with a granted host call, a
+    fuel-stopped guest, and a guest the host supplies through `Host::load_guest`.
 
 ---
 

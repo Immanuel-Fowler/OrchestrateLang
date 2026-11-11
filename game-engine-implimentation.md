@@ -171,7 +171,7 @@ Follow `CONTRIBUTING.md` for names, commits and releases. Add tests next to the 
 
 ## Later: tied to future engine phases
 
-### 15. A web-compatible library subset
+### ✅ 15. A web-compatible library subset
 - **Why:** engine runtime crates must pass `cargo check --target wasm32-unknown-unknown`, and the web player is single-threaded.
 - **Blockers:**
   - tokio `features = ["full"]` (`src/driver.rs:385`).
@@ -179,6 +179,7 @@ Follow `CONTRIBUTING.md` for names, commits and releases. Add tests next to the 
   - Temp-directory asset extraction in `start` (`src/codegen/library_runtime.rs.txt`, `std::env::temp_dir` and `std::fs`).
 - **Do:** add a feature or flag for a library without landlines or secret serverlets, using only the tokio features that build for wasm32 (or no tokio at all in deterministic mode).
 - **Status:** **Planned**, listed under "Host integration for the first adopter" in `docs/features/landline-serverlets.md` §8.
+- **✅ Verified:** `build --lib --web` (or `--target wasm32-unknown-unknown`) generates a crate with Tokio's `rt`, `sync`, `macros`, `time`, and `io-util` features only, which passes `cargo check --target wasm32-unknown-unknown`. A web build runs on host time only: deterministic by default, started on a runtime with neither driver, no driver probe thread, no shutdown timer, and no temp-directory assets. `check --lib --web` refuses landlines, secret serverlets, native foreign code, `measure`, wall-clock reads, workers, and sandbox `timeout`. Sandboxed serverlets run on wasmi, bounded by `fuel`; `start X from path` reads through `Host::load_guest`. `web_library_runs_in_a_webassembly_engine` runs a web library in Bun's WebAssembly engine. Documented in `docs/library-mode.md`, "Web builds".
 
 ### 16. Hot reload
 - **Why:** the engine hot-reloads native modules during development (`engine: docs/ARCHITECTURE.md:114-119`), but a statically linked library can't reload.

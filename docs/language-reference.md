@@ -196,10 +196,27 @@ in a library. Its items are any type a `shared let` can hold.
 | `T[]` | Array of `T` | `let xs: int[] = [1, 2, 3]` |
 | `option<T>` | A value or `none` | `some(3)`, `none` |
 | `result<T>` | A value or a string error | `ok(3)`, `err("bad input")` |
-| `map<K, V>` | Values by key, in key order; a key is an `int`, a `string`, or a `bool` | `map { "ann": 31, "bo": 7 }` |
+| `map<K, V>` | Values by key, in key order; a key is an `int`, a `string`, a `bool`, or an `entity` | `map { "ann": 31, "bo": 7 }` |
 | `S.client` | The address of a running instance of serverlet `S` | `let book: Book.client = start Book()` |
 | `fn(A) -> B` | A function value | `let f: fn(int) -> int = fn(x: int) -> int { x }` |
 | `handle` | An opaque native object from a C-ABI foreign module | `let c = native.make_counter(0)` |
+| `entity` | An ECS entity a library's host hands over: compared with `==` and `!=`, used as a map key, never added to or built from a number | `on clicked(target: entity) { ... }` |
+
+#### Entities
+
+A library that scripts an ECS game or app receives the host's entities as `entity` values:
+in host functions, events, typed tick structs, and sandboxed serverlet calls. An entity is a
+generational handle, so the checker keeps it apart from numbers: `e + 1`, `e == 3`, `e < f`,
+and `let n: int = e` are compile errors, while `e == f`, `map<entity, V>`, `option<entity>`,
+and `entity[]` all work. There is no entity literal; entities come from the host.
+
+`entity_index(e)` is the slot the entity occupies and `entity_generation(e)` how many times
+that slot has been reused, both as `int`. `print` and `to_string` do not take an entity
+directly; show those two instead.
+
+The host sees an entity as its 64 bits, an `i64`: generation in the high 32 bits, index in
+the low 32. That is the layout ECS engines with a 64-bit `Entity` commonly use, and it is what a
+Python landline sees as an `int` and TypeScript as a `bigint`.
 
 #### User-Defined Structs
 
@@ -229,7 +246,7 @@ what to show instead: a field, a length, or what a `match` finds inside.
 
 #### Maps
 
-`map<K, V>` holds values by key. A key is an `int`, a `string`, or a `bool`, and a map is
+`map<K, V>` holds values by key. A key is an `int`, a `string`, a `bool`, or an `entity`, and a map is
 kept in key order, so going through one gives the same order on every run — a hash map's
 would not, and a program that iterated one could not be replayed.
 
@@ -501,6 +518,8 @@ trigger update_orchestrator([])
 | `stop_orch` | `stop_orch()` | Immediately exits the program |
 | `clock_micros` | `clock_micros() -> int` | Microseconds on a monotonic clock; subtract two readings to measure elapsed time |
 | `clock_nanos` | `clock_nanos() -> int` | Nanoseconds on the same clock, for work shorter than a microsecond. Its resolution is the platform's monotonic clock: nanoseconds on Linux and macOS |
+| `entity_index` | `entity_index(e: entity) -> int` | The slot an entity occupies, the low 32 bits of its handle |
+| `entity_generation` | `entity_generation(e: entity) -> int` | How many times that slot has been reused, the high 32 bits |
 | `latest` | `latest(p.tick) -> result<T>` | A cadenced serverlet's last answer to the runtime's call, or `err` saying why there is none; library mode (see Cadences) |
 | `stats` | `stats() -> string` | What the program's `measure` line records, as a table (see §4.7) |
 | `to_int` | `to_int(x) -> int` | A `float` rounded toward zero, or an `int` unchanged |
@@ -1135,7 +1154,7 @@ call's microseconds, but fifteen times an empty tick. A library's host reads the
 orchestrate run   <file.orch>
 orchestrate build <file.orch>
 orchestrate build <file.orch> -o <output-name>
-orchestrate build --lib <file.orch> -o <dir> [--target <triple>] [--rust-version <x.y>]
+orchestrate build --lib <file.orch> -o <dir> [--web] [--target <triple>] [--rust-version <x.y>]
                   [--dependency '<name> = <spec>'] [--dependencies <file.toml>]
 orchestrate build --guest <file.orch> [-o <file.wasm>]
 orchestrate check [--lib] <file.orch>
@@ -1150,6 +1169,7 @@ orchestrate --version
 | `build <file>` | Compiles to a standalone release binary named after the `.orch` file |
 | `build <file> -o <name>` | Compiles to a release binary with a custom name |
 | `build --lib <file> -o <dir>` | Generates a Rust crate a host application links; see [library-mode.md](library-mode.md) |
+| `build --lib … --web` | Generates the crate for a browser, `wasm32-unknown-unknown`: host time only, sandboxed guests on wasmi; see [library-mode.md](library-mode.md#web-builds). `--target wasm32-unknown-unknown` means the same |
 | `build --lib … --target <triple>` | Builds the crate's secret children, and checks the crate, for another target |
 | `build --lib … --rust-version <x.y>` | Declares a different `rust-version` in the generated crate |
 | `build --lib … --dependency '<name> = <spec>'` | Adds a Cargo dependency to the generated crate; repeatable. A relative `path` is resolved against the working directory |
@@ -1157,6 +1177,7 @@ orchestrate --version
 | `build --guest <file> -o <file.wasm>` | Compiles the file's one sandboxed serverlet with handler bodies to a `.wasm` guest, for a program to load with `start X from path` (see §6.8a); the output folder is created |
 | `check <file>` | Parses and type-checks without generating code, under the standalone rules (see below) |
 | `check --lib <file>` | Type-checks under library rules (`host`, `on_tick`, grants), and warns of each struct, field, enum, or variant a Rust host would have to write as a raw identifier (`r#box`) |
+| `check --lib --web <file>` | Also applies the web build's rules: no landlines, secret serverlets, native foreign code, `measure`, wall-clock reads, workers, or sandbox `timeout` |
 | `check-foreign <file>` | Runs each foreign language's own checker over the program's foreign sources; `--deep` adds mypy and a `cargo check` of the generated Rust |
 | `prom add / remove / list` | Manages the personal module registry (§6.2) |
 | `--version`, `-V`, `version` | Prints the compiler's version and the commit it was built from |
@@ -1990,7 +2011,10 @@ orchestrator main() {
 
 From the caller's side it is identical to any other serverlet. The compiler emits the
 handlers as their own crate, compiles it to `wasm32-wasip1`, embeds the result in the
-program, and runs each call through [wasmtime](https://wasmtime.dev).
+program, and runs each call through [wasmtime](https://wasmtime.dev). A web build runs the
+same guests through [wasmi](https://github.com/wasmi-labs/wasmi), a WebAssembly interpreter
+written in Rust that runs inside a browser tab, with the same limits, grants, and failure
+handling; only the engine differs, and a guest built once runs on either.
 
 **What is contained, precisely.** The guarantee is wasmtime's, not ours:
 
@@ -2003,6 +2027,14 @@ program, and runs each call through [wasmtime](https://wasmtime.dev).
   ticks from wherever the current tick was, so a call could be stopped several
   milliseconds early, and a call of a few milliseconds under a 10 ms timeout was killed
   whenever a tick landed inside it.)
+- **Work** — `fuel: 1000000` bounds a single call by the work it does rather than by wall
+  time: the engine counts fuel as the guest runs, and a call that uses up its budget is
+  stopped, at the same point every time. A sandbox declares `timeout`, `fuel`, or both. A
+  deterministic run enforces fuel, where it does not enforce `timeout`, and a web build
+  (`build --lib --web`) takes `fuel` only, since a browser gives a running call no clock.
+  Each call, and each copy the host makes into or out of the guest, gets a fresh budget.
+  How much work a unit of fuel is depends on the engine: roughly one WebAssembly
+  instruction on both, but set a budget by measuring a real call rather than by counting.
 - **Reach** — the guest gets no imports beyond two diagnostic ones (below). No files, no
   network, no clock, no environment, no host functions. Anything else it imports traps
   when called.

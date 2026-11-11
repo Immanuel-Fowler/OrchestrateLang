@@ -155,6 +155,40 @@ methods; call it from outside any Tokio context, since a waiting body blocks the
 The channel path stays available and unchanged for hosts that prefer it, including hosts
 that need to cancel a tick with `shutdown()`.
 
+## Web builds
+
+`build --lib --web main.orch -o generated/scripts` generates the crate for a browser,
+`wasm32-unknown-unknown` (`--target wasm32-unknown-unknown` means the same). It needs that
+target installed: `rustup target add wasm32-unknown-unknown`. The crate is an ordinary
+library a Rust web host links — through `wasm-bindgen` or with no bindings at all — and it
+runs inside the host's own WebAssembly module, synchronously, from the host's frame loop.
+
+A browser tab has no clock Tokio can use, no threads, no file system, and no child
+processes, so a web build differs in four ways:
+
+- **Host time only.** The crate's `WEB` constant is `true`, `StartOptions::default()` is
+  deterministic, and `start` refuses `deterministic: false`. Build the runtime with neither
+  driver: `tokio::runtime::Builder::new_current_thread().build()`. Everything in
+  [Deterministic mode](#deterministic-mode) applies.
+- **What it refuses.** `check --lib --web` and the build refuse, by name, what a browser
+  cannot carry: Python and TypeScript landlines, secret serverlets, native foreign code
+  (C, C++, Zig, Swift, C#, TypeScript; Rust and wasm modules are fine), `measure`,
+  `clock_micros` and `clock_nanos`, `automatic` workers, and a sandbox `timeout`.
+- **Sandboxes run on wasmi.** Sandboxed serverlets and `load_foreign "wasm"` modules run on
+  wasmi, a WebAssembly interpreter in Rust, instead of wasmtime. Each call is bounded by
+  `fuel`, the work it may do, rather than `timeout`. Grants, memory limits, `orch_interface`
+  checks, and the replace-after-trap rule are the same, and a guest built with
+  `build --guest` runs on either engine.
+- **Guests come from the host.** `start X from path` asks the host for the bytes through
+  `Host::load_guest(path)`, since there is no file to read. Override it to answer with a
+  guest the page fetched; the path is only a name the program and the host agree on.
+
+A panic in a web build aborts the host module, since `wasm32-unknown-unknown` cannot unwind,
+so `tick_sync`'s panic containment does not apply there. The `web_library_runs_in_a_webassembly_engine`
+test builds a web library and a host with no bindings, and runs it in Bun's WebAssembly
+engine: events, typed ticks, granted host calls, a fuel-stopped guest, and a guest loaded
+through `load_guest`.
+
 ## Runtime drivers
 
 Every library needs Tokio's time driver: `sleep`, landline budgets, and the shutdown grace
@@ -222,6 +256,50 @@ hooks, or the one at the start of the next tick — so a handler that triggers i
 event runs a bounded number of times per tick instead of holding the tick open. In
 deterministic mode, an event whose handler is still sleeping stays queued for a later
 pass in the same way.
+
+## Events by name
+
+A host that wires events from data — a table loaded from a file that names which event
+to fire — fires them by name instead of calling `trigger_<event>`. The generated crate
+describes every event whose parameters are all ints, floats, bools, strings, or entities:
+
+```rust
+use scripts::{EventKind, EventValue};
+
+// When the data is loaded: is the name an event, and do its parameters match?
+let event = scripts::event_signature("toggle_component").ok_or("unknown call")?;
+assert_eq!(event.params, &[("target", EventKind::Entity), ("component", EventKind::Str)]);
+
+// When the host fires it:
+scripts.trigger_by_name("toggle_component", &[EventValue::Entity(bits), EventValue::Str("Selected".into())])?;
+```
+
+`EVENTS` lists them in name order. `trigger_by_name` checks the arguments' number and kinds
+against the description and fires nothing when they differ, returning an error that says
+what the event takes. An event with a struct or array parameter is left out of both and
+keeps its typed `trigger_<event>` method.
+
+## Entities
+
+`entity` is OrchestrateLang's type for an ECS entity a host hands over (see the language
+reference, §2.2). The checker keeps it apart from numbers; the host sees its 64 bits as an
+`i64`, generation in the high 32 bits and index in the low 32:
+
+```orchestrate
+host world { fn spawn_child(parent: entity) -> entity }
+struct Click { target: entity, button: int }
+on clicked(target: entity) { world.spawn_child(target) }
+```
+
+```rust
+fn world_spawn_child(&self, parent: i64) -> Result<i64, String> { ... }
+let bits = ((generation as u64) << 32 | index as u64) as i64;
+scripts.trigger_clicked(bits)?;
+```
+
+An entity crosses everywhere an `int` does: host functions, events, typed tick structs,
+landlines, and sandboxed serverlets. The program cannot make one from a number, so every
+entity it holds came from the host.
 
 ## Typed ticks
 
@@ -431,7 +509,9 @@ with a clear message when the target differs.
 
 A guest loaded with `start X from path` is not embedded: it is a file the program is
 handed while it runs, read from `path` relative to the host process's working directory,
-and checked against the declaration when it starts. A Python landline started from a
+and checked against the declaration when it starts. The read goes through
+`Host::load_guest(path)`, whose default reads the file; a host that keeps its guests
+elsewhere — in memory, in a pack, or fetched by a web page — overrides it. A Python landline started from a
 path runs that source with the embedded SDK. Load them from an event handler or at
 startup rather than on every tick, since a load compiles the guest.
 
