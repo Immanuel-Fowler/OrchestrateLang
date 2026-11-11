@@ -505,9 +505,14 @@ pub struct StartOptions {
     pub ignore_budgets: bool,
     pub python: Option<std::path::PathBuf>,
     pub shutdown_grace: std::time::Duration,
+    /// In a web build, run guests the program is handed while it runs (`start X from
+    /// path`) on the browser's own WebAssembly engine, where their memory is kept apart
+    /// from the host's by the browser; the program's own guests stay on wasmi. Off, every
+    /// guest runs on wasmi. Ignored outside a web build.
+    pub browser_engine_for_loaded_guests: bool,
 }
 impl Default for StartOptions {
-    fn default() -> Self { Self { deterministic: WEB, ignore_budgets: false, python: None, shutdown_grace: std::time::Duration::from_secs(3) } }
+    fn default() -> Self { Self { deterministic: WEB, ignore_budgets: false, python: None, shutdown_grace: std::time::Duration::from_secs(3), browser_engine_for_loaded_guests: WEB } }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -1881,7 +1881,10 @@ macro_rules! eprintln { ($($args:tt)*) => { crate::__orch_log(crate::LogLevel::E
         }
         if is_main && self.needs_wasm {
             if self.web {
-                code.push_str(include_str!("wasm_host_wasmi.rs.txt"));
+                // The program's own guests on wasmi, loaded ones on the browser's engine,
+                // behind one `__OrchGuest`.
+                code.push_str(&include_str!("wasm_host_wasmi.rs.txt").replace("__OrchGuest", "__OrchInterpGuest").replace("__OrchInterpGuestLimits", "__OrchGuestLimits"));
+                code.push_str(include_str!("wasm_host_browser.rs.txt"));
             } else {
                 code.push_str(include_str!("wasm_host.rs.txt"));
             }

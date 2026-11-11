@@ -174,8 +174,23 @@ processes, so a web build differs in four ways:
   cannot carry: Python and TypeScript landlines, secret serverlets, native foreign code
   (C, C++, Zig, Swift, C#, TypeScript; Rust and wasm modules are fine), `measure`,
   `clock_micros` and `clock_nanos`, `automatic` workers, and a sandbox `timeout`.
-- **Sandboxes run on wasmi.** Sandboxed serverlets and `load_foreign "wasm"` modules run on
-  wasmi, a WebAssembly interpreter in Rust, instead of wasmtime. Each call is bounded by
+- **Two engines for guests.** The program's own sandboxed serverlets and `load_foreign
+  "wasm"` modules run on wasmi, a WebAssembly interpreter in Rust, instead of wasmtime:
+  synchronous inside the tick, with deterministic fuel. Guests the program is handed while
+  it runs (`start X from path`) — the third-party ones — run on the browser's own
+  WebAssembly engine, where the browser keeps their memory apart from the host's and the
+  engine is the browser's, among the most tested code there is. Their limits come from the
+  metering pass, which runs on every guest that reaches the browser engine: fuel, and a
+  memory cap the guest enforces on itself (a `memory.grow` past `memory_limit` answers -1),
+  since the host cannot set limits on a browser instance. Calls stay synchronous; calls
+  into granted host functions cross JavaScript, so they cost more than on wasmi. Set
+  `StartOptions::browser_engine_for_loaded_guests` to `false` to keep every guest on wasmi.
+  A browser guest is compiled and instantiated synchronously when it loads, which Chromium
+  allows on the main thread for guests of ordinary size; compile very large guests in a
+  worker. The browser engine needs the host's module built with wasm-bindgen (the
+  generated crate depends on `js-sys` and `wasm-bindgen` for `wasm32`), and is available in
+  single-threaded builds only (without the `atomics` target feature).
+- **The rest of the sandbox is unchanged.** Each call is bounded by
   `fuel`, the instructions it may execute, rather than `timeout`; fuel is counted by the
   guest's own metered bytecode, so it runs out at the same instruction as on wasmtime. Grants, memory limits, `orch_interface`
   checks, and the replace-after-trap rule are the same, and a guest built with

@@ -13,7 +13,8 @@
 > timeout is a duration from each call's own start; a deterministic run replays sandboxed
 > calls; a sandbox can run on a cadence (`every:`); and a guest can be loaded while the
 > program runs (step 9). A call can be bounded by work as well as time (`fuel:`, step 10),
-> and a web build runs the same guests on wasmi inside a browser tab (step 11).
+> and a web build runs the same guests on wasmi inside a browser tab (step 11), with
+> loaded guests on the browser's own engine (step 12).
 
 ---
 
@@ -299,6 +300,19 @@ two sides: the grant declares intent; the wasmtime linker enforces it.
     counts the same as on wasmtime. *Test:* `web_library_runs_in_a_webassembly_engine`, which
     runs a web library in Bun's WebAssembly engine with a granted host call, a
     fuel-stopped guest, and a guest the host supplies through `Host::load_guest`.
+
+12. ✅ **Loaded guests on the browser's engine. (Unreleased)** In a web build, a guest the
+    program is handed while it runs (`start X from path`) runs on the page's own
+    WebAssembly engine (`wasm_host_browser.rs.txt`, through `js-sys`), and the program's
+    own guests stay on wasmi, behind one `__OrchGuest` enum. Its memory is the browser's to
+    keep apart from the host's. The host cannot set limits on a browser instance, so the
+    limits are in the bytecode: the metering pass runs on every such guest, with fuel and a
+    memory cap (initial memory over the cap is refused; `memory.grow` past it answers -1).
+    Its imports are JavaScript closures over the same grant bodies and diagnostics as the
+    other engines; anything ungranted throws. Calls are synchronous. `StartOptions::
+    browser_engine_for_loaded_guests` (on in web builds) chooses it. *Test:*
+    `web_library_runs_in_a_webassembly_engine` runs the same program with the option on
+    and off under Node, counts the instances made on the engine, and gets the same trace.
 
 ---
 

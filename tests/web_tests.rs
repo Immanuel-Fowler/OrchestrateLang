@@ -1,8 +1,9 @@
 //! Web builds (`build --lib --web`) and fuel-bounded sandboxes.
 //!
-//! The runtime test compiles a host for `wasm32-unknown-unknown` and runs it in Bun's
-//! WebAssembly engine, so the library really runs where a browser would run it: no
-//! threads, no clock, no file system, and its sandboxed guests on wasmi.
+//! The runtime tests compile a host for `wasm32-unknown-unknown` with wasm-bindgen and run
+//! it under Node, so the library really runs where a browser would run it: no threads, no
+//! clock, no file system. Its own guests run on wasmi; guests it loads run on the engine
+//! itself (V8 here, as in Chrome).
 
 use std::{
     fs,
@@ -76,7 +77,9 @@ serverlet Scorer sandbox(memory_limit: "16mb", fuel: 200000) {
 
 // Implemented by a guest the host hands over while the program runs.
 serverlet Plugin sandbox(memory_limit: "8mb", fuel: 100000) {
+    grant call world.note
     on score(value: int) -> int
+    on spin(n: int) -> int
 }
 
 let scorer = start Scorer()
@@ -88,7 +91,10 @@ on hit(entity: int) {
 }
 on install(path: string) {
     match start Plugin from path {
-        result::Ok(plugin) => plugin_value = plugin.score(21)
+        result::Ok(plugin) => {
+            plugin_value = plugin.score(21)
+            world.note(plugin.spin(1))
+        }
         result::Err(why) => print("not loaded: " + why)
     }
 }
@@ -107,8 +113,18 @@ orchestrator main() {}
 "#;
 
 const GUEST: &str = r#"
+host world { fn note(value: int) }
 serverlet Plugin sandbox(memory_limit: "8mb", fuel: 100000) {
-    on score(value: int) -> int { return value * 2 }
+    grant call world.note
+    on score(value: int) -> int {
+        world.note(value)
+        return value * 2
+    }
+    on spin(n: int) -> int {
+        let i = 0
+        while true { i = i + 1 }
+        return i
+    }
 }
 "#;
 
@@ -128,13 +144,14 @@ impl scripts::Host for Host {
     fn world_toggle(&self, entity: i64, component: i64) -> Result<i64, String> { push(format!("toggle {entity} {component}")); Ok(1) }
     fn world_note(&self, value: i64) -> Result<(), String> { push(format!("note {value}")); Ok(()) }
 }
-static mut OUT: Vec<u8> = Vec::new();
-#[unsafe(no_mangle)]
-pub extern "C" fn run() -> u64 {
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn run(browser_engine: bool) -> String {
     assert!(scripts::WEB);
+    LOG.lock().unwrap().clear();
     // Neither driver: a browser has no clock or IO for Tokio to drive.
     let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
-    let mut scripts = scripts::start(runtime.handle(), Host).unwrap();
+    let options = scripts::StartOptions { browser_engine_for_loaded_guests: browser_engine, ..Default::default() };
+    let mut scripts = scripts::start_with_options(runtime.handle(), Host, options).unwrap();
     scripts.ready_blocking(&runtime).unwrap();
     scripts.trigger_hit(5).unwrap();
     scripts.trigger_install("plugin://missing".to_string()).unwrap();
@@ -145,33 +162,64 @@ pub extern "C" fn run() -> u64 {
     }
     scripts.shutdown_blocking(&runtime).unwrap();
     push("shutdown".into());
-    let text = LOG.lock().unwrap().join("\n");
-    unsafe {
-        OUT = text.into_bytes();
-        let out = &raw const OUT;
-        (((*out).as_ptr() as u64) << 32) | (*out).len() as u64
-    }
+    LOG.lock().unwrap().join("\n")
 }
 "#;
 
+/// Runs a host's `run(browser_engine)` under Node, counting the WebAssembly instances made
+/// after the host's own: each is a guest on the engine itself rather than on wasmi.
 const RUNNER: &str = r#"
-const bytes = await Bun.file(process.argv[2]).arrayBuffer();
-const module = new WebAssembly.Module(bytes);
-if (WebAssembly.Module.imports(module).length !== 0) {
-    throw new Error("the host imports " + JSON.stringify(WebAssembly.Module.imports(module)));
-}
-const instance = new WebAssembly.Instance(module, {});
-const packed = instance.exports.run();
-const pointer = Number(packed >> 32n), length = Number(packed & 0xffffffffn);
-console.log(new TextDecoder().decode(new Uint8Array(instance.exports.memory.buffer, pointer, length)));
+const Original = WebAssembly.Instance;
+let instances = 0;
+WebAssembly.Instance = function (module, imports) { instances++; return new Original(module, imports); };
+WebAssembly.Instance.prototype = Original.prototype;
+const host = require(process.argv[2]);
+const before = instances;
+console.log(host.run(process.argv[3] === 'browser'));
+console.log('engine instances ' + (instances - before));
 "#;
+
+/// Whether the tools the browser-side tests need are here: Node, and wasm-bindgen's CLI.
+fn web_tools() -> Option<String> {
+    if Command::new("node").arg("--version").output().is_err() {
+        eprintln!("skipping: `node` is not on PATH");
+        return None;
+    }
+    let Ok(output) = Command::new("wasm-bindgen").arg("--version").output() else {
+        eprintln!("skipping: `wasm-bindgen` is not on PATH (cargo install wasm-bindgen-cli)");
+        return None;
+    };
+    String::from_utf8(output.stdout).ok()?.split_whitespace().nth(1).map(str::to_string)
+}
+
+/// Builds `lib` as a wasm-bindgen host of the library `library` (a directory in `root`),
+/// generates its Node glue, and returns the glue's path.
+fn web_host(root: &Path, dir: &str, library: &str, lib: &str, bindgen: &str) -> PathBuf {
+    let host = root.join(dir);
+    fs::create_dir_all(host.join("src")).unwrap();
+    fs::write(
+        host.join("Cargo.toml"),
+        format!("[package]\nname=\"{dir}\"\nversion=\"0.1.0\"\nedition=\"2024\"\n[lib]\ncrate-type=[\"cdylib\"]\n[dependencies]\n{library}={{path=\"../{library}\"}}\ntokio={{version=\"1.35\",default-features=false,features=[\"rt\"]}}\nwasm-bindgen=\"={bindgen}\"\n[workspace]\n"),
+    )
+    .unwrap();
+    fs::write(host.join("src/lib.rs"), lib).unwrap();
+    cargo(&["build", "--quiet", "--release", "--target", "wasm32-unknown-unknown"], &host);
+    let wasm = host.join(format!("target/wasm32-unknown-unknown/release/{dir}.wasm"));
+    let output = Command::new("wasm-bindgen").args(["--target", "nodejs", "--out-dir"]).arg(host.join("pkg")).arg(&wasm).output().unwrap();
+    succeeded(&output);
+    host.join(format!("pkg/{dir}.js"))
+}
+
+fn node_run(root: &Path, glue: &Path, engine: &str) -> String {
+    fs::write(root.join("run.js"), RUNNER).unwrap();
+    let output = Command::new("node").arg(root.join("run.js")).arg(glue).arg(engine).output().unwrap();
+    succeeded(&output);
+    String::from_utf8(output.stdout).unwrap()
+}
 
 #[test]
 fn web_library_runs_in_a_webassembly_engine() {
-    if Command::new("bun").arg("--version").output().is_err() {
-        eprintln!("skipping: `bun` is not on PATH");
-        return;
-    }
+    let Some(bindgen) = web_tools() else { return };
     let root = root("engine");
     fs::write(root.join("main.orch"), PROGRAM).unwrap();
     fs::write(root.join("plugin.orch"), GUEST).unwrap();
@@ -180,42 +228,38 @@ fn web_library_runs_in_a_webassembly_engine() {
     let manifest = fs::read_to_string(root.join("scripts/Cargo.toml")).unwrap();
     assert!(manifest.contains("wasmi") && !manifest.contains("wasmtime"), "{manifest}");
     assert!(!manifest.contains("\"full\""), "{manifest}");
+    let glue = web_host(&root, "web_host", "scripts", WEB_HOST, &bindgen);
 
-    fs::create_dir_all(root.join("host/src")).unwrap();
-    fs::write(
-        root.join("host/Cargo.toml"),
-        "[package]\nname=\"web_host\"\nversion=\"0.1.0\"\nedition=\"2024\"\n[lib]\ncrate-type=[\"cdylib\"]\n[dependencies]\nscripts={path=\"../scripts\"}\ntokio={version=\"1.35\",default-features=false,features=[\"rt\"]}\n[workspace]\n",
-    )
-    .unwrap();
-    fs::write(root.join("host/src/lib.rs"), WEB_HOST).unwrap();
-    cargo(&["build", "--quiet", "--release", "--target", "wasm32-unknown-unknown"], &root.join("host"));
-    fs::write(root.join("run.js"), RUNNER).unwrap();
-    let wasm = root.join("host/target/wasm32-unknown-unknown/release/web_host.wasm");
-    let output = Command::new("bun").arg(root.join("run.js")).arg(&wasm).output().unwrap();
-    succeeded(&output);
-    let text = String::from_utf8_lossy(&output.stdout);
-    let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(
-        lines,
-        [
-            "toggle 5 7",
-            "log Info: not loaded: sandboxed serverlet 'Plugin': cannot read 'plugin://missing': no guest named plugin://missing",
-            // Guest state persists between calls, and each call reaches the host only
-            // through its grant.
-            "toggle 1 1", "note 10", "toggle 2 1", "note 20",
-            "out toggled=3 scored=9 plugin=42",
-            "toggle 4 1", "note 40", "toggle 5 1", "note 50", "toggle 6 1", "note 60",
-            // The runaway call is stopped by its fuel, answers its default, and the
-            // guest is replaced, which resets its state.
-            "log Error: [orchestrate] wasm call 'Scorer::spin' failed: the guest used up its fuel",
-            "note 0",
-            "out toggled=4 scored=42 plugin=42",
-            "toggle 9 1", "note 90",
-            "out toggled=2 scored=19 plugin=42",
-            "shutdown",
-        ],
-        "{text}"
-    );
+    let expected = [
+        "toggle 5 7",
+        "log Info: not loaded: sandboxed serverlet 'Plugin': cannot read 'plugin://missing': no guest named plugin://missing",
+        // The loaded guest reaches the host through its grant, and its runaway call is
+        // stopped by its fuel and answers its default.
+        "note 21",
+        "log Error: [orchestrate] wasm call 'Plugin::spin' failed: the guest used up its fuel",
+        "note 0",
+        // Guest state persists between calls, and each call reaches the host only
+        // through its grant.
+        "toggle 1 1", "note 10", "toggle 2 1", "note 20",
+        "out toggled=3 scored=9 plugin=42",
+        "toggle 4 1", "note 40", "toggle 5 1", "note 50", "toggle 6 1", "note 60",
+        // The runaway call is stopped by its fuel, answers its default, and the
+        // guest is replaced, which resets its state.
+        "log Error: [orchestrate] wasm call 'Scorer::spin' failed: the guest used up its fuel",
+        "note 0",
+        "out toggled=4 scored=42 plugin=42",
+        "toggle 9 1", "note 90",
+        "out toggled=2 scored=19 plugin=42",
+        "shutdown",
+    ];
+    // The loaded guest on the engine itself: one instance for it, and one more when its
+    // trapped instance is replaced. Everything else is the same as on wasmi.
+    for (engine, instances) in [("browser", "engine instances 2"), ("wasmi", "engine instances 0")] {
+        let text = node_run(&root, &glue, engine);
+        let mut lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.pop(), Some(instances), "{engine}: {text}");
+        assert_eq!(lines, expected, "{engine}: {text}");
+    }
 }
 
 #[test]
@@ -367,10 +411,7 @@ orchestrator main() {}
 /// bytecode. A replay across a native peer and a browser peer depends on exactly this.
 #[test]
 fn metered_fuel_stops_a_guest_at_the_same_point_on_every_engine() {
-    if Command::new("bun").arg("--version").output().is_err() {
-        eprintln!("skipping: `bun` is not on PATH");
-        return;
-    }
+    let Some(bindgen) = web_tools() else { return };
     let root = root("cross_engine");
     fs::write(root.join("main.orch"), BURN).unwrap();
     succeeded(&orchestrate(&["build", "--lib", "main.orch", "-o", "native"], &root));
@@ -398,9 +439,7 @@ fn main() {
     let native = String::from_utf8(cargo(&["run", "--quiet"], &root.join("native_host")).stdout).unwrap();
 
     // In a WebAssembly engine, on wasmi.
-    fs::create_dir_all(root.join("web_host/src")).unwrap();
-    fs::write(root.join("web_host/Cargo.toml"), "[package]\nname=\"web_host\"\nversion=\"0.1.0\"\nedition=\"2024\"\n[lib]\ncrate-type=[\"cdylib\"]\n[dependencies]\nweb={path=\"../web\"}\ntokio={version=\"1.35\",default-features=false,features=[\"rt\"]}\n[workspace]\n").unwrap();
-    fs::write(root.join("web_host/src/lib.rs"), r#"
+    let glue = web_host(&root, "web_host", "web", r#"
 use std::sync::Mutex;
 static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 struct Host;
@@ -408,25 +447,17 @@ impl web::Host for Host {
     fn log(&self, _: web::LogLevel, message: &str) { LOG.lock().unwrap().push(message.to_string()); }
     fn world_note(&self, value: i64) -> Result<(), String> { LOG.lock().unwrap().push(value.to_string()); Ok(()) }
 }
-static mut OUT: Vec<u8> = Vec::new();
-#[unsafe(no_mangle)]
-pub extern "C" fn run() -> u64 {
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn run(_browser_engine: bool) -> String {
     let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
     let mut scripts = web::start(runtime.handle(), Host).unwrap();
     scripts.tick_sync(&runtime, 0.1).unwrap();
     scripts.shutdown_blocking(&runtime).unwrap();
-    unsafe {
-        OUT = LOG.lock().unwrap().join("\n").into_bytes();
-        let out = &raw const OUT;
-        (((*out).as_ptr() as u64) << 32) | (*out).len() as u64
-    }
+    LOG.lock().unwrap().join("\n")
 }
-"#).unwrap();
-    cargo(&["build", "--quiet", "--release", "--target", "wasm32-unknown-unknown"], &root.join("web_host"));
-    fs::write(root.join("run.js"), RUNNER).unwrap();
-    let output = Command::new("bun").arg(root.join("run.js")).arg(root.join("web_host/target/wasm32-unknown-unknown/release/web_host.wasm")).output().unwrap();
-    succeeded(&output);
-    let web = String::from_utf8(output.stdout).unwrap();
+"#, &bindgen);
+    let web = node_run(&root, &glue, "wasmi");
+    let web = web.lines().filter(|line| !line.starts_with("engine instances")).collect::<Vec<_>>().join("\n");
 
     let native: Vec<&str> = native.lines().collect();
     let web: Vec<&str> = web.lines().collect();

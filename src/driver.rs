@@ -902,6 +902,10 @@ fn orch_link_swift_runtime() {
         let _ = fs::remove_file(cache_dir.join("build.rs"));
     }
     
+    if web && uses_wasm {
+        // The browser's WebAssembly engine, for guests run on it; only in the browser.
+        cargo_toml_content.push_str("\n[target.'cfg(target_arch = \"wasm32\")'.dependencies]\njs-sys = \"0.3\"\nwasm-bindgen = \"0.2\"\n");
+    }
     cargo_toml_content.push_str("\n[workspace]\n");
     if let Some(rust_version) = library {
         cargo_toml_content = cargo_toml_content.replace("edition = \"2021\"", &format!("edition = \"2024\"\nrust-version = \"{}\"", rust_version));

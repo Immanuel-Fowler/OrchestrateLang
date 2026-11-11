@@ -1,0 +1,535 @@
+/// How a call's arguments become JavaScript values for a guest on the browser's engine:
+/// `i32` and `f64` as numbers, `i64` as a BigInt, as WebAssembly's JavaScript API takes them.
+trait __OrchJsParams {
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+    fn to_js(self) -> js_sys::Array;
+}
+/// How a guest's result comes back from JavaScript.
+trait __OrchJsResults: Sized {
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+    fn from_js(value: wasm_bindgen::JsValue) -> Option<Self>;
+}
+trait __OrchJsValue: Sized {
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+    fn to_js(self) -> wasm_bindgen::JsValue;
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+    fn from_js(value: wasm_bindgen::JsValue) -> Option<Self>;
+}
+impl __OrchJsValue for i32 {
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+    fn to_js(self) -> wasm_bindgen::JsValue { self.into() }
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+    fn from_js(value: wasm_bindgen::JsValue) -> Option<Self> { value.as_f64().map(|n| n as i32) }
+}
+impl __OrchJsValue for i64 {
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+    fn to_js(self) -> wasm_bindgen::JsValue { self.into() }
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+    fn from_js(value: wasm_bindgen::JsValue) -> Option<Self> { i64::try_from(value).ok() }
+}
+impl __OrchJsValue for f64 {
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+    fn to_js(self) -> wasm_bindgen::JsValue { self.into() }
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+    fn from_js(value: wasm_bindgen::JsValue) -> Option<Self> { value.as_f64() }
+}
+impl __OrchJsResults for () {
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+    fn from_js(value: wasm_bindgen::JsValue) -> Option<Self> { value.is_undefined().then_some(()) }
+}
+impl<T: __OrchJsValue> __OrchJsResults for T {
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+    fn from_js(value: wasm_bindgen::JsValue) -> Option<Self> { T::from_js(value) }
+}
+macro_rules! __orch_js_params {
+    ($($name:ident),*) => {
+        impl<$($name: __OrchJsValue),*> __OrchJsParams for ($($name,)*) {
+            #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+            #[allow(non_snake_case)]
+            fn to_js(self) -> js_sys::Array {
+                let ($($name,)*) = self;
+                let array = js_sys::Array::new();
+                $( array.push(&$name.to_js()); )*
+                array
+            }
+        }
+    };
+}
+__orch_js_params!();
+__orch_js_params!(A);
+__orch_js_params!(A, B);
+__orch_js_params!(A, B, C);
+__orch_js_params!(A, B, C, D);
+__orch_js_params!(A, B, C, D, E);
+__orch_js_params!(A, B, C, D, E, F);
+__orch_js_params!(A, B, C, D, E, F, G);
+__orch_js_params!(A, B, C, D, E, F, G, H);
+__orch_js_params!(A, B, C, D, E, F, G, H, I);
+__orch_js_params!(A, B, C, D, E, F, G, H, I, J);
+__orch_js_params!(A, B, C, D, E, F, G, H, I, J, K);
+__orch_js_params!(A, B, C, D, E, F, G, H, I, J, K, L);
+__orch_js_params!(A, B, C, D, E, F, G, H, I, J, K, L, M);
+__orch_js_params!(A, B, C, D, E, F, G, H, I, J, K, L, M, N);
+__orch_js_params!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O);
+__orch_js_params!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P);
+
+/// A guest on the page's own WebAssembly engine: its linear memory is the browser's to keep
+/// apart from the host's, and the engine is the browser's, which is among the most tested
+/// code there is. Its limits come from the metering pass — fuel, and a memory cap the guest
+/// enforces on itself — since the host cannot set limits on a browser instance; the pass
+/// runs on every guest that reaches here, so the limits hold here as on wasmi.
+#[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+struct __OrchBrowserGuest {
+    name: &'static str,
+    module: js_sys::WebAssembly::Module,
+    exports: js_sys::Object,
+    state: std::rc::Rc<std::cell::RefCell<__OrchJsState>>,
+    fuel: Option<u64>,
+    grants: Option<__OrchGrants>,
+}
+
+// SAFETY: a browser guest holds JavaScript handles, which may not cross threads. This
+// build is `wasm32-unknown-unknown` without the `atomics` feature, which has no threads
+// for them to cross to: the runtime's tasks, which must be Send to be spawned, all run on
+// the page's one thread. A threaded build gets no browser guests at all (the cfg above).
+#[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+unsafe impl Send for __OrchBrowserGuest {}
+
+/// What a browser guest's imports share with the host: its memory, its exports (for the
+/// allocator), and what its diagnostics and `answer_err` handed over.
+#[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+#[derive(Default)]
+struct __OrchJsState {
+    memory: Option<js_sys::WebAssembly::Memory>,
+    exports: Option<js_sys::Object>,
+    partial_line: Vec<u8>,
+    answered_err: Option<String>,
+}
+
+#[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+impl __OrchJsState {
+    fn bytes(&self, pointer: u32, length: u32) -> Option<Vec<u8>> {
+        let memory = self.memory.as_ref()?;
+        let buffer = js_sys::Uint8Array::new(&memory.buffer());
+        let end = (pointer as u64).checked_add(length as u64)?;
+        if end > buffer.length() as u64 {
+            return None;
+        }
+        Some(buffer.subarray(pointer, end as u32).to_vec())
+    }
+
+    fn write(&self, pointer: u32, bytes: &[u8]) -> bool {
+        let Some(memory) = self.memory.as_ref() else { return false };
+        let buffer = js_sys::Uint8Array::new(&memory.buffer());
+        let Some(end) = (pointer as u64).checked_add(bytes.len() as u64) else { return false };
+        if end > buffer.length() as u64 {
+            return false;
+        }
+        buffer.subarray(pointer, end as u32).copy_from(bytes);
+        true
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+fn __orch_js_set(target: &js_sys::Object, key: &str, value: &wasm_bindgen::JsValue) {
+    let _ = js_sys::Reflect::set(target, &wasm_bindgen::JsValue::from_str(key), value);
+}
+
+#[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+fn __orch_js_get(target: &wasm_bindgen::JsValue, key: &str) -> Option<wasm_bindgen::JsValue> {
+    js_sys::Reflect::get(target, &wasm_bindgen::JsValue::from_str(key)).ok().filter(|value| !value.is_undefined())
+}
+
+/// The text of a thrown JavaScript value: an `Error`'s message, or the value as text.
+#[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+fn __orch_js_text(value: &wasm_bindgen::JsValue) -> String {
+    use wasm_bindgen::JsCast;
+    if let Some(error) = value.dyn_ref::<js_sys::Error>() {
+        return String::from(error.message());
+    }
+    value.as_string().unwrap_or_else(|| format!("{value:?}"))
+}
+
+#[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+impl __OrchBrowserGuest {
+    fn new(
+        name: &'static str,
+        wasm: &[u8],
+        memory_bytes: Option<usize>,
+        fuel: Option<u64>,
+        grants: Option<__OrchGrants>,
+    ) -> Result<__OrchBrowserGuest, String> {
+        // Every guest here is metered, since the metered bytecode is what limits it.
+        let fuel_budget = fuel.unwrap_or(i64::MAX as u64);
+        let max_pages = memory_bytes.map(|bytes| (bytes as u64).div_ceil(65536));
+        let metered = __orch_meter(wasm, fuel_budget.min(i64::MAX as u64) as i64, max_pages).map_err(|e| format!("wasm module '{}': {}", name, e))?;
+        let module = js_sys::WebAssembly::Module::new(&js_sys::Uint8Array::from(metered.as_slice()))
+            .map_err(|e| format!("wasm module '{}' failed to load: {}", name, __orch_js_text(&e)))?;
+        let (exports, state) = Self::instantiate(name, &module, grants)?;
+        Ok(__OrchBrowserGuest { name, module, exports, state, fuel: Some(fuel_budget), grants })
+    }
+
+    fn instantiate(
+        name: &'static str,
+        module: &js_sys::WebAssembly::Module,
+        grants: Option<__OrchGrants>,
+    ) -> Result<(js_sys::Object, std::rc::Rc<std::cell::RefCell<__OrchJsState>>), String> {
+        use wasm_bindgen::closure::Closure;
+        use wasm_bindgen::JsCast;
+        let state = std::rc::Rc::new(std::cell::RefCell::new(__OrchJsState::default()));
+        let wasi = js_sys::Object::new();
+        let guest = js_sys::Object::new();
+        let host = js_sys::Object::new();
+
+        // The guest's diagnostics, joined into lines; as on the other engines, writing
+        // reaches nothing but the host's log.
+        let shared = state.clone();
+        let fd_write = Closure::<dyn FnMut(i32, i32, i32, i32) -> i32>::new(move |_fd: i32, iovs: i32, iovs_len: i32, written_out: i32| -> i32 {
+            let mut state = shared.borrow_mut();
+            let mut text = Vec::new();
+            let mut offered: u32 = 0;
+            for index in 0..iovs_len.max(0) as u32 {
+                let Some(entry) = (iovs as u32).checked_add(index * 8) else { return 21 };
+                let Some(header) = state.bytes(entry, 8) else { return 21 };
+                let pointer = u32::from_le_bytes(header[0..4].try_into().unwrap());
+                let length = u32::from_le_bytes(header[4..8].try_into().unwrap());
+                let Some(bytes) = state.bytes(pointer, length.min(1 << 20)) else { return 21 };
+                offered = offered.saturating_add(length);
+                text.extend(bytes);
+            }
+            if !state.write(written_out as u32, &offered.to_le_bytes()) {
+                return 21;
+            }
+            state.partial_line.extend(text);
+            while let Some(end) = state.partial_line.iter().position(|byte| *byte == b'\n') {
+                let line: Vec<u8> = state.partial_line.drain(..=end).collect();
+                let line = String::from_utf8_lossy(&line);
+                if !line.trim().is_empty() {
+                    eprintln!("[orchestrate] sandbox guest: {}", line.trim_end());
+                }
+            }
+            0
+        });
+        __orch_js_set(&wasi, "fd_write", &fd_write.into_js_value());
+        let shared = state.clone();
+        let proc_exit = Closure::<dyn FnMut(i32)>::new(move |code: i32| {
+            let rest = std::mem::take(&mut shared.borrow_mut().partial_line);
+            if !rest.trim_ascii().is_empty() {
+                eprintln!("[orchestrate] sandbox guest: {}", String::from_utf8_lossy(&rest).trim_end());
+            }
+            // Throwing traps the guest, which is what stopping it means here.
+            wasm_bindgen::throw_str(&format!("the guest stopped itself (exit status {})", code));
+        });
+        __orch_js_set(&wasi, "proc_exit", &proc_exit.into_js_value());
+        let shared = state.clone();
+        let environ_sizes_get = Closure::<dyn FnMut(i32, i32) -> i32>::new(move |count_out: i32, size_out: i32| -> i32 {
+            let state = shared.borrow();
+            if state.write(count_out as u32, &[0; 4]) && state.write(size_out as u32, &[0; 4]) { 0 } else { 21 }
+        });
+        __orch_js_set(&wasi, "environ_sizes_get", &environ_sizes_get.into_js_value());
+        let environ_get = Closure::<dyn FnMut(i32, i32) -> i32>::new(|_: i32, _: i32| -> i32 { 0 });
+        __orch_js_set(&wasi, "environ_get", &environ_get.into_js_value());
+        let shared = state.clone();
+        let answer_err = Closure::<dyn FnMut(i32, i32)>::new(move |pointer: i32, length: i32| {
+            let mut state = shared.borrow_mut();
+            let text = state
+                .bytes(pointer as u32, (length as u32).min(1 << 16))
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                .unwrap_or_else(|| "the guest answered err with a message outside its memory".to_string());
+            state.answered_err = Some(text);
+        });
+        __orch_js_set(&guest, "answer_err", &answer_err.into_js_value());
+
+        // Each grant is one import, as on the other engines.
+        if let Some(grants) = grants {
+            for (import, body) in grants() {
+                let shared = state.clone();
+                let call = Closure::<dyn FnMut(i32, i32) -> i64>::new(move |pointer: i32, length: i32| -> i64 {
+                    let payload = match shared.borrow().bytes(pointer as u32, length.max(0) as u32) {
+                        Some(payload) => payload,
+                        None => return 0,
+                    };
+                    let mut reply = Vec::new();
+                    match body(&payload) {
+                        Ok(value) => { reply.push(1); reply.extend(value); }
+                        Err(error) => {
+                            reply.push(0);
+                            reply.extend_from_slice(&(error.len() as u32).to_le_bytes());
+                            reply.extend_from_slice(error.as_bytes());
+                        }
+                    }
+                    let exports = shared.borrow().exports.clone();
+                    let Some(alloc) = exports.and_then(|e| __orch_js_get(&e, "orch_alloc")).and_then(|f| f.dyn_into::<js_sys::Function>().ok()) else { return 0 };
+                    let Ok(pointer) = alloc.call1(&wasm_bindgen::JsValue::NULL, &(reply.len() as i32).into()) else { return 0 };
+                    let pointer = pointer.as_f64().unwrap_or(0.0) as i32;
+                    if pointer == 0 || !shared.borrow().write(pointer as u32, &reply) {
+                        return 0;
+                    }
+                    ((pointer as i64) << 32) | reply.len() as i64
+                });
+                __orch_js_set(&host, import, &call.into_js_value());
+            }
+        }
+
+        // Default-deny: any other function the guest imports throws when called.
+        let imports = js_sys::Object::new();
+        __orch_js_set(&imports, "wasi_snapshot_preview1", &wasi);
+        __orch_js_set(&imports, "orch_guest", &guest);
+        __orch_js_set(&imports, "orch_host", &host);
+        for import in js_sys::WebAssembly::Module::imports(module).iter() {
+            let (Some(module_name), Some(field), Some(kind)) = (
+                __orch_js_get(&import, "module").and_then(|v| v.as_string()),
+                __orch_js_get(&import, "name").and_then(|v| v.as_string()),
+                __orch_js_get(&import, "kind").and_then(|v| v.as_string()),
+            ) else { continue };
+            if kind != "function" {
+                continue;
+            }
+            let namespace = match __orch_js_get(&imports, &module_name).and_then(|v| v.dyn_into::<js_sys::Object>().ok()) {
+                Some(namespace) => namespace,
+                None => {
+                    let namespace = js_sys::Object::new();
+                    __orch_js_set(&imports, &module_name, &namespace);
+                    namespace
+                }
+            };
+            if __orch_js_get(&namespace, &field).is_none() {
+                let what = format!("unknown import: `{module_name}::{field}` has not been defined — a sandboxed guest is granted nothing");
+                let trap = Closure::<dyn FnMut()>::new(move || wasm_bindgen::throw_str(&what));
+                __orch_js_set(&namespace, &field, &trap.into_js_value());
+            }
+        }
+
+        let instance = js_sys::WebAssembly::Instance::new(module, &imports)
+            .map_err(|e| format!("wasm module '{}' failed to start: {}", name, __orch_js_text(&e)))?;
+        let exports = instance.exports();
+        {
+            let mut state = state.borrow_mut();
+            state.memory = __orch_js_get(&exports, "memory").and_then(|m| m.dyn_into::<js_sys::WebAssembly::Memory>().ok());
+            state.exports = Some(exports.clone());
+        }
+        Ok((exports, state))
+    }
+
+    fn function(&self, name: &str) -> Result<js_sys::Function, String> {
+        use wasm_bindgen::JsCast;
+        __orch_js_get(&self.exports, name)
+            .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+            .ok_or_else(|| format!("the guest exports no function `{name}`"))
+    }
+
+    fn fuel_global(&self) -> Option<js_sys::WebAssembly::Global> {
+        use wasm_bindgen::JsCast;
+        __orch_js_get(&self.exports, __ORCH_FUEL_EXPORT).and_then(|g| g.dyn_into::<js_sys::WebAssembly::Global>().ok())
+    }
+
+    fn refuel(&mut self) {
+        if let (Some(fuel), Some(global)) = (self.fuel, self.fuel_global()) {
+            global.set_value(&wasm_bindgen::JsValue::from(fuel.min(i64::MAX as u64) as i64));
+        }
+    }
+
+    fn out_of_fuel(&self) -> bool {
+        self.fuel_global().and_then(|global| i64::try_from(global.value()).ok()).is_some_and(|left| left < 0)
+    }
+
+    fn call<P: __OrchJsParams, R: __OrchJsResults>(&mut self, function: &str, args: P) -> Result<Result<R, String>, String> {
+        let callee = self.function(function)?;
+        let outcome = callee.apply(&wasm_bindgen::JsValue::NULL, &args.to_js());
+        Ok(match outcome {
+            Ok(value) => R::from_js(value).ok_or_else(|| format!("wasm call '{}::{}' returned a value of the wrong type", self.name, function)),
+            Err(error) => {
+                let reason = if self.out_of_fuel() {
+                    "the guest used up its fuel".to_string()
+                } else {
+                    let text = __orch_js_text(&error);
+                    if text.contains("unreachable") { "the guest stopped itself (it panicked or ran out of memory)".to_string() } else { text }
+                };
+                Err(format!("wasm call '{}::{}' failed: {}", self.name, function, reason))
+            }
+        })
+    }
+
+    fn take_answered_err(&mut self) -> Option<String> {
+        self.state.borrow_mut().answered_err.take()
+    }
+
+    fn begin(&mut self) {
+        self.refuel();
+        self.state.borrow_mut().answered_err = None;
+    }
+
+    fn reset(&mut self) {
+        match Self::instantiate(self.name, &self.module, self.grants) {
+            Ok((exports, state)) => {
+                self.exports = exports;
+                self.state = state;
+            }
+            Err(error) => eprintln!("[orchestrate] wasm module '{}' could not be restarted: {}", self.name, error),
+        }
+    }
+
+    fn write_bytes(&mut self, bytes: &[u8]) -> Result<(i32, i32), String> {
+        if bytes.is_empty() {
+            return Ok((0, 0));
+        }
+        self.refuel();
+        let pointer = match self.call::<(i32,), i32>("orch_alloc", (bytes.len() as i32,)) {
+            Ok(Ok(pointer)) => pointer,
+            Ok(Err(error)) => return Err(error),
+            Err(_) => return Err(__orch_wasm_missing_allocator(self.name)),
+        };
+        if pointer == 0 {
+            return Err(format!("wasm module '{}' could not allocate {} bytes", self.name, bytes.len()));
+        }
+        if !self.state.borrow().write(pointer as u32, bytes) {
+            return Err(format!("wasm module '{}': writing into the guest failed", self.name));
+        }
+        Ok((pointer, bytes.len() as i32))
+    }
+
+    fn write_string(&mut self, text: &str) -> Result<(i32, i32), String> {
+        self.write_bytes(text.as_bytes())
+    }
+
+    fn write_array<T: __OrchWasmPod>(&mut self, items: &[T]) -> Result<(i32, i32, i32), String> {
+        let mut bytes = Vec::with_capacity(items.len() * T::SIZE);
+        for item in items {
+            item.to_bytes(&mut bytes);
+        }
+        let (pointer, length) = self.write_bytes(&bytes)?;
+        Ok((pointer, items.len() as i32, length))
+    }
+
+    fn write_struct(&mut self, size: usize, encode: impl FnOnce(&mut [u8])) -> Result<(i32, i32), String> {
+        let mut bytes = vec![0u8; size];
+        encode(&mut bytes);
+        self.write_bytes(&bytes)
+    }
+
+    fn free(&mut self, pointer: i32, length: i32) {
+        if pointer == 0 || length <= 0 {
+            return;
+        }
+        self.refuel();
+        let _ = self.call::<(i32, i32), ()>("orch_free", (pointer, length));
+    }
+
+    fn take_bytes(&mut self, pointer: i32, length: i32, what: &str) -> Result<Vec<u8>, String> {
+        if pointer == 0 || length <= 0 {
+            return Ok(Vec::new());
+        }
+        let bytes = self.state.borrow().bytes(pointer as u32, length as u32)
+            .ok_or_else(|| format!("wasm module '{}': reading {} failed", self.name, what))?;
+        self.free(pointer, length);
+        Ok(bytes)
+    }
+
+    fn read_string(&mut self, packed: i64) -> Result<String, String> {
+        let bytes = self.take_bytes((packed >> 32) as i32, (packed & 0xffff_ffff) as i32, "a string")?;
+        String::from_utf8(bytes).map_err(|_| format!("wasm module '{}' returned a string that is not UTF-8", self.name))
+    }
+
+    fn read_array<T: __OrchWasmPod>(&mut self, packed: i64) -> Result<Vec<T>, String> {
+        let count = (packed & 0xffff_ffff) as i32;
+        let length = count.checked_mul(T::SIZE as i32).ok_or_else(|| format!("wasm module '{}' returned an array too large to read", self.name))?;
+        let bytes = self.take_bytes((packed >> 32) as i32, length, "an array")?;
+        Ok(bytes.chunks_exact(T::SIZE).map(T::from_bytes).collect())
+    }
+
+    fn read_struct<T>(&mut self, packed: i64, size: usize, decode: impl FnOnce(&[u8]) -> T) -> Result<T, String> {
+        let length = (packed & 0xffff_ffff) as i32;
+        if length < 0 || length as usize != size {
+            return Err(format!("wasm module '{}' returned a struct of {} bytes where the host expects {}", self.name, length, size));
+        }
+        let bytes = self.take_bytes((packed >> 32) as i32, length, "a struct")?;
+        Ok(decode(&bytes))
+    }
+
+    fn check_interface(&mut self, expected: &[&str]) -> Result<(), String> {
+        let packed = match self.call::<(), i64>("orch_interface", ()) {
+            Ok(Ok(packed)) => packed,
+            Ok(Err(error)) => return Err(error),
+            Err(_) => return Err(format!("wasm module '{}' exports no `orch_interface`, so it cannot say what it implements; build a guest with `orchestrate build --guest`", self.name)),
+        };
+        let text = self.read_string(packed)?;
+        __orch_check_interface_text(self.name, &text, expected)
+    }
+}
+
+/// Checks the interface text a guest gave against what the program declared.
+fn __orch_check_interface_text(name: &str, text: &str, expected: &[&str]) -> Result<(), String> {
+    let mut lines = text.lines();
+    let (protocol, handlers) = expected.split_first().expect("a protocol line");
+    match lines.next() {
+        Some(line) if line == *protocol => {}
+        got => return Err(format!("wasm module '{}' follows {}, and this program expects {}", name, got.unwrap_or("no protocol"), protocol)),
+    }
+    let got: Vec<&str> = lines.collect();
+    for want in handlers {
+        let handler = want.split('(').next().unwrap_or(want);
+        match got.iter().find(|line| line.split('(').next() == Some(handler)) {
+            Some(line) if line == want => {}
+            Some(line) => return Err(format!("wasm module '{}': interface mismatch: handler '{}' is declared as {} but the guest defines {}", name, handler, want, line)),
+            None => return Err(format!(
+                "wasm module '{}': interface mismatch: handler '{}' is declared as {} but the guest defines no handler '{}'; it defines {}",
+                name, handler, want, handler, if got.is_empty() { "none".to_string() } else { got.join(", ") }
+            )),
+        }
+    }
+    Ok(())
+}
+
+/// A sandboxed guest in a web build: the program's own guests on wasmi, and guests it is
+/// handed while it runs (`start X from path`) on the browser's engine, unless the host
+/// keeps them on wasmi with `StartOptions::browser_engine_for_loaded_guests`.
+enum __OrchGuest {
+    Interp(__OrchInterpGuest),
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+    Browser(__OrchBrowserGuest),
+}
+
+macro_rules! __orch_each_guest {
+    ($guest:expr, $bound:ident => $body:expr) => {
+        match $guest {
+            __OrchGuest::Interp($bound) => $body,
+            #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+            __OrchGuest::Browser($bound) => $body,
+        }
+    };
+}
+
+impl __OrchGuest {
+    fn new(name: &'static str, wasm: &[u8], memory_bytes: Option<usize>, timeout_ms: Option<u64>, fuel: Option<u64>, grants: Option<__OrchGrants>) -> Result<__OrchGuest, String> {
+        __OrchInterpGuest::new(name, wasm, memory_bytes, timeout_ms, fuel, grants).map(__OrchGuest::Interp)
+    }
+
+    fn new_loaded(name: &'static str, wasm: &[u8], memory_bytes: Option<usize>, timeout_ms: Option<u64>, fuel: Option<u64>, grants: Option<__OrchGrants>) -> Result<__OrchGuest, String> {
+        #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+        if __orch_context().options.browser_engine_for_loaded_guests {
+            return __OrchBrowserGuest::new(name, wasm, memory_bytes, fuel, grants).map(__OrchGuest::Browser);
+        }
+        Self::new(name, wasm, memory_bytes, timeout_ms, fuel, grants)
+    }
+
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+    fn call<P: wasmi::WasmParams + __OrchJsParams, R: wasmi::WasmResults + __OrchJsResults>(&mut self, function: &str, args: P) -> Result<Result<R, String>, String> {
+        __orch_each_guest!(self, guest => guest.call(function, args))
+    }
+    #[cfg(not(all(target_arch = "wasm32", not(target_feature = "atomics"))))]
+    fn call<P: wasmi::WasmParams, R: wasmi::WasmResults>(&mut self, function: &str, args: P) -> Result<Result<R, String>, String> {
+        __orch_each_guest!(self, guest => guest.call(function, args))
+    }
+
+    fn take_answered_err(&mut self) -> Option<String> { __orch_each_guest!(self, guest => guest.take_answered_err()) }
+    fn begin(&mut self) { __orch_each_guest!(self, guest => guest.begin()) }
+    fn reset(&mut self) { __orch_each_guest!(self, guest => guest.reset()) }
+    fn check_interface(&mut self, expected: &[&str]) -> Result<(), String> { __orch_each_guest!(self, guest => guest.check_interface(expected)) }
+    fn write_string(&mut self, text: &str) -> Result<(i32, i32), String> { __orch_each_guest!(self, guest => guest.write_string(text)) }
+    fn write_array<T: __OrchWasmPod>(&mut self, items: &[T]) -> Result<(i32, i32, i32), String> { __orch_each_guest!(self, guest => guest.write_array(items)) }
+    fn write_struct(&mut self, size: usize, encode: impl FnOnce(&mut [u8])) -> Result<(i32, i32), String> { __orch_each_guest!(self, guest => guest.write_struct(size, encode)) }
+    fn free(&mut self, pointer: i32, length: i32) { __orch_each_guest!(self, guest => guest.free(pointer, length)) }
+    fn read_string(&mut self, packed: i64) -> Result<String, String> { __orch_each_guest!(self, guest => guest.read_string(packed)) }
+    fn read_array<T: __OrchWasmPod>(&mut self, packed: i64) -> Result<Vec<T>, String> { __orch_each_guest!(self, guest => guest.read_array(packed)) }
+    fn read_struct<T>(&mut self, packed: i64, size: usize, decode: impl FnOnce(&[u8]) -> T) -> Result<T, String> { __orch_each_guest!(self, guest => guest.read_struct(packed, size, decode)) }
+}

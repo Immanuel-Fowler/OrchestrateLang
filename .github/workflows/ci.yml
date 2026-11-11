@@ -51,6 +51,14 @@ jobs:
         if: runner.os == 'macOS'
         run: bun add -g scriptc
 
+      # The web build tests run a wasm-bindgen host under Node.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen-cli
+
       - uses: Swatinem/rust-cache@v2
 
       - name: Build

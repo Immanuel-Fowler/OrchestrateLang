@@ -30,6 +30,14 @@ own changelog in [editors/vscode/CHANGELOG.md](editors/vscode/CHANGELOG.md).
   `native_sandbox_fuel_stops_a_runaway_call_in_live_and_replayed_runs`,
   `metered_fuel_stops_a_guest_at_the_same_point_on_every_engine`,
   `sandbox_config_needs_a_bound_on_each_call`.
+- **Loaded guests on the browser's engine.** In a web build, a guest started with `start
+  X from path` runs on the page's own WebAssembly engine, whose memory the browser keeps
+  apart from the host's; the program's own guests stay on wasmi. Its fuel and memory cap
+  are enforced by its metered bytecode, so they hold there as on the other engines.
+  `StartOptions::browser_engine_for_loaded_guests` turns it off. The metering pass gained
+  the memory cap: a guest that starts over `memory_limit` is refused, and a `memory.grow`
+  past it answers -1. Test: `web_library_runs_in_a_webassembly_engine`, under Node with
+  wasm-bindgen.
 - **The `entity` type.** A library that scripts an ECS receives its host's entities as
   `entity` values: compared with `==` and `!=`, used as map keys, carried in arrays,
   options, structs, events, host functions, typed ticks, landlines, and sandboxed calls,

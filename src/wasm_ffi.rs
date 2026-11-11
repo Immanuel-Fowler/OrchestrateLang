@@ -331,6 +331,6 @@ mod tests {
         let declared = [signature("double", vec![("n", Type::Int)], Type::Int)];
         let code = bindings(&declared, "__orch_wasm_math_lib", "math/lib.wasm");
         assert!(code.contains("(n,)"), "{code}");
-        assert!(code.contains("get_typed_func::<(i64,), i64>"), "{code}");
+        assert!(code.contains("call::<(i64,), i64>"), "{code}");
     }
 }

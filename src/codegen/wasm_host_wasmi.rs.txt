@@ -276,7 +276,7 @@ impl __OrchGuest {
         let metered;
         let wasm = match fuel {
             Some(fuel) => {
-                metered = __orch_meter(wasm, fuel.min(i64::MAX as u64) as i64).map_err(|e| format!("wasm module '{}': {}", name, e))?;
+                metered = __orch_meter(wasm, fuel.min(i64::MAX as u64) as i64, memory_bytes.map(|bytes| (bytes as u64).div_ceil(65536))).map_err(|e| format!("wasm module '{}': {}", name, e))?;
                 metered.as_slice()
             }
             None => wasm,
